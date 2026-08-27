@@ -22,10 +22,8 @@ TICK_SEC = 1.0
 
 
 class Manager:
-    def __init__(self, scanner: Scanner, log_root: Path, log_max_bytes: int):
+    def __init__(self, scanner: Scanner):
         self.scanner = scanner
-        self.log_root = log_root
-        self.log_max_bytes = log_max_bytes
         self.specs: dict[str, Spec] = {}
         self.handles: dict[str, runner.ProcessHandle] = {}
         # svc -> 状态字典：status/started_at/error/fail_at
@@ -54,12 +52,9 @@ class Manager:
                 h = self.handles.pop(gone, None)
                 if h:
                     if h.popen.poll() is None:
-                        runner.stop_managed(h)   # 内部 finally 会 close fh
+                        runner.stop_managed(h)   # 内部 finally 会 close fh + 清 pid
                     else:
-                        try:
-                            h.log_fh.close()
-                        except OSError:
-                            pass
+                        runner.close_handle(h)
                 del self.state[gone]
             # 端口冲突检查（跨服务）
             seen: dict[int, str] = {}
@@ -74,7 +69,8 @@ class Manager:
                         seen[port] = name
 
     def _log_path(self, name: str) -> Path:
-        return self.log_root / name / "service.log"
+        # 兼容保留：服务自身日志已归位于 <服务文件夹>/run/service.log（见 runner.run_dir）
+        return runner.run_dir(self.specs[name]) / "service.log"
 
     # ------------------------------------------------------------ 查询
     def snapshot(self) -> list[dict]:
@@ -96,6 +92,7 @@ class Manager:
                     "description": spec.description,
                     "status": status,
                     "port": spec.health_port if spec.health_type == "port" else None,
+                    "url": spec.url,
                     "uptime_sec": uptime,
                     "autostart": spec.autostart,
                     "error": st.get("error"),
@@ -120,7 +117,7 @@ class Manager:
             if cur in ("running", "starting"):
                 return True, f"已在 {cur}"
             try:
-                handle = runner.start_process(spec, self._log_path(name))
+                handle = runner.start_process(spec)
             except Exception as exc:  # noqa: BLE001
                 st.update(status="failed", error=f"启动失败: {exc}", fail_at=time.time())
                 return False, str(exc)
@@ -231,10 +228,7 @@ class Manager:
                     elif not alive:
                         rc = handle.popen.returncode
                         self.handles.pop(name, None)
-                        try:
-                            handle.log_fh.close()
-                        except OSError:
-                            pass
+                        runner.close_handle(handle)
                         st.update(status="failed", error=f"进程启动即退出 rc={rc}", fail_at=now)
                     elif elapsed > timeout:
                         # 关键修复点：超时必须收敛，不能像 早期内部版本 那样残留 starting
@@ -247,10 +241,7 @@ class Manager:
                         rc = handle.popen.returncode
                         crashed = name not in self._user_stopping
                         self.handles.pop(name, None)
-                        try:
-                            handle.log_fh.close()
-                        except OSError:
-                            pass
+                        runner.close_handle(handle)
                         if crashed:
                             st.update(status="failed", error=f"进程意外退出 rc={rc}",
                                       fail_at=now)

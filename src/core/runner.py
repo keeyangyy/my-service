@@ -47,21 +47,38 @@ def build_command(spec: Spec) -> list[str]:
 class ProcessHandle:
     """一次成功 start 对应的运行句柄。"""
 
-    def __init__(self, popen: subprocess.Popen, log_fh, started_at: float):
+    def __init__(self, popen: subprocess.Popen, log_fhs, started_at: float,
+                 run_dir: Path):
         self.popen = popen
-        self.log_fh = log_fh          # append 模式的日志文件句柄，stop 后关闭
+        self.log_fhs = log_fhs        # (stdout_fh, stderr_fh) 追加句柄，stop 后关闭
         self.started_at = started_at
+        self.rdir = run_dir           # 该服务的 run\ 目录（pid/日志所在）
 
     @property
     def pid(self) -> int | None:
         return self.popen.pid
 
 
-def start_process(spec: Spec, log_path: Path) -> ProcessHandle:
-    """拉起进程并把 stdout/stderr 重定向到日志文件。抛异常由上层转为 failed。"""
+# ---------------------------------------------------------------- 启动/停止
+def run_dir(spec: Spec) -> Path:
+    """该服务的运行时产物目录：run\\service.log / service.err.log / service.pid"""
+    return spec.manifest_path.parent / "run"
+
+
+def _tail_path(p: Path):
+    return open(p, "ab", buffering=0)
+
+
+def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
+    """拉起进程：stdout/stderr 分流写入服务自己的 run\\service.log[.err]，并写 pid 文件。
+
+    log_base 参数保留兼容旧签名（已弃用）。
+    """
     cmd = build_command(spec)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(log_path, "ab", buffering=0)  # 二进制追加直写，fmt 由子进程自己决定
+    rdir = run_dir(spec)
+    rdir.mkdir(parents=True, exist_ok=True)
+    out_fh = _tail_path(rdir / "service.log")
+    err_fh = _tail_path(rdir / "service.err.log")
     env = {**os.environ, **spec.env}
     try:
         proc = subprocess.Popen(
@@ -69,19 +86,22 @@ def start_process(spec: Spec, log_path: Path) -> ProcessHandle:
             cwd=str(spec.workdir),
             env=env,
             stdin=subprocess.DEVNULL,
-            stdout=fh,
-            stderr=subprocess.STDOUT,
+            stdout=out_fh,
+            stderr=err_fh,
             creationflags=CREATE_FLAGS,
         )
     except Exception:
-        fh.close()
+        out_fh.close()
+        err_fh.close()
         raise
-    banner = f"\n===== my-service 启动 {time.strftime('%Y-%m-%d %H:%M:%S')} pid={proc.pid} =====\n".encode("utf-8")
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S')
     try:
-        fh.write(banner)
+        out_fh.write(f"\n===== my-service 启动 {stamp} pid={proc.pid} =====\n".encode("utf-8"))
+        err_fh.write(f"\n===== my-service 启动 {stamp} pid={proc.pid} =====\n".encode("utf-8"))
+        (rdir / "service.pid").write_text(str(proc.pid), encoding="ascii")
     except OSError:
         pass
-    return ProcessHandle(proc, fh, time.time())
+    return ProcessHandle(proc, (out_fh, err_fh), time.time(), rdir)
 
 
 def _taskkill_tree(pid: int) -> None:
@@ -105,8 +125,21 @@ def wait_gone(pid: int, deadline: float) -> bool:
     return False
 
 
+def close_handle(handle: ProcessHandle) -> None:
+    """仅回收文件句柄（进程已退出时用）。"""
+    for fh in handle.log_fhs:
+        try:
+            fh.close()
+        except OSError:
+            pass
+    try:
+        (handle.rdir / "service.pid").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def stop_managed(handle: ProcessHandle) -> None:
-    """温和等待 2 秒 → taskkill /T /F 树杀 → 轮询确认消失 → 关日志句柄。"""
+    """温和等待 2 秒 → taskkill /T /F 树杀 → 清理 pid 文件与日志句柄。"""
     proc, pid = handle.popen, handle.popen.pid
     try:
         time.sleep(2.0)  # 给 python HTTP 服务一点点体面退出的机会
@@ -114,11 +147,14 @@ def stop_managed(handle: ProcessHandle) -> None:
             _taskkill_tree(pid)
             if not wait_gone(pid, time.time() + _STOP_WAIT_SEC):
                 pass  # 树杀基本必中；此处留兜底不阻塞
-        else:
-            wait_gone(pid, time.time() + 2.0)
     finally:
+        for fh in handle.log_fhs:
+            try:
+                fh.close()
+            except OSError:
+                pass
         try:
-            handle.log_fh.close()
+            (handle.rdir / "service.pid").unlink(missing_ok=True)
         except OSError:
             pass
 

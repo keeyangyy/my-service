@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import runner
+
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 MIME = {
@@ -80,7 +82,18 @@ def make_handler(manager):  # noqa: ANN001 - manager: core.state.Manager
                     n = max(1, min(1000, int(qs.get("n", ["200"])[0])))
                 except ValueError:
                     n = 200
-                return self._json(200, read_log_tail(manager, name, n))
+                payload = read_log_tail(manager, name, n)
+                if payload is None:
+                    return self._json(404, {"ok": False, "error": f"未知服务 {name}"})
+                return self._json(200, payload)
+
+            if path == "/api/host-log":
+                qs = parse_qs(parsed.query)
+                try:
+                    n = max(1, min(1000, int(qs.get("n", ["200"])[0])))
+                except ValueError:
+                    n = 200
+                return self._json(200, read_host_log(manager, n))
 
             rest = path.lstrip("/")
             if rest and not rest.startswith("api/"):
@@ -132,12 +145,25 @@ def make_handler(manager):  # noqa: ANN001 - manager: core.state.Manager
     return Handler
 
 
-def read_log_tail(manager, name: str, n: int) -> dict:  # noqa: ANN001
-    log_path = Path(manager.log_root) / name / "service.log"
-    if not log_path.is_file():
+def read_log_tail(manager, name: str, n: int) -> dict | None:  # noqa: ANN001
+    """服务自身日志：<服务文件夹>/run/service.log（stdout 为主，err 单独成文件）。"""
+    spec = manager.specs.get(name)
+    if spec is None:
+        return None
+    return _tail_file(runner.run_dir(spec) / "service.log", name, n)
+
+
+def read_host_log(manager, n: int) -> dict:  # noqa: ANN001
+    """宿主自身日志：<services_root>/my-service/run/service.log —— 只含启停事件。"""
+    rdir = Path(manager.scanner.root) / "my-service" / "run"
+    return _tail_file(rdir / "service.log", "(host)", n)
+
+
+def _tail_file(path: Path, name: str, n: int) -> dict:
+    if not path.is_file():
         return {"name": name, "lines": []}
-    size = log_path.stat().st_size
-    with open(log_path, "rb") as fh:
+    size = path.stat().st_size
+    with open(path, "rb") as fh:
         if size > 512 * 1024:          # 大日志只读尾部
             fh.seek(-512 * 1024, 2)
         raw = fh.read()

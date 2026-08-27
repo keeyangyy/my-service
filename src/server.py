@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """my-service 宿主入口。
 
-    python server.py            # 前台运行
-    pwsh -File run.ps1          # 后台托管运行（推荐）
+    python src/server.py        # 前台运行
+    start.ps1 / run\\start.ps1  # 后台托管（推荐）
 
 装配顺序：config.json → Scanner → Manager(含 monitor 线程) → HTTP API。
 自启动：autostart=true 且 enabled 的服务在宿主起来后自动 start。
@@ -14,14 +14,14 @@ import sys
 import threading
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE))
+SRC_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SRC_DIR))
 
 from core import api  # noqa: E402
 from core.scanner import Scanner  # noqa: E402
 from core.state import Manager  # noqa: E402
 
-CONFIG_PATH = BASE / "config.json"
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 
 
 def load_config() -> dict:
@@ -43,24 +43,28 @@ def load_config() -> dict:
     return defaults
 
 
-def _setup_host_logging(log_root: Path) -> None:
-    """宿主 stdout/err 落盘。避免 Start-Process 重定向造成的句柄跨层绑定问题。"""
-    log_root.mkdir(parents=True, exist_ok=True)
-    sys.stdout = open(log_root / "host.out.log", "a", buffering=1,
+def _setup_host_logging(base: Path) -> None:
+    """宿主自身日志遵循 services 通用约定：run\\service.log / service.err.log。
+    只记录 my-service 的启停事件（监听地址/autostart 记录/崩溃栈），
+    被管理服务的输出写它们各自的 run\\ 目录（见 runner.start_process）。"""
+    rdir = base / "run"
+    rdir.mkdir(parents=True, exist_ok=True)
+    sys.stdout = open(rdir / "service.log", "a", buffering=1,
                       encoding="utf-8", errors="replace")
-    sys.stderr = open(log_root / "host.err.log", "a", buffering=1,
+    sys.stderr = open(rdir / "service.err.log", "a", buffering=1,
                       encoding="utf-8", errors="replace")
 
 
 def main() -> int:
     cfg = load_config()
-    base = Path(__file__).resolve().parent
+    # base = my-service 根（src/ 的上一级）；宿主自身日志只记录自己的启停事件
+    base = Path(__file__).resolve().parents[1]
     services_root = (base / cfg["services_root"]).resolve()
-    log_root = (base / cfg["log_dir"]).resolve()
-    _setup_host_logging(log_root)
+    _setup_host_logging(base)
 
-    scanner = Scanner(services_root, cfg.get("ignore_dirs", []), cfg["log_dir"])
-    manager = Manager(scanner, log_root, int(cfg["log_max_bytes"]))
+    scanner = Scanner(services_root, cfg.get("ignore_dirs", []),
+                      exclude_paths=[base])
+    manager = Manager(scanner)
 
     threading.Thread(target=manager.monitor_loop, daemon=True,
                      name="monitor").start()

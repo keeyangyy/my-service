@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 
@@ -38,6 +37,7 @@ class Spec:
         self.health_timeout: float = 20.0
         self.env: dict[str, str] = {}
         self.autostart: bool = False
+        self.url: str | None = None           # 服务自带网页，dashboard 一键跳转
         self.stop_script: str | None = None
         self.pidfile: str | None = None       # detached 模式预留
 
@@ -67,6 +67,9 @@ class Spec:
 
         if isinstance(data.get("env"), dict):
             self.env = {str(k): str(v) for k, v in data["env"].items()}
+        u = data.get("url")
+        if isinstance(u, str) and u.strip():
+            self.url = u.strip()
         if isinstance(data.get("stop_script"), str) and data["stop_script"]:
             self.stop_script = data["stop_script"]
         if isinstance(data.get("pidfile"), str) and data["pidfile"]:
@@ -122,13 +125,16 @@ class Spec:
 
 
 class Scanner:
-    """按 config 定期重扫磁盘。服务注册 = 放一个带 manifest.json 的文件夹。"""
+    """按 config 定期重扫磁盘。服务注册 = 放一个带 manifest.json 的文件夹。
 
-    def __init__(self, root: Path, ignore_dirs: list[str], log_dir_name: str = "logs"):
+    exclude_paths: 绝对目录集合（如 my-service 自身根），其内一律不算服务。
+    """
+
+    def __init__(self, root: Path, ignore_dirs: list[str] | None = None,
+                 exclude_paths: list[Path] | None = None):
         self.root = root.resolve()
-        self.ignore_dirs = set(ignore_dirs) | {log_dir_name}
-        # my-service 自身永远被忽略（无论文件夹叫什么）
-        self.self_dir = Path(__file__).resolve().parent.parent
+        self.ignore_dirs = set(ignore_dirs or [])
+        self.exclude_paths = {Path(p).resolve() for p in (exclude_paths or [])}
 
     def scan(self) -> dict[str, Spec]:
         specs: dict[str, Spec] = {}
@@ -137,9 +143,11 @@ class Scanner:
         for child in sorted(self.root.iterdir()):
             if not child.is_dir():
                 continue
+            resolved = child.resolve()
+            if any(resolved == ex or ex in resolved.parents
+                   for ex in self.exclude_paths):
+                continue  # 宿主自身等被显式排除的路径
             if child.name in self.ignore_dirs or child.name.startswith("."):
-                continue
-            if self.self_dir and child.resolve() == self.self_dir:
                 continue
             manifest = child / "manifest.json"
             if not manifest.is_file():

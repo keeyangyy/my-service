@@ -216,6 +216,17 @@ function renderCard(svc, card) {
     chip.textContent = "端口 " + svc.port;
     main.appendChild(chip);
   }
+  // 服务自带网页 → ↗ 一键跳转
+  if (svc.url) {
+    const link = document.createElement("a");
+    link.className = "chip url-link";
+    link.href = svc.url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = "打开该服务的网页";
+    link.textContent = "↗ 打开";
+    main.appendChild(link);
+  }
   if (uptime) {
     const up = document.createElement("span");
     up.className = "uptime";

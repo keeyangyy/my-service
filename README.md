@@ -1,39 +1,51 @@
 # my-service
 
-局域网/本机通用服务管理框架 —— 早期内部版本 的整体升级版。
+本机服务管理框架 —— 管理其他服务的启停、自启与跳转。早期内部版本 的整体升级版。
 
-## 定位与铁律
+## 定位（务必理解的三条铁律）
 
-- **my-service 只是框架**：本目录永不出现任何服务的业务源码。
-- **每服务一个独立文件夹**：放在 `C:\path\to\<名字>\`，含一份 `manifest.json` 即完成注册。
-- 框架与服务之间唯一的认知通道 = `manifest.json` 协议。
+1. **my-service 只是框架**：`src\` 内永不出现任何服务的业务源码。
+2. **注册 = opt-in 声明**：服务文件夹里放一份 `manifest.json` 才会被纳管；
+   没有该文件的服务（可以有任意多个）与 my-service 完全无关，互不干扰。
+3. **宿主不自管理**：my-service 自身不写 manifest（避免自举悖论），它的
+   启停只归 `run\start.ps1|stop.ps1` 与计划任务 `StartMyService` 管，
+   Dashboard 列表中永远看不到它自己。
 
-## 架构
+## 目录结构
 
 ```
-my-service\            # 宿主框架（本目录）
-├─ server.py           # 组装入口（python 直跑或经 run.ps1）
-├─ core\
-│   ├─ scanner.py      # 扫描 services_root 下 */manifest.json → Spec
-│   ├─ runner.py       # 进程原子操作：构建命令/启动/树杀/健康检查
-│   ├─ state.py        # Manager：状态机 + monitor 秒级观测收敛
-│   └─ api.py          # REST + web 静态托管
-├─ web\                # Dashboard 一行一服务（原生 JS 零依赖）
-├─ run.ps1             # 宿主启停壳 start|stop|status|restart
-├─ svc.ps1             # 服务管理 CLI 薄壳（转调 REST API）
-└─ install/uninstall_autostart.ps1   # 自启注册（Logon|Boot|Nssm 参数化）
+my-service\
+├─ README.md                  # 本文档
+├─ config.json                # host/port/services_root 等
+├─ install_autostart.ps1      # 注册登录自启计划任务（一次性）
+├─ uninstall_autostart.ps1    # 注销自启
+├─ svc.ps1                    # 服务管理 CLI 薄壳（转调 REST API）
+├─ run\                       # ★ 用户唯一入口（遵循 services 通用约定）
+│   ├─ start.ps1 / stop.ps1 / restart.ps1
+│   ├─ service.log / service.err.log    # 宿主自身日志（只有启停事件）
+│   └─ service.pid
+└─ src\                       # 全部实现细节
+    ├─ server.py              # 组装入口
+    ├─ ctl.ps1                # 内部引擎（run\ 三壳的底层，勿直接调用）
+    ├─ core\
+    │   ├─ scanner.py         # 扫描 services_root 下 */manifest.json
+    │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查
+    │   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛
+    │   └─ api.py             # REST API + web 静态托管
+    └─ web\                   # Dashboard（原生 JS 零依赖）
 ```
 
-状态机：`stopped → starting → running → stopping → stopped`，异常一律 `failed(附原因)`。
-monitor 线程每秒用健康检查校正观测态，超时强制收敛——杜绝 早期内部版本 曾见的
-"starting 标记永久残留"问题。
+## 状态机
+
+`stopped → starting → running → stopping → stopped`，任何异常进 `failed(附原因)`。
+monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝"starting 永久残留"类问题。
 
 ## manifest.json 协议
 
 ```jsonc
 {
   "name": "test_service1",
-  "enabled": true,                 // false 时不出现在编排里
+  "enabled": true,                 // false = 暂时停用（不参与编排）
   "display": "测试服务一",
   "description": "py 入口示例",
   "entry": "start.py",             // 支持 .py/.ps1/.cmd/.bat/.exe
@@ -42,36 +54,32 @@ monitor 线程每秒用健康检查校正观测态，超时强制收敛——杜
   "mode": "managed",               // managed=宿主托管进程树 | detached=v2 预留
   "health": { "type": "port", "port": 19001, "timeout_sec": 20 },
                                    // type: port|http|process|none
+  "url": "http://127.0.0.1:19001", // 可选：服务自带网页，Dashboard 一键 ↗
   "env": {},
   "autostart": true                // 权威值存此，前端开关回写这里
 }
 ```
 
-停止模式：`managed` 直接 taskkill /T /F 收割整棵进程树；
-manifest 可另配 `stop_script`（如 `stop.cmd`），stop 时先执行它再收树。
-日志由宿主统一接管：`my-service\logs\<svc>\service.log`。
+停止方式：默认 `taskkill /T /F` 整树收割；可另配 `stop_script`
+先执行再收树。**每个服务的 stdout/stderr 写它自己的
+`<服务文件夹>\run\service.log[.err]`**（遵循 services 总目录通用约定），
+Dashboard 日志窗照常尾读；宿主自身事件在 `my-service\run\service.log`。
 
 ## 用户操作接口
 
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/日志窗/自启开关） |
-| REST API | `GET /api/services`、`GET /api/logs/{svc}?n=`、`POST /api/services/{svc}/start\|stop\|restart`、`POST /api/config/{svc}`、`GET /health` |
-| CLI | `.\run.ps1 start|stop|status|restart`（宿主）；`.\svc.ps1 ls|log <n>|start|stop|restart <name>`（服务） |
-| 注册/注销 | 新增 = 放带 manifest.json 的文件夹；注销 = 删除或 `"enabled": false` |
-| 自启 | `install_autostart.ps1`（默认登录触发；`-Mode Boot/Nssm` 可切换） |
-
-## 配置
-
-`config.json`：`host`(默认 127.0.0.1) / `port`(1236) / `services_root`(..)
-/ `ignore_dirs` / `log_dir` / `log_max_bytes`。
+| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转/日志窗/自启开关） |
+| 启动/停止宿主 | `.\run\start.ps1`、`.\run\stop.ps1`（+ restart；幂等，重复执行无害） |
+| 服务 CLI | `.\svc.ps1 ls\|log <n>\|start\|stop\|restart <name>` |
+| REST API | `GET /api/services`、`GET /api/logs/{svc}?n=`、`GET /api/host-log?n=`、`POST /api/services/{svc}/start\|stop\|restart`、`POST /api/config/{svc}` |
+| 注册服务 | 在 `C:\path\to\<名>\` 放带 manifest.json 的文件夹；注销 = 删文件或 `"enabled": false` |
 
 ## 快速上手
 
 ```powershell
 cd C:\path\to\my-service
-.\run.ps1 start                      # 起宿主
+.\run\start.ps1                      # 起宿主
 start http://127.0.0.1:1236          # 打开面板
-.\svc.ps1 ls                         # 命令行看一眼
-.\install_autostart.ps1              # 登录自启（一次性）
+.\install_autostart.ps1              # 登录自启（一次性，需 gsudo 提权）
 ```
