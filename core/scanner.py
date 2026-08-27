@@ -128,7 +128,7 @@ class Scanner:
         self.root = root.resolve()
         self.ignore_dirs = set(ignore_dirs) | {log_dir_name}
         # my-service 自身永远被忽略（无论文件夹叫什么）
-        self.self_dir = Path(sys.argv[0]).resolve().parent.parent if len(sys.argv) > 0 else None
+        self.self_dir = Path(__file__).resolve().parent.parent
 
     def scan(self) -> dict[str, Spec]:
         specs: dict[str, Spec] = {}

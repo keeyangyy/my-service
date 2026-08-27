@@ -50,10 +50,16 @@ class Manager:
                             "error": None, "fail_at": None,
                         }
             for gone in [n for n in self.state if n not in specs]:
-                # manifest 被删：若进程还在跑先收割，再移除条目
+                # manifest 被删：无论进程是否存活都摘除条目并回收日志句柄
                 h = self.handles.pop(gone, None)
-                if h and h.popen.poll() is None:
-                    runner.stop_managed(h)
+                if h:
+                    if h.popen.poll() is None:
+                        runner.stop_managed(h)   # 内部 finally 会 close fh
+                    else:
+                        try:
+                            h.log_fh.close()
+                        except OSError:
+                            pass
                 del self.state[gone]
             # 端口冲突检查（跨服务）
             seen: dict[int, str] = {}
@@ -123,45 +129,46 @@ class Manager:
             return True, "starting"
 
     def stop(self, name: str) -> tuple[bool, str]:
+        # 阶段一（持锁）：标记 stopping 并把 handle 从登记表摘除——
+        # 此后 monitor 对该服务的 starting/running 分支因 handle 缺席而不再干预
         with self.lock:
             spec = self.specs.get(name)
             st = self.state.get(name)
-            handle = self.handles.get(name)
+            handle = self.handles.pop(name, None)
             if spec is None or st is None:
                 return False, f"未知服务 {name}"
-            if st["status"] in ("stopped", "failed") and handle is None:
-                st.update(status="stopped", error=None)
+            if (st["status"] in ("stopped", "failed", "invalid")) and handle is None:
+                if not st["status"].startswith("invalid"):
+                    st.update(status="stopped", error=None, started_at=None)
                 return True, "已停止"
             self._user_stopping.add(name)
             self._pending_stop[name] = time.time()
             st["status"] = "stopping"
-        ok, msg = self._do_stop(name)
+
+        # 阶段二（锁外）：阻塞式收割进程，不占用 RLock 妨碍其他请求
+        ok, msg = True, "stopped"
+        try:
+            if spec.mode == "managed":
+                if handle:
+                    runner.stop_managed(handle)
+            elif spec.stop_script_abs:
+                runner.run_stop_script(spec)
+                if handle:
+                    runner.stop_managed(handle)
+        except Exception as exc:  # noqa: BLE001
+            ok, msg = False, str(exc)
+
+        # 阶段三（持锁）：收敛终态；服务可能已被 refresh 移除，判空防护
         with self.lock:
             self._user_stopping.discard(name)
             self._pending_stop.pop(name, None)
-            st = self.state[name]
-            st["status"] = "stopped"
-            st["started_at"] = None
+            st2 = self.state.get(name)
+            if st2 is not None and not ok and msg:
+                st2["error"] = f"停止异常: {msg}"
+            if st2 is not None:
+                st2["status"] = "stopped"
+                st2["started_at"] = None
         return ok, msg
-
-    def _do_stop(self, name: str) -> tuple[bool, str]:
-        try:
-            spec = self.specs[name]
-            handle = self.handles.pop(name, None)
-            try:
-                if spec.mode == "managed":
-                    if handle:
-                        runner.stop_managed(handle)
-                elif spec.stop_script_abs:
-                    runner.run_stop_script(spec)
-                    if handle:
-                        runner.stop_managed(handle)
-                return True, "stopped"
-            except Exception as exc:  # noqa: BLE001
-                self.state[name]["error"] = f"停止异常: {exc}"
-                return False, str(exc)
-        finally:
-            pass
 
     def restart(self, name: str) -> tuple[bool, str]:
         ok, msg = self.stop(name)
@@ -180,8 +187,16 @@ class Manager:
                 return False, f"读 manifest 失败: {exc}"
             raw["autostart"] = bool(value)
             try:
+                import os
+                import tempfile
+
                 text = json.dumps(raw, ensure_ascii=False, indent=2)
-                spec.manifest_path.write_text(text + "\n", encoding="utf-8")
+                # 先写临时文件再原子替换，避免中途崩溃损坏 manifest
+                fd, tmp = tempfile.mkstemp(dir=str(spec.manifest_path.parent),
+                                           suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(text + "\n")
+                os.replace(tmp, spec.manifest_path)
             except Exception as exc:  # noqa: BLE001
                 return False, f"写 manifest 失败: {exc}"
             spec.autostart = bool(value)

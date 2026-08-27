@@ -89,8 +89,11 @@ def make_handler(manager):  # noqa: ANN001 - manager: core.state.Manager
 
         # ---------------------------------------------------------- POST
         def do_POST(self):  # noqa: N802
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                return self._json(400, {"ok": False, "error": "Content-Length 非法"})
+            raw = self.rfile.read(length) if length > 0 else b""
             try:
                 body = json.loads(raw.decode("utf-8")) if raw else {}
             except Exception:  # noqa: BLE001
