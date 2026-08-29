@@ -263,6 +263,14 @@ class Manager:
                                   error=f"健康检查超时({timeout:.0f}s){('，' + why) if why else ''}",
                                   fail_at=now)
 
+                elif status == "failed" and spec.mode == "detached":
+                    # 假失败自愈：detached 型服务被外部拉起/升级慢未就绪时，
+                    # 只要健康探测通过就自动归位 running（现实中已活着就别让用户手动重启）
+                    if spec.health_type in ("port", "http"):
+                        alive, _w = runner.check_health(spec, None)
+                        if alive:
+                            st.update(status="running", started_at=now, error=None)
+
                 elif status == "running":
                     if spec.mode == "detached":
                         # 点火器型：运行中只信健康复检；失联=被外部停止
