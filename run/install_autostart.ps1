@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $run = $PSScriptRoot                       # = my-service\run
 $base = Split-Path $run -Parent            # = my-service
 $TaskName = "StartMyService"
-$runPs = Join-Path $run "start.ps1"
+$runPs = Join-Path $base "entry\start.ps1"
 
 switch ($Mode.ToLower()) {
     "logon" {
