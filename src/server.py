@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """my-service 宿主入口。
 
-    python src/server.py        # 前台运行
-    entry\start.ps1             # 后台托管（推荐）
+    python src/server.py            # 前台运行
+    entry\\start.ps1               # 后台托管（推荐）
 
 装配顺序：config.json → Scanner → Manager(含 monitor 线程) → HTTP API。
 自启动：autostart=true 且 enabled 的服务在宿主起来后自动 start。
