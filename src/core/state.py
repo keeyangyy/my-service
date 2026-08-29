@@ -110,12 +110,21 @@ class Manager:
             if spec is None or st is None:
                 return False, f"未知服务 {name}"
             if not spec.valid:
-                return False, f"manifest 无效: {spec.error}"
+                return False, f"注册条无效: {spec.error}"
             if not spec.enabled:
                 return False, "服务已被 enabled:false 停用"
             cur = st["status"]
             if cur in ("running", "starting"):
                 return True, f"已在 {cur}"
+            # 假健康防护：冷启动（stopped/failed）前确认健康目标未被占用。
+            # 否则框架的健康探测会打到残留/外部实例身上（some-service 实弹教训）。
+            if cur in ("stopped", "failed") and spec.health_type in ("port", "http"):
+                alive, _why = runner.check_health(spec, None)
+                if alive:
+                    st.update(status="failed",
+                              error="健康目标已被占用（疑似残留/外部实例），请先外部停止再启动",
+                              fail_at=time.time())
+                    return False, "健康目标已被占用（疑似残留/外部实例），请先外部停止再启动"
             try:
                 handle = runner.start_process(spec)
             except Exception as exc:  # noqa: BLE001
@@ -187,23 +196,23 @@ class Manager:
             if spec is None:
                 return False, f"未知服务 {name}"
             try:
-                raw = json.loads(spec.manifest_path.read_text(encoding="utf-8-sig"))
+                raw = json.loads(spec.reg_path.read_text(encoding="utf-8-sig"))
             except Exception as exc:  # noqa: BLE001
-                return False, f"读 manifest 失败: {exc}"
+                return False, f"读注册条失败: {exc}"
             raw["autostart"] = bool(value)
             try:
                 import os
                 import tempfile
 
                 text = json.dumps(raw, ensure_ascii=False, indent=2)
-                # 先写临时文件再原子替换，避免中途崩溃损坏 manifest
-                fd, tmp = tempfile.mkstemp(dir=str(spec.manifest_path.parent),
+                # 先写临时文件再原子替换，避免中途崩溃损坏注册条
+                fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
                                            suffix=".tmp")
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(text + "\n")
-                os.replace(tmp, spec.manifest_path)
+                os.replace(tmp, spec.reg_path)
             except Exception as exc:  # noqa: BLE001
-                return False, f"写 manifest 失败: {exc}"
+                return False, f"写注册条失败: {exc}"
             spec.autostart = bool(value)
             return True, "ok"
 

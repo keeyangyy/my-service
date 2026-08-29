@@ -62,7 +62,7 @@ class ProcessHandle:
 # ---------------------------------------------------------------- 启动/停止
 def logs_dir(spec: Spec) -> Path:
     """该服务的运行时产物目录（两档模型约定）：logs\\service.log / service.err.log / service.pid"""
-    return spec.manifest_path.parent / "logs"
+    return spec.path / "logs"
 
 
 def _tail_path(p: Path):

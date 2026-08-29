@@ -171,8 +171,8 @@ def read_log_tail(manager, name: str, n: int) -> dict | None:  # noqa: ANN001
 
 def read_host_log(manager, n: int, rdir: Path | None = None) -> dict:  # noqa: ANN001
     """宿主自身日志：<my-service>/logs/service.log —— 只含启停事件。"""
-    if rdir is None:  # 兜底：controller 未注入时按约定路径推断
-        rdir = Path(manager.scanner.root) / "my-service" / "logs"
+    if rdir is None:  # 兜底：controller 未注入时按 reg 目录推断宿主根
+        rdir = Path(manager.scanner.reg_dir).parent / "logs"
     return _tail_file(rdir / "service.log", "(host)", n)
 
 

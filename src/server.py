@@ -73,10 +73,7 @@ def load_config() -> dict:
     defaults = {
         "host": "127.0.0.1",
         "port": 1236,
-        "services_root": "..",
-        "ignore_dirs": [],
-        "log_dir": "logs",
-        "log_max_bytes": 20_000_000,
+        "reg_dir": "reg",
     }
     if CONFIG_PATH.is_file():
         try:
@@ -104,11 +101,8 @@ def main() -> int:
     cfg = load_config()
     # base = my-service 根（src/ 的上一级）；宿主自身日志只记录自己的启停事件
     base = Path(__file__).resolve().parents[1]
-    services_root = (base / cfg["services_root"]).resolve()
     _setup_host_logging(base)
-
-    scanner = Scanner(services_root, cfg.get("ignore_dirs", []),
-                      exclude_paths=[base])
+    scanner = Scanner((base / cfg["reg_dir"]).resolve())
     manager = Manager(scanner)
     controller = HostController(manager, base / "logs")
 
@@ -121,7 +115,7 @@ def main() -> int:
                        if s.valid and s.enabled and s.autostart]
     print(f"my-service v{VERSION} listening on http://{cfg['host']}:{cfg['port']}"
           f"  (pid={os.getpid()})", flush=True)
-    print(f"services_root = {services_root}  |  发现服务: "
+    print(f"reg = {scanner.reg_dir}  |  注册服务: "
           f"{', '.join(sorted(manager.specs)) or '(无)'}", flush=True)
 
     # 延迟半拍先让 HTTP 就绪，再按 manifest 声明自动拉起
