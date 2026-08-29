@@ -1,4 +1,5 @@
 # 忽略运行产物与缓存
 logs/
+tmp/
 __pycache__/
 *.pyc

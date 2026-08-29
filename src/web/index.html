@@ -3,22 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>my-service 服务管理面板</title>
+  <title>my-service 控制台</title>
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
 </head>
 <body>
   <header class="app-header">
-    <div class="title-row">
-      <h1 class="app-title">my-service</h1>
-      <span id="conn-badge" class="conn-badge" hidden>连接断开</span>
+    <div class="brand">
+      <span class="logo">M</span>
+      <h1 class="title">my-service <span class="title-sub">控制台</span></h1>
     </div>
-    <p class="app-subtitle">http://127.0.0.1:1236</p>
+    <div class="conn">
+      <span class="conn-dot" id="conn-dot"></span>
+      <span class="conn-text" id="conn-text">— 服务</span>
+      <button class="btn-refresh" id="btn-refresh" title="刷新" aria-label="刷新">↻</button>
+      <span class="conn-badge" id="conn-badge" hidden>连接断开</span>
+    </div>
   </header>
 
   <main class="app-main">
     <div id="empty-state" class="empty-state" hidden>
-      尚无服务——把带 manifest.json 的文件夹放进 C:\path\to 即可
+      尚无服务 —— 在 C:\path\to\&lt;名字&gt;\ 放一份 manifest.json 即可注册
     </div>
     <div id="service-list" class="service-list"></div>
   </main>
