@@ -10,8 +10,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent
@@ -22,6 +26,47 @@ from core.scanner import Scanner  # noqa: E402
 from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+SERVER_PY = SRC_DIR / "server.py"
+VERSION = "1.0"
+
+_DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+
+class HostController:
+    """宿主自身生命周期控制器——独立于服务列表的专属通道（规避自举悖论）。"""
+
+    def __init__(self, manager: Manager, rdir: Path):
+        self.manager = manager
+        self.rdir = rdir
+        self.started = time.time()
+        self.httpd = None   # serve_forever 前由 main 注入
+
+    def meta(self) -> dict:
+        return {
+            "ok": True, "pid": os.getpid(), "version": VERSION,
+            "uptime_sec": int(time.time() - self.started),
+            "started_at": datetime.fromtimestamp(
+                self.started, tz=timezone.utc).isoformat(),
+        }
+
+    def schedule(self, action: str) -> None:
+        threading.Timer(0.5, self._run, args=(action,)).start()
+
+    def _spawn_replacement(self) -> None:
+        subprocess.Popen(
+            [sys.executable, str(SERVER_PY)], cwd=str(SRC_DIR),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=_DETACH, close_fds=True,
+        )
+
+    def _run(self, action: str) -> None:
+        try:
+            if action == "restart":
+                self._spawn_replacement()   # 新进程会重试绑定，等本进程释放端口
+            self.manager.stop_all()          # 收割所有被管子服务
+        except Exception:  # noqa: BLE001
+            pass
+        os._exit(0)                          # 立即退出，释放 1236
 
 
 def load_config() -> dict:
@@ -65,20 +110,22 @@ def main() -> int:
     scanner = Scanner(services_root, cfg.get("ignore_dirs", []),
                       exclude_paths=[base])
     manager = Manager(scanner)
+    controller = HostController(manager, base / "run")
 
     threading.Thread(target=manager.monitor_loop, daemon=True,
                      name="monitor").start()
 
-    httpd = api.serve(manager, cfg["host"], int(cfg["port"]))
+    httpd = api.serve(manager, cfg["host"], int(cfg["port"]), controller=controller)
+    controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]
-    print(f"my-service listening on http://{cfg['host']}:{cfg['port']}", flush=True)
+    print(f"my-service v{VERSION} listening on http://{cfg['host']}:{cfg['port']}"
+          f"  (pid={os.getpid()})", flush=True)
     print(f"services_root = {services_root}  |  发现服务: "
           f"{', '.join(sorted(manager.specs)) or '(无)'}", flush=True)
 
     # 延迟半拍先让 HTTP 就绪，再按 manifest 声明自动拉起
     def _auto_start():
-        import time
         time.sleep(0.5)
         for name in sorted(autostart_names):
             ok, msg = manager.start(name)
@@ -90,8 +137,7 @@ def main() -> int:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nCtrl+C 收到，正在收割子进程…", flush=True)
-        for name in list(manager.handles):
-            manager.stop(name)
+        manager.stop_all()
     return 0
 
 

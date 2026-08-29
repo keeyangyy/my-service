@@ -1,14 +1,15 @@
-# my-service 开机自启安装脚本
+# my-service 开机自启安装脚本（位于 run\）
 # 用法:
-#   .\install_autostart.ps1                # 默认 Logon 模式（用户登录触发，无需提权）
-#   .\install_autostart.ps1 -Mode Boot     # 系统启动触发(SYSTEM 账户, 需 gsudo 提权)
-#   .\install_autostart.ps1 -Mode Nssm     # 注册为 Windows 服务(需自备 nssm.exe)
+#   .\run\install_autostart.ps1                # 默认 Logon 模式（登录触发）
+#   .\run\install_autostart.ps1 -Mode Boot     # 系统启动触发(SYSTEM, 需提权)
+#   .\run\install_autostart.ps1 -Mode Nssm     # 注册为 Windows 服务(需 nssm.exe)
 param([string]$Mode = "Logon")
 
 $ErrorActionPreference = "Stop"
-$here = $PSScriptRoot
+$run = $PSScriptRoot                       # = my-service\run
+$base = Split-Path $run -Parent            # = my-service
 $TaskName = "StartMyService"
-$runPs = Join-Path $here "run\start.ps1"
+$runPs = Join-Path $run "start.ps1"
 
 switch ($Mode.ToLower()) {
     "logon" {
@@ -48,8 +49,8 @@ switch ($Mode.ToLower()) {
     }
     "nssm" {
         Write-Host "Nssm 模式: 请先将 nssm.exe 放入 PATH 或本目录，再运行:"
-        Write-Host "  nssm install MyService $((Get-Command python.exe).Source) `"$(Join-Path $here 'server.py')`""
-        Write-Host "  nssm set MyService AppDirectory `"$here`""
+        Write-Host "  nssm install MyService $((Get-Command python.exe).Source) `"$(Join-Path $base 'src\server.py')`""
+        Write-Host "  nssm set MyService AppDirectory `"$base\src`""
         exit 1
     }
     default { Write-Host "未知 Mode: $Mode (可用 Logon|Boot|Nssm)"; exit 1 }

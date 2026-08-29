@@ -23,7 +23,7 @@ MIME = {
 }
 
 
-def make_handler(manager):  # noqa: ANN001 - manager: core.state.Manager
+def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None
     class Handler(BaseHTTPRequestHandler):
         server_version = "my-service/1.0"
         protocol_version = "HTTP/1.1"
@@ -61,6 +61,11 @@ def make_handler(manager):  # noqa: ANN001 - manager: core.state.Manager
             if path == "/health":
                 return self._json(200, {"ok": True})
 
+            if path == "/api/host":
+                if host is None:
+                    return self._json(200, {"ok": True})
+                return self._json(200, host.meta())
+
             if path == "/" or path == "/index.html":
                 return self._static("index.html")
 
@@ -93,7 +98,8 @@ def make_handler(manager):  # noqa: ANN001 - manager: core.state.Manager
                     n = max(1, min(1000, int(qs.get("n", ["200"])[0])))
                 except ValueError:
                     n = 200
-                return self._json(200, read_host_log(manager, n))
+                return self._json(200, read_host_log(
+                    manager, n, getattr(host, "rdir", None)))
 
             rest = path.lstrip("/")
             if rest and not rest.startswith("api/"):
@@ -131,6 +137,16 @@ def make_handler(manager):  # noqa: ANN001 - manager: core.state.Manager
                 return self._json(202 if ok else 500,
                                   {"ok": ok, "message": msg, "status": status_now})
 
+            # POST /api/host/{stop|restart}  —— 宿主自身生命周期（专属通道，不进服务列表）
+            if len(parts) == 3 and parts[0] == "api" and parts[1] == "host":
+                action = parts[2]
+                if host is None:
+                    return self._json(501, {"ok": False, "error": "宿主自管理不可用"})
+                if action not in ("stop", "restart"):
+                    return self._json(404, {"ok": False, "error": f"未知宿主动作 {action}"})
+                host.schedule(action)   # 延迟执行，先让本响应发出
+                return self._json(202, {"ok": True, "action": action})
+
             # POST /api/config/{name}  {"autostart": bool}
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "config":
                 name = parts[2]
@@ -153,9 +169,10 @@ def read_log_tail(manager, name: str, n: int) -> dict | None:  # noqa: ANN001
     return _tail_file(runner.run_dir(spec) / "service.log", name, n)
 
 
-def read_host_log(manager, n: int) -> dict:  # noqa: ANN001
-    """宿主自身日志：<services_root>/my-service/run/service.log —— 只含启停事件。"""
-    rdir = Path(manager.scanner.root) / "my-service" / "run"
+def read_host_log(manager, n: int, rdir: Path | None = None) -> dict:  # noqa: ANN001
+    """宿主自身日志：<my-service>/run/service.log —— 只含启停事件。"""
+    if rdir is None:  # 兜底：controller 未注入时按约定路径推断
+        rdir = Path(manager.scanner.root) / "my-service" / "run"
     return _tail_file(rdir / "service.log", "(host)", n)
 
 
@@ -175,8 +192,20 @@ def _tail_file(path: Path, name: str, n: int) -> dict:
     return {"name": name, "lines": lines}
 
 
-def serve(manager, host: str, port: int) -> ThreadingHTTPServer:
-    handler = make_handler(manager)
-    httpd = ThreadingHTTPServer((host, port), handler)
-    httpd.daemon_threads = True
-    return httpd
+def serve(manager, bind_host: str, port: int, controller=None):  # noqa: ANN001
+    """绑定监听。controller 为 HostController（提供 meta/schedule）。
+
+    端口重试：restart 时新宿主会在旧进程释放 1236 前反复重试 bind，实现无竞态交接。
+    """
+    import time
+    handler = make_handler(manager, controller)
+    last_err: OSError | None = None
+    for _ in range(40):
+        try:
+            httpd = ThreadingHTTPServer((bind_host, port), handler)
+            httpd.daemon_threads = True
+            return httpd
+        except OSError as exc:
+            last_err = exc
+            time.sleep(0.75)
+    raise last_err  # 重试耗尽仍失败

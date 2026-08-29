@@ -173,6 +173,14 @@ class Manager:
             return ok, msg
         return self.start(name)
 
+    def stop_all(self) -> None:
+        """收割当前所有托管中的服务（宿主退出/重启前调用）。"""
+        for name in list(self.handles.keys()):
+            try:
+                self.stop(name)
+            except Exception:  # noqa: BLE001
+                pass
+
     def toggle_autostart(self, name: str, value: bool) -> tuple[bool, str]:
         with self.lock:
             spec = self.specs.get(name)

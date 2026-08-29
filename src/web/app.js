@@ -24,7 +24,10 @@
     text: document.getElementById("conn-text"),
     badge: document.getElementById("conn-badge"),
     toasts: document.getElementById("toast-container"),
-    refresh: document.getElementById("btn-refresh")
+    refresh: document.getElementById("btn-refresh"),
+    hostUptime: document.getElementById("host-uptime"),
+    hostRestart: document.getElementById("btn-host-restart"),
+    hostStop: document.getElementById("btn-host-stop")
   };
 
   // 状态：同一时刻只允许一张卡片展开日志
@@ -34,6 +37,8 @@
   var pollTimer = null;
   var connected = true;
   var dragState = null;
+  var hostAction = null;   // null | "restart" | "stop"：宿主自操作进行中
+  var hostPid = 0;         // 用于判定 restart 后是否已换新进程
 
   // ===== 工具函数 =====
   function fmtUptime(sec) {
@@ -110,6 +115,12 @@
     if (!res.ok) throw new Error("HTTP " + res.status);
     var data = await res.json();
     return Array.isArray(data.services) ? data.services : [];
+  }
+
+  async function fetchHost() {
+    var res = await api("GET", "/api/host");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
   }
 
   async function fetchLogs(name) {
@@ -494,7 +505,7 @@
   }
 
   // ===== 渲染 + 轮询 =====
-  async function render(data) {
+  async function render(data, host) {
     var names = data.map(function (s) { return s.name; });
     var running = data.filter(function (s) { return s.status === "running"; }).length;
 
@@ -502,6 +513,18 @@
     els.list.hidden = data.length === 0;
     els.text.textContent = running + "/" + data.length + " 运行中";
     els.text.classList.remove("off");
+
+    // 宿主自身运行时长（区别于单个服务的 uptime）
+    if (host && typeof host.uptime_sec === "number") {
+      els.hostUptime.textContent = "宿主运行 " + fmtUptime(host.uptime_sec);
+      els.hostUptime.title = "my-service 自身已运行 " + fmtUptime(host.uptime_sec)
+        + "（pid " + host.pid + "，v" + host.version + "）";
+    }
+    var pending = data.some(function (s) {
+      return s.status === "starting" || s.status === "stopping";
+    });
+    els.hostRestart.disabled = pending || !!hostAction;
+    els.hostStop.disabled = pending || !!hostAction;
 
     // 移除已不存在的服务卡片
     Array.prototype.slice.call(els.list.children).forEach(function (card) {
@@ -538,10 +561,11 @@
   async function tick() {
     if (document.hidden) return;
     try {
-      var data = await fetchServices();
-      await render(data);
+      var pair = await Promise.all([fetchServices(), fetchHost()]);
+      hostPid = pair[1].pid || hostPid;
+      await render(pair[0], pair[1]);
     } catch (e) {
-      // 连接错误由 api() 处理徽标与断连
+      // 连接错误由 api() 处理徽标与断连；宿主自操作的恢复由专用监视循环处理
     }
   }
 
@@ -554,16 +578,74 @@
     pollTimer = setTimeout(tick, fast ? POLL_FAST : POLL_SLOW);
   }
 
+  // ===== 宿主自身操作（重启/停止）——专属通道 =====
+  async function doHostAction(action) {
+    if (hostAction) return;
+    var tip = action === "restart"
+      ? "重启 my-service 会短暂中断面板连接，并重启全部被管服务。\n确认重启？"
+      : "停止 my-service 会停止全部被管服务，且不会自动重启\n（需手动运行 run\\start.ps1 才能恢复）。\n确认停止？";
+    if (!window.confirm(tip)) return;
+
+    var oldPid = hostPid;
+    hostAction = action;
+    els.hostRestart.disabled = true;
+    els.hostStop.disabled = true;
+    els.refresh.disabled = true;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    els.text.textContent = action === "restart" ? "正在重启宿主…" : "正在停止宿主…";
+    els.text.classList.remove("off");
+
+    try { await api("POST", "/api/host/" + action); } catch (e) { /* 预期连接会断 */ }
+    watchHostRecovery(oldPid, action);
+  }
+
+  function watchHostRecovery(oldPid, action) {
+    var tries = 0;
+    var iv = setInterval(async function () {
+      tries++;
+      var meta = null;
+      try {
+        var res = await fetch(API_BASE + "/api/host", { cache: "no-store" });
+        if (res.ok) meta = await res.json();
+      } catch (e) { /* 宿主尚未就绪/已停止 */ }
+
+      if (action === "restart") {
+        if (meta && meta.pid && meta.pid !== oldPid) {
+          clearInterval(iv); hostAction = null;
+          toast("宿主已重启 (新 pid " + meta.pid + ")", "ok");
+          setTimeout(function () { location.reload(); }, 700);
+        } else if (tries > 40) {
+          clearInterval(iv); hostAction = null;
+          toast("重启超时，请查看 run\\service.err.log", "err");
+          els.refresh.disabled = false; poll(false);
+        }
+      } else { // stop：一旦宿主无响应即确认已停止
+        if (!meta) {
+          clearInterval(iv); hostAction = null;
+          setConnected(false);
+          els.text.textContent = "宿主已停止 — 运行 run\\start.ps1 重新启动";
+          els.text.classList.add("off");
+        } else if (tries > 20) {
+          clearInterval(iv); hostAction = null;
+          toast("停止状态未知", "err"); els.refresh.disabled = false; poll(false);
+        }
+      }
+    }, 1000);
+  }
+
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) poll(true);
   });
   els.refresh.addEventListener("click", function () { poll(true); });
+  els.hostRestart.addEventListener("click", function () { doHostAction("restart"); });
+  els.hostStop.addEventListener("click", function () { doHostAction("stop"); });
 
   // ===== 初始化 =====
   (async function init() {
     try {
-      var data = await fetchServices();
-      await render(data);
+      var pair = await Promise.all([fetchServices(), fetchHost()]);
+      hostPid = pair[1].pid || 0;
+      await render(pair[0], pair[1]);
     } catch (e) {
       poll(false);
     }

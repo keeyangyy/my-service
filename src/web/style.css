@@ -83,6 +83,29 @@ html, body {
   border-radius: 999px;
 }
 
+/* 宿主运行时长 + 宿主操作按钮 */
+.host-uptime {
+  font-size: 12px; color: var(--muted); white-space: nowrap;
+  padding-left: 10px; border-left: 1px solid var(--border);
+}
+.btn-host {
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12px; font-weight: 500;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.btn-host:active:not(:disabled) { transform: scale(.94); }
+.btn-host:disabled { opacity: .35; cursor: not-allowed; }
+.btn-host-restart { color: var(--blue); border-color: rgba(88,166,255,.4); }
+.btn-host-restart:hover:not(:disabled) { background: rgba(88,166,255,.14); }
+.btn-host-stop { color: var(--red); border-color: rgba(248,81,73,.4); }
+.btn-host-stop:hover:not(:disabled) { background: rgba(248,81,73,.14); }
+
 /* 2. 主容器 */
 .app-main {
   max-width: 840px;
@@ -309,7 +332,12 @@ html, body {
 @media (max-width: 900px) {
   .app-main { padding: 12px; }
 }
+@media (max-width: 860px) {
+  .app-header { flex-wrap: wrap; gap: 10px; }
+  .conn { flex-wrap: wrap; }
+}
 @media (max-width: 640px) {
   .card-inner { flex-direction: column; align-items: stretch; }
   .actions { justify-content: flex-end; }
+  .host-uptime { display: none; }
 }
