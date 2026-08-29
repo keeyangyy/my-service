@@ -122,9 +122,8 @@ html, body {
 .card-inner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
+  gap: 12px;
+  flex-wrap: nowrap;
 }
 
 /* 4. 状态胶囊徽章 */
@@ -163,16 +162,18 @@ html, body {
   100% { opacity: 1; }
 }
 
-/* 5. 信息区 */
+/* 5. 信息区（单行：状态+名称+端口+时长+描述，超长省略） */
 .info {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px 10px;
   min-width: 0;
   flex: 1 1 auto;
 }
-.svc-name { font-size: 16px; font-weight: 600; }
+.svc-name { font-size: 16px; font-weight: 600; white-space: nowrap; flex: 0 0 auto; }
+.ext-arrow { font-size: 13px; color: var(--blue); flex: 0 0 auto; opacity: .75; }
+.card:hover .ext-arrow { opacity: 1; }
 .chip {
   font-size: 11px;
   color: var(--muted);
@@ -182,9 +183,16 @@ html, body {
   border-radius: 6px;
   flex: 0 0 auto;
 }
-.svc-desc, .svc-error { flex-basis: 100%; }
 .svc-desc { font-size: 12px; color: #a0a8b3; }
 .svc-error { font-size: 12px; color: var(--red); }
+.svc-desc, .svc-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
 
 /* 6. 自启滑块 */
 .toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
@@ -208,8 +216,8 @@ html, body {
 .toggle-input:checked ~ .toggle-track .toggle-knob { transform: translateX(16px); }
 .toggle-label { font-size: 12px; color: var(--muted); }
 
-/* 7. 操作按钮 */
-.actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 7. 操作按钮（钉右侧，绝不换行） */
+.actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-left: auto; flex-wrap: nowrap; }
 .op-group { display: inline-flex; align-items: center; gap: 10px; }
 .btn {
   font-family: var(--font);
@@ -234,18 +242,6 @@ html, body {
 .btn-log { color: var(--muted); }
 .btn-log.active { border-color: var(--blue); color: var(--blue); }
 .readonly-note { font-size: 12px; color: var(--muted); }
-
-/* 卡片右上角跳转提示 */
-.hint {
-  position: absolute;
-  top: 10px; right: 14px;
-  font-size: 11px;
-  color: var(--blue);
-  opacity: 0;
-  transition: opacity .2s;
-  pointer-events: none;
-}
-.card.clickable:hover .hint { opacity: 1; }
 
 /* 8. toast 浮层 */
 .toast-container {

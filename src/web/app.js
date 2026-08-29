@@ -212,11 +212,6 @@
   function buildCardSkeleton(card) {
     card.replaceChildren();
 
-    var hint = document.createElement("span");
-    hint.className = "hint";
-    hint.textContent = "↗ 打开服务网页";
-    card.appendChild(hint);
-
     var inner = document.createElement("div");
     inner.className = "card-inner";
 
@@ -323,6 +318,13 @@
     nameEl.className = "svc-name";
     nameEl.textContent = svc.display || svc.name;
     info.appendChild(nameEl);
+    if (url) {
+      var arrow = document.createElement("span");
+      arrow.className = "ext-arrow";
+      arrow.textContent = "\u2197";
+      arrow.title = "点击整行打开服务网页";
+      info.appendChild(arrow);
+    }
     if (svc.port) {
       var pc = document.createElement("span");
       pc.className = "chip";
@@ -337,15 +339,17 @@
       info.appendChild(uc);
     }
     if (svc.description) {
-      var d = document.createElement("div");
+      var d = document.createElement("span");
       d.className = "svc-desc";
       d.textContent = svc.description;
+      d.title = svc.description;
       info.appendChild(d);
     }
     if (svc.error) {
-      var er = document.createElement("div");
+      var er = document.createElement("span");
       er.className = "svc-error";
       er.textContent = svc.error;
+      er.title = svc.error;
       info.appendChild(er);
     }
 
