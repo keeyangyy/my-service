@@ -2,7 +2,7 @@
 """my-service 宿主入口。
 
     python src/server.py        # 前台运行
-    start.ps1 / run\\start.ps1  # 后台托管（推荐）
+    entry\start.ps1             # 后台托管（推荐）
 
 装配顺序：config.json → Scanner → Manager(含 monitor 线程) → HTTP API。
 自启动：autostart=true 且 enabled 的服务在宿主起来后自动 start。
@@ -89,10 +89,10 @@ def load_config() -> dict:
 
 
 def _setup_host_logging(base: Path) -> None:
-    """宿主自身日志遵循 services 通用约定：run\\service.log / service.err.log。
+    """宿主自身日志遵循两档模型约定：logs\\service.log / service.err.log。
     只记录 my-service 的启停事件（监听地址/autostart 记录/崩溃栈），
-    被管理服务的输出写它们各自的 run\\ 目录（见 runner.start_process）。"""
-    rdir = base / "run"
+    被管理服务的输出写它们各自的 logs\\ 目录（见 runner.start_process）。"""
+    rdir = base / "logs"
     rdir.mkdir(parents=True, exist_ok=True)
     sys.stdout = open(rdir / "service.log", "a", buffering=1,
                       encoding="utf-8", errors="replace")
@@ -110,7 +110,7 @@ def main() -> int:
     scanner = Scanner(services_root, cfg.get("ignore_dirs", []),
                       exclude_paths=[base])
     manager = Manager(scanner)
-    controller = HostController(manager, base / "run")
+    controller = HostController(manager, base / "logs")
 
     threading.Thread(target=manager.monitor_loop, daemon=True,
                      name="monitor").start()

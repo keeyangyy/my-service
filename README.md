@@ -23,15 +23,15 @@ my-service\
 │   ├─ start.ps1              # PowerShell 运行 → 启动宿主（幂等）
 │   ├─ stop.ps1               # → 停止宿主（连带收割全部被管服务）
 │   ├─ restart.ps1            # → 重启宿主
-│   └─ Dashboard.url          # 双击 → 直接打开管理面板
-├─ run\                       # 运行时 + 低频运维（非“点击入口”区）
 │   ├─ svc.ps1                # 被管服务 CLI（带参数，终端/AI 会话用）
 │   ├─ install_autostart.ps1 / uninstall_autostart.ps1  # 自启注册/注销
+│   └─ Dashboard.url          # 双击 → 直接打开管理面板
+├─ logs\                      # 运行时产物（两档模型约定）：宿主日志 + pid
 │   ├─ service.log / service.err.log               # 宿主自身日志（只有启停事件）
 │   └─ service.pid
 └─ src\                       # 全部实现细节
     ├─ server.py              # 组装入口（含 HostController 自管理）
-    ├─ ctl.ps1                # 内部引擎（entry\ 三壳与运维脚本的底层，勿直接调用）
+    ├─ ctl.ps1                # 内部引擎（entry\ 入口与运维脚本的底层，勿直接调用）
     ├─ core\
     │   ├─ scanner.py         # 扫描 services_root 下 */manifest.json
     │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查
@@ -67,8 +67,8 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 
 停止方式：默认 `taskkill /T /F` 整树收割；可另配 `stop_script`
 先执行再收树。**每个服务的 stdout/stderr 写它自己的
-`<服务文件夹>\run\service.log[.err]`**（遵循 services 总目录通用约定），
-Dashboard 日志窗照常尾读；宿主自身事件在 `my-service\run\service.log`。
+`<服务文件夹>\logs\service.log[.err]`**（遵循 services 总目录两档约定），
+Dashboard 日志窗照常尾读；宿主自身事件在 `my-service\logs\service.log`。
 
 ## 用户操作接口
 
@@ -76,7 +76,7 @@ Dashboard 日志窗照常尾读；宿主自身事件在 `my-service\run\service.
 |:--|:--|
 | Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转/日志窗/自启开关；header 右上含宿主运行时长 + 重启/停止宿主按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
-| 服务 CLI | `.\run\svc.ps1 ls\|log <n>\|start\|stop\|restart <name>` |
+| 服务 CLI | `.\entry\svc.ps1 ls\|log <n>\|start\|stop\|restart <name>` |
 | REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/logs/{svc}?n=`、`GET /api/host-log?n=`、`POST /api/services/{svc}/start\|stop\|restart`、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `C:\path\to\<名>\` 放带 manifest.json 的文件夹；注销 = 删文件或 `"enabled": false` |
 
@@ -87,5 +87,5 @@ cd C:\path\to\my-service
 # 图形入口：直接打开 entry\ 文件夹，运行 start.ps1，或双击 Dashboard.url
 pwsh -File .\entry\start.ps1             # 命令行起宿主
 start http://127.0.0.1:1236              # 打开面板
-.\run\install_autostart.ps1              # 登录自启（一次性，需 gsudo 提权）
+.\entry\install_autostart.ps1          # 登录自启（一次性，需 gsudo 提权）
 ```

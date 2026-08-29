@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 # $base = my-service 根（本脚本位于 src\ 内）
 $base = Split-Path $PSScriptRoot -Parent
 $py = (Get-Command python.exe).Source
-New-Item -ItemType Directory -Force -Path (Join-Path $base "run") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $base "logs") | Out-Null
 
 function Get-HostPid {
     # 以命令行精确匹配 src\server.py，避免误杀别的 python 进程
@@ -23,7 +23,7 @@ switch ($Action.ToLower()) {
             -ArgumentList @((Join-Path $base "src\server.py") -replace '\\', '/') `
             -WorkingDirectory (Join-Path $base "src") -WindowStyle Hidden
         Start-Sleep -Milliseconds 900
-        if ($pid2 = Get-HostPid) { Write-Host "started pid=$pid2" } else { Write-Host "FAILED — 查看 run\service.err.log"; exit 1 }
+        if ($pid2 = Get-HostPid) { Write-Host "started pid=$pid2" } else { Write-Host "FAILED — 查看 logs\service.err.log"; exit 1 }
     }
     "stop" {
         if ($p = Get-HostPid) {

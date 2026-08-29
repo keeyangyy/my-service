@@ -69,8 +69,8 @@ class Manager:
                         seen[port] = name
 
     def _log_path(self, name: str) -> Path:
-        # 兼容保留：服务自身日志已归位于 <服务文件夹>/run/service.log（见 runner.run_dir）
-        return runner.run_dir(self.specs[name]) / "service.log"
+        # 兼容保留：服务自身日志归位于 <服务文件夹>/logs/service.log（见 runner.logs_dir）
+        return runner.logs_dir(self.specs[name]) / "service.log"
 
     # ------------------------------------------------------------ 查询
     def snapshot(self) -> list[dict]:

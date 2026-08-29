@@ -1,15 +1,15 @@
-# my-service 开机自启安装脚本（位于 run\）
+# my-service 开机自启安装脚本（位于 entry\）
 # 用法:
-#   .\run\install_autostart.ps1                # 默认 Logon 模式（登录触发）
-#   .\run\install_autostart.ps1 -Mode Boot     # 系统启动触发(SYSTEM, 需提权)
-#   .\run\install_autostart.ps1 -Mode Nssm     # 注册为 Windows 服务(需 nssm.exe)
+#   .\entry\install_autostart.ps1                # 默认 Logon 模式（登录触发）
+#   .\entry\install_autostart.ps1 -Mode Boot     # 系统启动触发(SYSTEM, 需提权)
+#   .\entry\install_autostart.ps1 -Mode Nssm     # 注册为 Windows 服务(需 nssm.exe)
 param([string]$Mode = "Logon")
 
 $ErrorActionPreference = "Stop"
-$run = $PSScriptRoot                       # = my-service\run
-$base = Split-Path $run -Parent            # = my-service
+$entry = $PSScriptRoot                     # = my-service\entry
+$base = Split-Path $entry -Parent          # = my-service
 $TaskName = "StartMyService"
-$runPs = Join-Path $base "entry\start.ps1"
+$runPs = Join-Path $entry "start.ps1"
 
 switch ($Mode.ToLower()) {
     "logon" {

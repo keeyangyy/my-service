@@ -162,17 +162,17 @@ def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Mana
 
 
 def read_log_tail(manager, name: str, n: int) -> dict | None:  # noqa: ANN001
-    """服务自身日志：<服务文件夹>/run/service.log（stdout 为主，err 单独成文件）。"""
+    """服务自身日志：<服务文件夹>/logs/service.log（stdout 为主，err 单独成文件）。"""
     spec = manager.specs.get(name)
     if spec is None:
         return None
-    return _tail_file(runner.run_dir(spec) / "service.log", name, n)
+    return _tail_file(runner.logs_dir(spec) / "service.log", name, n)
 
 
 def read_host_log(manager, n: int, rdir: Path | None = None) -> dict:  # noqa: ANN001
-    """宿主自身日志：<my-service>/run/service.log —— 只含启停事件。"""
+    """宿主自身日志：<my-service>/logs/service.log —— 只含启停事件。"""
     if rdir is None:  # 兜底：controller 未注入时按约定路径推断
-        rdir = Path(manager.scanner.root) / "my-service" / "run"
+        rdir = Path(manager.scanner.root) / "my-service" / "logs"
     return _tail_file(rdir / "service.log", "(host)", n)
 
 

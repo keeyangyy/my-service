@@ -48,11 +48,11 @@ class ProcessHandle:
     """一次成功 start 对应的运行句柄。"""
 
     def __init__(self, popen: subprocess.Popen, log_fhs, started_at: float,
-                 run_dir: Path):
+                 logs_dir: Path):
         self.popen = popen
         self.log_fhs = log_fhs        # (stdout_fh, stderr_fh) 追加句柄，stop 后关闭
         self.started_at = started_at
-        self.rdir = run_dir           # 该服务的 run\ 目录（pid/日志所在）
+        self.rdir = logs_dir          # 该服务的 logs\ 目录（pid/日志所在）
 
     @property
     def pid(self) -> int | None:
@@ -60,9 +60,9 @@ class ProcessHandle:
 
 
 # ---------------------------------------------------------------- 启动/停止
-def run_dir(spec: Spec) -> Path:
-    """该服务的运行时产物目录：run\\service.log / service.err.log / service.pid"""
-    return spec.manifest_path.parent / "run"
+def logs_dir(spec: Spec) -> Path:
+    """该服务的运行时产物目录（两档模型约定）：logs\\service.log / service.err.log / service.pid"""
+    return spec.manifest_path.parent / "logs"
 
 
 def _tail_path(p: Path):
@@ -70,12 +70,12 @@ def _tail_path(p: Path):
 
 
 def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
-    """拉起进程：stdout/stderr 分流写入服务自己的 run\\service.log[.err]，并写 pid 文件。
+    """拉起进程：stdout/stderr 分流写入服务自己的 logs\\service.log[.err]，并写 pid 文件。
 
     log_base 参数保留兼容旧签名（已弃用）。
     """
     cmd = build_command(spec)
-    rdir = run_dir(spec)
+    rdir = logs_dir(spec)
     rdir.mkdir(parents=True, exist_ok=True)
     out_fh = _tail_path(rdir / "service.log")
     err_fh = _tail_path(rdir / "service.err.log")
