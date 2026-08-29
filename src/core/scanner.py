@@ -93,7 +93,8 @@ class Spec:
         problems = []
         if self.mode not in ("managed", "detached"):
             problems.append(f"mode 仅支持 managed/detached，得到 {self.mode!r}")
-        if not self.entry and self.mode == "managed":
+        if not self.entry:
+            # managed 的 entry 是常驻本体；detached 的 entry 是点火器脚本
             problems.append("缺少 entry 字段")
         if self.health_type not in ("none", "port", "http", "process"):
             problems.append(f"health.type 未知: {self.health_type!r}")
@@ -101,8 +102,11 @@ class Spec:
             problems.append("health.type=port 需要 health.port")
         elif self.health_type == "http" and not self.health_url:
             problems.append("health.type=http 需要 health.url")
-        if self.mode == "detached" and not self.pidfile:
-            problems.append("detached 模式当前版本未实现（需 pidfile，v2 支持）")
+        if self.mode == "detached":
+            if not self.stop_script and not self.pidfile:
+                problems.append("detached 模式需要 stop_script（或 pidfile）承担停止职责")
+            if self.health_type == "process":
+                problems.append("detached 不支持 process 型健康检查（无常驻进程句柄），请用 port/http")
 
         # 端口冲突提示交给 Manager 全局判定（跨服务检查）
         if problems:

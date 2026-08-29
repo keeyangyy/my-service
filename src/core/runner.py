@@ -36,9 +36,9 @@ def _interpreter_for(entry: Path) -> list[str]:
 
 
 def build_command(spec: Spec) -> list[str]:
+    if spec.mode not in ("managed", "detached"):
+        raise ValueError(f"mode={spec.mode} 未支持")
     cmd = _interpreter_for(spec.entry_abs)
-    if spec.mode != "managed":
-        raise ValueError(f"mode={spec.mode} 当前版本仅支持 managed")
     cmd += [spec.entry_abs.as_posix()]
     cmd += list(spec.args)
     return cmd
@@ -163,8 +163,9 @@ def run_stop_script(spec: Spec) -> None:
     script = spec.stop_script_abs
     if not script or not script.is_file():
         raise FileNotFoundError(f"stop_script 不存在: {script}")
+    cmd = _interpreter_for(script) + [script.as_posix()]
     subprocess.run(
-        ["cmd.exe", "/c", script.as_posix()],
+        cmd,
         cwd=str(spec.workdir), capture_output=True,
         timeout=_STOP_SCRIPT_WAIT, check=False,
     )

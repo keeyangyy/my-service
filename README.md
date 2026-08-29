@@ -56,7 +56,8 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
   "entry": "start.py",             // 支持 .py/.ps1/.cmd/.bat/.exe
   "args": [],
   "cwd": ".",
-  "mode": "managed",               // managed=宿主托管进程树 | detached=v2 预留
+  "mode": "managed",               // managed=托管进程树 | detached=点火器型(官方启停脚本)
+                                   // detached 需配 stop_script 且 health 用 port/http（禁 process）
   "health": { "type": "port", "port": 19001, "timeout_sec": 20 },
                                    // type: port|http|process|none
   "url": "http://127.0.0.1:19001", // 可选：服务自带网页，Dashboard 一键 ↗
@@ -65,16 +66,34 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 }
 ```
 
-停止方式：默认 `taskkill /T /F` 整树收割；可另配 `stop_script`
-先执行再收树。**每个服务的 stdout/stderr 写它自己的
+停止方式：`managed` 默认 `taskkill /T /F` 整树收割，可另配 `stop_script`
+先执行再收树；`detached`（点火器型：启动脚本点完火即退场算正常，死活只信
+健康探测，停止执行官方 `stop_script`）适合自带官方启停脚本的商用/外部服务
+（参见 some-service 接入样例）。**每个服务的 stdout/stderr 写它自己的
 `<服务文件夹>\logs\service.log[.err]`**（遵循 services 总目录两档约定），
 Dashboard 日志窗照常尾读；宿主自身事件在 `my-service\logs\service.log`。
+
+## 注册新服务：最小要求与步骤
+
+**最小要求（不满足则拒收）**：
+- 启动入口：`start.ps1` 或等价脚本（无参数、可直接运行拉起常驻进程）
+- 停止方式：`stop.ps1` 或等价停止命令（或可被 taskkill /T 终结，README 写明）
+- 健康判定：HTTP 端口（建议 `/health`）或 http/process/port 三选一可探测
+
+**注册步骤**：
+1. 按总目录两档模型建好服务文件夹并补齐上述三件（也可自带现成入口）
+2. 门内放 `manifest.json`（字段见上）——entry/cwd 等一律**相对服务文件夹根**
+3. 无需重启宿主：刷新 Dashboard（或 `.\src\svc.ps1 ls`），服务即出现在列表；`autostart: true` 则下次宿主启动/重启时自动拉起
+
+**接入检查单**：列表出现且状态不对时，按顺序查——manifest 无效（列表红标
+invalid 并给原因）→ 端口冲突（健康端口被其他服务占用）→ 入口文件不存在
+→ 健康超时（`timeout_sec` 内未达健康判定，日志面板看启动输出）。
 
 ## 用户操作接口
 
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转/日志窗/自启开关；header 右上含宿主运行时长 + 重启/停止宿主按钮） |
+| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转/日志窗/自启开关；header 右上含宿主运行时长 + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|log <n>\|start\|stop\|restart <name>`（终端/AI 会话用） |
 | REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/logs/{svc}?n=`、`GET /api/host-log?n=`、`POST /api/services/{svc}/start\|stop\|restart`、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |

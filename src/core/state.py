@@ -226,26 +226,49 @@ class Manager:
                 status = st["status"]
                 handle = self.handles.get(name)
 
-                if status == "starting" and handle:
-                    alive = handle.popen.poll() is None
+                if status == "starting":
+                    alive = handle.popen.poll() is None if handle else False
                     healthy, why = runner.check_health(spec, handle)
                     timeout = spec.health_timeout
-                    elapsed = now - handle.started_at
+                    elapsed = now - float(st.get("started_at") or now)
                     if healthy:
                         st["status"], st["error"] = ("running", None)
-                    elif not alive:
-                        rc = handle.popen.returncode
+                        continue
+                    if spec.mode == "detached" and handle and not alive:
+                        # 点火器脚本退场 = 正常；摘句柄，继续只等健康就绪
                         self.handles.pop(name, None)
                         runner.close_handle(handle)
-                        st.update(status="failed", error=f"进程启动即退出 rc={rc}", fail_at=now)
-                    elif elapsed > timeout:
+                        handle = None
+                    if spec.mode == "managed":
+                        if not alive:
+                            rc = handle.popen.returncode if handle else None
+                            self.handles.pop(name, None)
+                            if handle:
+                                runner.close_handle(handle)
+                            st.update(status="failed",
+                                      error=f"进程启动即退出 rc={rc}", fail_at=now)
+                            continue
+                    if elapsed > timeout:
                         # 关键修复点：超时必须收敛，不能像 早期内部版本 那样残留 starting
                         st.update(status="failed",
                                   error=f"健康检查超时({timeout:.0f}s){('，' + why) if why else ''}",
                                   fail_at=now)
 
-                elif status == "running" and handle:
-                    if handle.popen.poll() is not None:
+                elif status == "running":
+                    if spec.mode == "detached":
+                        # 点火器型：运行中只信健康复检；失联=被外部停止
+                        if handle and handle.popen.poll() is not None:
+                            self.handles.pop(name, None)
+                            runner.close_handle(handle)
+                        if (spec.health_type in ("port", "http")
+                                and now - float(st.get("last_check") or 0) >= 5):
+                            st["last_check"] = now
+                            healthy, why = runner.check_health(spec, None)
+                            if not healthy:
+                                st.update(status="stopped", started_at=None,
+                                          error=(why or "健康检查失联，进程可能已被外部停止"))
+                        continue
+                    if handle and handle.popen.poll() is not None:
                         rc = handle.popen.returncode
                         crashed = name not in self._user_stopping
                         self.handles.pop(name, None)
@@ -256,7 +279,7 @@ class Manager:
                         else:
                             st.update(status="stopped", started_at=None, error=None)
                         continue
-                    if spec.health_type in ("port", "http") and now - float(st.get("last_check") or 0) >= 5:
+                    if handle and spec.health_type in ("port", "http") and now - float(st.get("last_check") or 0) >= 5:
                         # running 态每 5 秒复检一次健康端口，端口掉线即失败提示
                         st["last_check"] = now
                         healthy, why = runner.check_health(spec, handle)
