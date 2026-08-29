@@ -119,9 +119,15 @@ def main() -> int:
           f"{', '.join(sorted(manager.specs)) or '(无)'}", flush=True)
 
     # 延迟半拍先让 HTTP 就绪，再按 manifest 声明自动拉起
+    # 防双开：自启前先判定是否已有实例在运行（外部/残留/手动），已在运行则跳过
     def _auto_start():
         time.sleep(0.5)
         for name in sorted(autostart_names):
+            alive, reason = manager.external_alive(name)
+            if alive:
+                manager.adopt_external(name, reason)   # 归位 running，面板如实显示
+                print(f"[autostart] {name}: 已在运行（{reason}），跳过自启并归位 running", flush=True)
+                continue
             ok, msg = manager.start(name)
             print(f"[autostart] {name}: {msg}", flush=True)
 

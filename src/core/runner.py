@@ -112,6 +112,18 @@ def _taskkill_tree(pid: int) -> None:
     )
 
 
+def pid_alive(pid: int) -> bool:
+    """Windows 下判断指定 PID 的进程是否存在（tasklist 精确匹配）。"""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, timeout=6, check=False,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return out.returncode == 0 and str(pid) in (out.stdout or "")
+
+
 def wait_gone(pid: int, deadline: float) -> bool:
     """轮询进程是否消失（managed 进程对象不在手边时的通用判据）。"""
     while time.time() < deadline:

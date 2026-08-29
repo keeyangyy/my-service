@@ -102,6 +102,44 @@ class Manager:
     def get_spec(self, name: str) -> Spec | None:
         return self.specs.get(name)
 
+    # ------------------------------------------------------------ 外部运行判定
+    def external_alive(self, name: str) -> tuple[bool, str]:
+        """判断服务当前是否已有实例在运行（超出框架进程表的：外部/残留/手动）。
+
+        判定依据：port/http → 健康探测；process → pidfile 存活；
+        none / process 无 pidfile → 无法判定（返回 False，靠托管句柄）。
+        """
+        spec = self.specs.get(name)
+        if spec is None or not spec.valid:
+            return False, "未注册"
+        htype = spec.health_type
+        if htype in ("port", "http"):
+            alive, why = runner.check_health(spec, None)
+            return alive, (why or "健康目标可达")
+        if htype == "process" and spec.pidfile:
+            pf = spec.pidfile
+            p = (spec.path / pf).resolve() if not Path(pf).is_absolute() else Path(pf)
+            if p.is_file():
+                try:
+                    pid = int(p.read_text(encoding="ascii").strip())
+                except Exception:  # noqa: BLE001
+                    return False, "pidfile 内容非数字"
+                if runner.pid_alive(pid):
+                    return True, f"pidfile {pid} 存活"
+                return False, f"pidfile {pid} 已不在运行"
+            return False, "pidfile 不存在"
+        return False, "无法判定（none/process 无 pidfile）"
+
+    def adopt_external(self, name: str, reason: str) -> None:
+        """把已在外部运行的实例归位为 running（自启跳过等场景，让状态如实反映）。"""
+        with self.lock:
+            st = self.state.get(name)
+            if st is None:
+                return
+            if st["status"] != "running":
+                st.update(status="running", started_at=st.get("started_at") or time.time(),
+                          error=None, fail_at=None)
+
     # ------------------------------------------------------------ 操作
     def start(self, name: str) -> tuple[bool, str]:
         with self.lock:
@@ -116,15 +154,15 @@ class Manager:
             cur = st["status"]
             if cur in ("running", "starting"):
                 return True, f"已在 {cur}"
-            # 假健康防护：冷启动（stopped/failed）前确认健康目标未被占用。
-            # 否则框架的健康探测会打到残留/外部实例身上（some-service 实弹教训）。
-            if cur in ("stopped", "failed") and spec.health_type in ("port", "http"):
-                alive, _why = runner.check_health(spec, None)
+            # 防双开：冷启动（stopped/failed）前确认没有已存在的实例（外部/残留/手动），
+            # 否则会双重拉起（some-service 实弹教训；process 型靠 pidfile 判定）。
+            if cur in ("stopped", "failed"):
+                alive, _reason = self.external_alive(name)
                 if alive:
                     st.update(status="failed",
-                              error="健康目标已被占用（疑似残留/外部实例），请先外部停止再启动",
+                              error=f"检测到已有实例在运行（{_reason}），已拒绝重复启动",
                               fail_at=time.time())
-                    return False, "健康目标已被占用（疑似残留/外部实例），请先外部停止再启动"
+                    return False, f"检测到已有实例在运行（{_reason}），已拒绝重复启动"
             try:
                 handle = runner.start_process(spec)
             except Exception as exc:  # noqa: BLE001
