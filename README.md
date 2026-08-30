@@ -63,7 +63,21 @@ my-service\adapters\<服务名>\
 
 `stopped → starting → running → stopping → stopped`，任何异常进 `failed(附原因)`。
 monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝"starting 永久残留"类问题。
-另有**假健康防护**：冷启动前探测健康目标，若已被占用（残留/外部实例）则拒绝启动并给出明确原因。
+### 防双开（external_alive 统一判定）
+
+启动/自启前先判"服务是否已有实例在跑"（残留、外部或手动实例）：
+
+| 健康类型 | 判据 |
+|:--|:--|
+| `port` / `http` | 健康目标可达 |
+| `process` | 读 `pidfile` → 进程存活（`tasklist`） |
+| `none` / process 无 pidfile | 无法判定（固有限制，只能靠托管句柄） |
+
+- **手动/冷启动**：stopped/failed 且已检测到实例在跑 → **拒绝启动**并提示"已有实例在运行"（防双重拉起）
+- **自启**：已在运行 → **跳过自启并归位 running**（面板如实显示，不诱导你再点启动）；未运行才拉起
+- **detached 自愈**：实例其实活着却被标 failed（如升级慢导致启动超时）→ 下一轮健康探测通过即自动恢复 running，免手动重启
+
+> 典型场景：宿主重启时旧子进程成孤儿仍在跑、或你先手动起了服务——现在都不会双开。
 
 ## 注册条协议（reg\*.json）
 
@@ -77,15 +91,23 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
   "args": [],
   "cwd": ".",
   "mode": "managed",               // managed=托管进程树 | detached=点火器型(官方启停脚本)
-                                   // detached 需配 stop_script 且 health 用 port/http（禁 process）
-  "health": { "type": "http", "url": "http://127.0.0.1:8090/health", "timeout_sec": 20 },
+                                   // detached 需 stop_script 或 pidfile 之一；health 禁 process
+  "health": { "type": "http", "url": "http://localhost:8090/health", "timeout_sec": 60 },
                                    // type: port|http|process|none
-  "url": "http://127.0.0.1:8090/", // 可选：服务自带网页，Dashboard 一键 ↗
+  "url": "http://localhost:8090/", // 可选：服务自带网页，Dashboard 一键 ↗
   "env": {"SOME-SERVICE_NO_WAIT": "1"}, // 附加环境变量
   "stop_script": "stop.ps1",       // 可选：停止时先执行的灭火脚本（相对 path）
+  "pidfile": "run/app.pid",        // 可选：pid 文件(相对 path)——process 型防双开判据
   "autostart": true                // 权威值存此，前端开关回写这里
 }
 ```
+
+**地址用 `localhost` 而非 `127.0.0.1`（实测教训）**：服务可能只监听 IPv6 `::`
+（如 some-service 升级后），框架用 `127.0.0.1` 走 IPv4 直连会探测失败而误报超时；
+`localhost` 优先解析 IPv6，更贴合实际监听面。
+
+**`timeout_sec` 要放宽的场景**：带自升级/冷启动慢的服务（some-service 跨版本升级即超 20s），
+建议 60s 起，否则会"进程其实活着、状态却超时误判 failed"。
 
 **路径语义**：注册条里除 `path` 外的一切路径（entry/cwd/stop_script）都**相对 `path`** 解析；
 框架收集的 stdout 写 `<path>\logs\service.log[.err]`，遵循 services 总目录两档约定。
@@ -105,11 +127,39 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 1. 服务在自己真实家补齐上述三件（商业软件通常已自带官方脚本）
 2. 在 `my-service\reg\` 新建 `<服务名>.json` 注册条（字段见上）
 3. 无需重启宿主：刷新 Dashboard（或 `.\src\svc.ps1 ls`）即出现在列表；
-   `autostart: true` 则下次宿主启动/重启自动拉起
+   `autostart: true` 则宿主启动时自动拉起（若已在运行会自动跳过并归位，不双开）
 
 **接入检查单**：列表出现但状态不对时按序查——注册条无效（红标 invalid 附原因）→
 端口冲突（健康端口被占用/假健康防护拒绝）→ 入口文件不存在 → 健康超时
 （`timeout_sec` 内未达健康判定，日志面板看启动输出）。
+
+failed 提示「检测到已有实例在运行」= **正常防护**，说明服务其实活着（外部/残留实例），
+按需去对方那边停止，或直接点面板重启走框架原子切换；提示「健康目标已被占用」同理。
+
+### 完整实例：接入一个自带官方启停脚本的商业软件（some-service）
+
+真实文件 `reg\some-service.json`（detached 型、零副本单处维护）：
+
+```json
+{
+  "path": "D:/program(portable)/some-service",
+  "enabled": true,
+  "display": "SomeService",
+  "description": "AI agent 通信网关（8090）——单处维护：直指官方脚本",
+  "entry": "start.ps1",
+  "args": [],
+  "cwd": ".",
+  "mode": "detached",
+  "health": {"type": "http", "url": "http://localhost:8090/health", "timeout_sec": 60},
+  "url": "http://localhost:8090/",
+  "env": {"SOME-SERVICE_NO_WAIT": "1"},
+  "stop_script": "stop.ps1",
+  "autostart": true
+}
+```
+
+要点回顾：`path`=便携目录（**exe 与数据分离的服务，cwd 钉死在此防漂移空库**）、
+entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` 关掉官方脚本交互等待。
 
 ## 用户操作接口
 
