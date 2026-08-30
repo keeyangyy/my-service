@@ -180,6 +180,7 @@ def run_stop_script(spec: Spec) -> None:
         cmd,
         cwd=str(spec.workdir), capture_output=True,
         timeout=_STOP_SCRIPT_WAIT, check=False,
+        creationflags=CREATE_FLAGS,
     )
 
 

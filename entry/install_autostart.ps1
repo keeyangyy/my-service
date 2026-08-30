@@ -23,13 +23,14 @@ switch ($Mode.ToLower()) {
             & gsudo pwsh -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Mode Logon
             exit $LASTEXITCODE
         }
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
         $action = New-ScheduledTaskAction -Execute "pwsh.exe" `
             -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runPs`" start"
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
             -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-            -Settings $settings -Description "my-service 宿主登录自启" | Out-Null
+        Register-ScheduledTask -TaskName $TaskName -Principal $principal -Action $action -Trigger $trigger `
+            -Settings $settings -Description "my-service 宿主登录自启（S4U 后台无窗）" | Out-Null
         Write-Host "✓ 已注册计划任务 '$TaskName' (AtLogOn: 当前用户登录即拉起 my-service)"
         Write-Host "  注销重新登录即可验证；卸载: uninstall_autostart.ps1"
     }
