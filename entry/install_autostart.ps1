@@ -24,7 +24,7 @@ switch ($Mode.ToLower()) {
             exit $LASTEXITCODE
         }
         $action = New-ScheduledTaskAction -Execute "pwsh.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runPs`" start"
+            -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runPs`" start"
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
             -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -38,7 +38,7 @@ switch ($Mode.ToLower()) {
             Write-Host "需要 gsudo 提权来注册 SYSTEM 计划任务"; exit 1 }
         gsudo pwsh -NoProfile -Command "
             `$action = New-ScheduledTaskAction -Execute 'pwsh.exe' ``
-                -Argument '-NoProfile -ExecutionPolicy Bypass -File `"`"$runPs`"`" start'
+                -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$runPs`"`" start'
             `$trigger = New-ScheduledTaskTrigger -AtStartup
             `$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
             `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries ``
