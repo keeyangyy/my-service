@@ -180,3 +180,30 @@ pwsh -File .\entry\start.ps1             # 命令行起宿主
 start http://127.0.0.1:1236              # 打开面板
 .\entry\install_autostart.ps1          # 登录自启（一次性，需 gsudo 提权）
 ```
+## 排坑记录
+
+### 登录自启黑窗（已解决 2026-08-30）
+
+**现象**：登录触发自启时闪一个无内容黑窗，内含一行 `pid=xxxx`（实为 `ctl.ps1` 的 `Write-Host` 输出在任务外层 pwsh 的控制台里）。
+
+**根因**：计划任务以「只在用户登录时运行」（InteractiveToken）运行——pwsh 作为控制台程序
+必须借用户桌面开一个 conhost 窗口短暂显示，哪怕只活 1-2 秒。
+
+**试错路径（勿重蹈）**：
+1. `pwsh -WindowStyle Hidden` ——实测无效，窗口仍闪
+2. wscript + vbs 包装（SW_HIDE）——能根治，但引入新文件类型、链路变复杂，已弃用并撤销
+
+**最终方案——S4U 后台任务**：把任务主体改成「不管用户是否登录都要运行」的 **S4U** 登录类型
+（后台房间：逻辑上无窗可弹，物理根治）。改动仅在 `entry\install_autostart.ps1` Logon 分支：
+
+```powershell
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+Register-ScheduledTask ... -Principal $principal ...
+```
+
+要点：
+- 触发器仍 `AtLogOn`：登录才触发，时机不变；只把运行场所从"交互桌面"换到"后台房间"
+- S4U 不存密码 → 无网络凭据（SMB/域资源不可达），本机场景零影响；RunLevel 必须 Limited
+- 手动运行 `entry\start.ps1` / 面板 / `svc.ps1` 不经任务计划程序，行为一字不变
+- 全链窗口语义已审计：python 子进程 `-WindowStyle Hidden`、托管服务与 stop 脚本 `CREATE_NO_WINDOW`、
+  宿主重建 `DETACHED_PROCESS`——除任务外层之外全部本就无窗
