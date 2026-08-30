@@ -25,7 +25,7 @@ MIME = {
 
 def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None
     class Handler(BaseHTTPRequestHandler):
-        server_version = "my-service/1.0"
+        server_version = "my-service"
         protocol_version = "HTTP/1.1"
 
         # ---------------------------------------------------------- 工具
