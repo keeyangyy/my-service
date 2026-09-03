@@ -353,8 +353,16 @@
       var idleMin = Math.round((svc.idle_timeout || 600) / 60);
       var od = document.createElement("span");
       od.className = "chip";
-      od.textContent = "按需 · 空闲" + idleMin + "分钟停";
-      od.title = "点开自动启动；页面无操作 " + idleMin + " 分钟后框架自动停止";
+      if (svc.status === "running" && typeof svc.last_active === "number") {
+        var remainSec = Math.max(0, (svc.idle_timeout || 600) - (Date.now() / 1000 - svc.last_active));
+        var rm = Math.floor(remainSec / 60);
+        var rs = Math.floor(remainSec % 60);
+        od.textContent = "空闲回收 " + rm + ":" + String(rs).padStart(2, "0");
+        od.title = "无操作 " + idleMin + " 分钟后自动停止；还剩 " + rm + " 分 " + rs + " 秒";
+      } else {
+        od.textContent = "按需 · 空闲" + idleMin + "分钟停";
+        od.title = "点开自动启动；页面无操作 " + idleMin + " 分钟后框架自动停止";
+      }
       info.appendChild(od);
     }
     if (svc.port) {

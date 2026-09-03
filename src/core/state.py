@@ -94,6 +94,7 @@ class Manager:
                     "status": status,
                     "mode": spec.mode,
                     "idle_timeout": spec.idle_timeout if spec.mode == "on_demand" else None,
+                    "last_active": st.get("last_active"),
                     "port": spec.health_port if spec.health_type == "port" else None,
                     "url": spec.url,
                     "uptime_sec": uptime,
@@ -364,20 +365,38 @@ class Manager:
                         else:
                             st.update(status="stopped", started_at=None, error=None)
                         continue
-                    if handle and spec.health_type in ("port", "http") and now - float(st.get("last_check") or 0) >= 5:
-                        # running 态每 5 秒复检一次健康端口，端口掉线即失败提示
+                    if spec.health_type in ("port", "http") and now - float(st.get("last_check") or 0) >= 5:
+                        # running 态每 5 秒复检一次健康端口；不依赖 handle——
+                        # 外部归位实例（handle=None）也能被持续监控
                         st["last_check"] = now
                         if spec.mode == "on_demand":
                             # 按需服务：复检顺带解析服务自报的 last_active，超时则空闲回收
                             healthy, why, last_active = runner.check_health_ext(spec, handle)
+                            if last_active and last_active > 0:
+                                st["last_active"] = last_active
                             if healthy and last_active and last_active > 0 \
                                     and (now - last_active) > spec.idle_timeout:
                                 threading.Thread(
                                     target=self._reap_idle, args=(name,), daemon=True).start()
                         else:
-                            healthy, why = runner.check_health(spec, handle)
+                            healthy, why, last_active = runner.check_health(spec, handle), None
                         if not healthy:
-                            st["error"] = why or "健康检查失败(复检)"
+                            if handle is None:
+                                # 外部归位实例（无句柄）：健康失联 = 已被外部停止，干净归位
+                                st.update(status="stopped", started_at=None, error=None)
+                            else:
+                                st["error"] = why or "健康检查失败(复检)"
+
+                elif status == "stopped":
+                    # 外部/手动启动的实例：定期探测端口，活着就归位 running。
+                    # 此前 stopped 无分支，手动拉起服务后面板永远停留在 stopped
+                    # （只有宿主自启、或 failed 的 detached 自愈才会归位），不符"观测即真相"。
+                    if now - float(st.get("last_check") or 0) >= 5:
+                        st["last_check"] = now
+                        alive, _reason = self.external_alive(name)
+                        if alive:
+                            st.update(status="running", started_at=now,
+                                      error=None, fail_at=None)
 
                 elif status == "stopping":
                     began = self._pending_stop.get(name)
