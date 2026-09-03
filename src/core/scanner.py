@@ -38,7 +38,8 @@ class Spec:
         self.entry: str = ""
         self.args: list[str] = []
         self.cwd: str = "."
-        self.mode: str = "managed"               # managed | detached（点火器型）
+        self.mode: str = "managed"               # managed | detached | on_demand（按需）
+        self.idle_timeout: float = 600.0         # on_demand 空闲回收阈值（秒）
         self.health_type: str = "none"           # none | port | http | process
         self.health_port: int | None = None
         self.health_url: str | None = None
@@ -86,6 +87,12 @@ class Spec:
         self.cwd = str(_get("cwd", "."))
         self.mode = str(_get("mode", "managed")).lower()
         self.autostart = bool(_get("autostart", False))
+        try:
+            self.idle_timeout = float(_get("idle_timeout_sec", 600.0))
+        except (TypeError, ValueError):
+            self.idle_timeout = 600.0
+        # clamp 1 分钟 ~ 24 小时，防误配导致抖动或永不回收
+        self.idle_timeout = max(60.0, min(self.idle_timeout, 86400.0))
 
         if isinstance(data.get("env"), dict):
             self.env = {str(k): str(v) for k, v in data["env"].items()}
@@ -113,8 +120,8 @@ class Spec:
 
         # ---- 结构校验 ----
         problems = []
-        if self.mode not in ("managed", "detached"):
-            problems.append(f"mode 仅支持 managed/detached，得到 {self.mode!r}")
+        if self.mode not in ("managed", "detached", "on_demand"):
+            problems.append(f"mode 仅支持 managed/detached/on_demand，得到 {self.mode!r}")
         if not self.entry:
             problems.append("缺少 entry 字段")
         if self.health_type not in ("none", "port", "http", "process"):
@@ -128,6 +135,11 @@ class Spec:
                 problems.append("detached 模式需要 stop_script（或 pidfile）承担停止职责")
             if self.health_type == "process":
                 problems.append("detached 不支持 process 型健康检查（无常驻进程句柄），请用 port/http")
+        if self.mode == "on_demand":
+            if self.health_type != "http":
+                problems.append("on_demand 模式需要 health.type=http（空闲回收依赖 /health 返回 last_active 字段）")
+            if self.autostart:
+                problems.append("on_demand 模式不允许 autostart:true（按需服务由点击拉起，不常驻）")
         if not self.entry_abs.is_file():
             problems.append(f"入口文件不存在: {self.entry_abs}")
 

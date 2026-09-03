@@ -30,6 +30,7 @@ class Manager:
         self.state: dict[str, dict] = {}
         self._user_stopping: set[str] = set()   # 区分"用户主动停"与"崩溃"
         self._pending_stop: dict[str, float] = {}  # stop 发起时刻，stopping 超时兜底
+        self._idle_reaping: set[str] = set()    # on_demand 空闲回收进行中（防重复触发）
         self.lock = threading.RLock()
         self.refresh()
 
@@ -91,6 +92,8 @@ class Manager:
                     "display": spec.display,
                     "description": spec.description,
                     "status": status,
+                    "mode": spec.mode,
+                    "idle_timeout": spec.idle_timeout if spec.mode == "on_demand" else None,
                     "port": spec.health_port if spec.health_type == "port" else None,
                     "url": spec.url,
                     "uptime_sec": uptime,
@@ -106,16 +109,22 @@ class Manager:
     def external_alive(self, name: str) -> tuple[bool, str]:
         """判断服务当前是否已有实例在运行（超出框架进程表的：外部/残留/手动）。
 
-        判定依据：port/http → 健康探测；process → pidfile 存活；
+        判定依据：port/http → 快速端口探测；process → pidfile 存活；
         none / process 无 pidfile → 无法判定（返回 False，靠托管句柄）。
+        port/http 用快速端口探测而非 urlopen——防双开只需知道"端口有无实例监听"，
+        而 urlopen 在无监听端口上可能被代理/TUN 拖成数秒，拖慢启动。
         """
         spec = self.specs.get(name)
         if spec is None or not spec.valid:
             return False, "未注册"
         htype = spec.health_type
         if htype in ("port", "http"):
-            alive, why = runner.check_health(spec, None)
-            return alive, (why or "健康目标可达")
+            if runner.quick_alive(spec, None):
+                if htype == "port":
+                    return True, f"端口 {spec.health_port} 已有实例监听"
+                _, port = runner.parse_http_host_port(spec.health_url or "")
+                return True, f"健康端口 {port} 已有实例监听"
+            return False, "健康端口无监听"
         if htype == "process" and spec.pidfile:
             pf = spec.pidfile
             p = (spec.path / pf).resolve() if not Path(pf).is_absolute() else Path(pf)
@@ -192,7 +201,10 @@ class Manager:
         # 阶段二（锁外）：阻塞式收割进程，不占用 RLock 妨碍其他请求
         ok, msg = True, "stopped"
         try:
-            if spec.mode == "managed":
+            if spec.mode in ("managed", "on_demand"):
+                # 先执行 stop_script 温和灭火（可选），再整树收割兜底
+                if spec.stop_script_abs:
+                    runner.run_stop_script(spec)
                 if handle:
                     runner.stop_managed(handle)
             elif spec.stop_script_abs:
@@ -227,6 +239,21 @@ class Manager:
                 self.stop(name)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _reap_idle(self, name: str) -> None:
+        """on_demand 空闲回收：条件复核后走正规 stop 流程（优雅停 + 状态回 stopped）。"""
+        with self.lock:
+            st = self.state.get(name)
+            spec = self.specs.get(name)
+            if (st is None or spec is None or st["status"] != "running"
+                    or spec.mode != "on_demand" or name in self._idle_reaping):
+                return
+            self._idle_reaping.add(name)
+        try:
+            self.stop(name)
+        finally:
+            with self.lock:
+                self._idle_reaping.discard(name)
 
     def toggle_autostart(self, name: str, value: bool) -> tuple[bool, str]:
         with self.lock:
@@ -275,7 +302,10 @@ class Manager:
 
                 if status == "starting":
                     alive = handle.popen.poll() is None if handle else False
-                    healthy, why = runner.check_health(spec, handle)
+                    # 快速可达判定，不做完整 urlopen（无监听端口可能被代理/TUN拖成数秒，
+                    # 会卡住整个 monitor 循环）；running 后仍由复检兜底核对真健康
+                    healthy = runner.quick_alive(spec, handle)
+                    why = "" if healthy else "健康目标未就绪"
                     timeout = spec.health_timeout
                     elapsed = now - float(st.get("started_at") or now)
                     if healthy:
@@ -337,7 +367,15 @@ class Manager:
                     if handle and spec.health_type in ("port", "http") and now - float(st.get("last_check") or 0) >= 5:
                         # running 态每 5 秒复检一次健康端口，端口掉线即失败提示
                         st["last_check"] = now
-                        healthy, why = runner.check_health(spec, handle)
+                        if spec.mode == "on_demand":
+                            # 按需服务：复检顺带解析服务自报的 last_active，超时则空闲回收
+                            healthy, why, last_active = runner.check_health_ext(spec, handle)
+                            if healthy and last_active and last_active > 0 \
+                                    and (now - last_active) > spec.idle_timeout:
+                                threading.Thread(
+                                    target=self._reap_idle, args=(name,), daemon=True).start()
+                        else:
+                            healthy, why = runner.check_health(spec, handle)
                         if not healthy:
                             st["error"] = why or "健康检查失败(复检)"
 

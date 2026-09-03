@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正在启动…</title>
+<style>
+:root{--bg:#14161c;--fg:#e6e9f2;--dim:#8a93a8;--accent:#60a5fa;--bad:#f87171}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;
+  display:flex;align-items:center;justify-content:center;min-height:100vh}
+.wrap{text-align:center;max-width:460px;padding:32px}
+.spinner{width:44px;height:44px;margin:0 auto 20px;border:4px solid #2b3140;border-top-color:var(--accent);
+  border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.title{font-size:18px;font-weight:600;margin-bottom:6px}
+.sub{font-size:13px;color:var(--dim)}
+.err{display:none;margin-top:18px;padding:12px 14px;background:#2a1416;border:1px solid #5b2a2e;
+  border-radius:10px;color:var(--bad);font-size:13px;white-space:pre-wrap;word-break:break-all}
+.err.show{display:block}
+.row{margin-top:18px;display:none;gap:10px;justify-content:center}
+.row.show{display:flex}
+button,a.btn{background:#262c3a;color:var(--fg);border:1px solid #2b3140;border-radius:8px;
+  padding:8px 20px;cursor:pointer;font-size:14px;text-decoration:none}
+button:hover,a.btn:hover{border-color:var(--accent);color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="spinner" id="spinner"></div>
+  <div class="title" id="title">正在启动服务…</div>
+  <div class="sub" id="sub">服务就绪后自动进入</div>
+  <div class="err" id="err"></div>
+  <div class="row" id="actions">
+    <button id="retry">重试</button>
+    <a class="btn" href="/">返回面板</a>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var qs = new URLSearchParams(location.search);
+  var name = qs.get("name") || "";
+  var target = qs.get("url") || "";
+  var title = qs.get("title") || name;
+
+  // 只允许跳 http(s)，防 javascript: 注入
+  if (!/^https?:\/\//.test(target)) { fail("目标地址非法"); return; }
+
+  var $ = function (s) { return document.querySelector(s); };
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function fail(msg) {
+    $("#spinner").style.display = "none";
+    $("#sub").textContent = "启动未完成";
+    $("#err").textContent = msg;
+    $("#err").classList.add("show");
+    $("#actions").classList.add("show");
+  }
+
+  async function api(method, path, body) {
+    var res = await fetch(path, {
+      method: method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined
+    });
+    var data = null;
+    try { data = await res.json(); } catch (e) { /* ignore */ }
+    if (!res.ok) throw new Error((data && data.message) || ("HTTP " + res.status));
+    return data;
+  }
+
+  async function getService() {
+    var data = await api("GET", "/api/services/" + encodeURIComponent(name));
+    return data;
+  }
+
+  function reachable(u) {
+    return fetch(u, { mode: "no-cors", cache: "no-store" })
+      .then(function () { return true; })
+      .catch(function () { return false; });
+  }
+
+  async function boot() {
+    document.title = title + " · 启动中";
+    $("#title").textContent = title;
+    try {
+      // 幂等启动：已 running 则直接返回，不再二次拉起
+      await api("POST", "/api/services/" + encodeURIComponent(name) + "/start");
+    } catch (e) {
+      // 启动请求可能因"已在启动/运行"等而报错，继续轮询实际状态即可
+    }
+    var deadline = Date.now() + 60000;
+    var lastStatus = "";
+    while (Date.now() < deadline) {
+      // 直连探测目标端口：服务一 bind 就命中，不必等宿主状态机收敛到 running
+      if (await reachable(target)) { location.replace(target); return; }
+      var s = null;
+      try { s = await getService(); } catch (e) { /* 宿主暂时不可达，继续 */ }
+      if (s) {
+        if (s.status === "failed" || s.status === "invalid") {
+          fail(s.error || ("服务状态异常：" + (s.status || "未知")));
+          return;
+        }
+        if (s.status !== lastStatus) {
+          lastStatus = s.status;
+          $("#sub").textContent = "当前状态：" + (s.status === "starting" ? "启动中" : s.status);
+        }
+      }
+      await sleep(250);
+    }
+    fail("启动超时（60 秒），请返回面板查看日志后重试");
+  }
+
+  $("#retry").addEventListener("click", function () { location.reload(); });
+  boot();
+})();
+</script>
+</body>
+</html>

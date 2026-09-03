@@ -6,11 +6,13 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
 import time
 import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 
 from .scanner import Spec
@@ -20,6 +22,11 @@ CREATE_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 
 _STOP_WAIT_SEC = 10.0     # 温和等待进程自退的最长秒数
 _STOP_SCRIPT_WAIT = 15.0  # stop_script 同步执行的兜底超时
+
+# 健康探测强制禁用代理：localhost 服务不该走系统代理（clash 等）。
+# 否则宿主进程若残留 http_proxy 环境变量，urllib 默认读代理会对本机端口
+# 探测失败（URLError），导致 some-service 等被误判 stopped/failed。
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _interpreter_for(entry: Path) -> list[str]:
@@ -36,7 +43,7 @@ def _interpreter_for(entry: Path) -> list[str]:
 
 
 def build_command(spec: Spec) -> list[str]:
-    if spec.mode not in ("managed", "detached"):
+    if spec.mode not in ("managed", "detached", "on_demand"):
         raise ValueError(f"mode={spec.mode} 未支持")
     cmd = _interpreter_for(spec.entry_abs)
     cmd += [spec.entry_abs.as_posix()]
@@ -185,28 +192,89 @@ def run_stop_script(spec: Spec) -> None:
 
 
 # ---------------------------------------------------------------- 健康检查
+def parse_http_host_port(url: str) -> tuple[str, int | None]:
+    """从 http 健康 URL 解析 (host, port)。解析失败返回 (127.0.0.1, None)。"""
+    try:
+        p = urlsplit(url or "")
+        host = p.hostname or "127.0.0.1"
+        port = p.port or (443 if p.scheme == "https" else 80)
+        return host, port
+    except Exception:  # noqa: BLE001
+        return "127.0.0.1", None
+
+
+def port_listening(host: str, port: int, timeout: float = 0.05) -> bool:
+    """快速端口可达判定——只测端口是否被监听，不做完整 HTTP 探测。
+
+    用极短超时（50ms）：本机 loopback 上真服务握手只需亚毫秒~十几毫秒，
+    而无监听的端口本应瞬时拒绝——个别环境（clash TUN/驱动劫持）会把"拒绝"
+    拖成数秒级超时，宿主绝不能傻等。50ms 足够真服务应答，又能立刻放弃空门。
+    """
+    if not port:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def quick_alive(spec: Spec, handle: ProcessHandle | None) -> bool:
+    """快速「实例是否已在运行」判定（防双开 / starting 阶段用）。
+
+    只做廉价的端口/进程探测，不做 urlopen（urlopen 在本机无监听时可能挂数秒）。
+    process 型要求 handle 在场且进程存活；none 型保守返回 True（不做判定）。
+    """
+    if spec.health_type == "port" and spec.health_port:
+        return port_listening("127.0.0.1", spec.health_port)
+    if spec.health_type == "http":
+        host, port = parse_http_host_port(spec.health_url or "")
+        return port_listening(host, port) if port else True
+    if spec.health_type == "process":
+        return handle is not None and handle.popen.poll() is None
+    return True
+
+
 def check_health(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, str]:
     """返回 (通过?, 说明)。process 型要求 handle 在场。"""
+    alive, why, _last = check_health_ext(spec, handle)
+    return alive, why
+
+
+def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, str, float | None]:
+    """返回 (通过?, 说明, last_active?)。
+
+    http 型健康响应体是 JSON 且带数字字段 last_active 时解析出来——
+    供 on_demand 模式空闲回收用（服务自报"最近一次业务请求"时间戳；
+    框架自身的探测不算活动，协议见 README）。解析失败/无字段不影响健康结论。
+    """
     htype = spec.health_type
     try:
         if htype == "none":
-            return True, ""
+            return True, "", None
         if htype == "process":
             if handle is None or handle.popen.poll() is not None:
-                return False, "进程不存在"
-            return True, ""
+                return False, "进程不存在", None
+            return True, "", None
         if htype == "port":
             assert spec.health_port is not None
             with socket.create_connection(("127.0.0.1", spec.health_port), timeout=1.5):
-                return True, ""
+                return True, "", None
         if htype == "http":
             assert spec.health_url
-            with urllib.request.urlopen(spec.health_url, timeout=2.5) as resp:
+            with _NO_PROXY_OPENER.open(spec.health_url, timeout=2.5) as resp:
+                last_active: float | None = None
+                try:
+                    payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                    if isinstance(payload, dict) and isinstance(payload.get("last_active"), (int, float)):
+                        last_active = float(payload["last_active"])
+                except Exception:  # noqa: BLE001 - 响应非 JSON/空体，不影响健康结论
+                    pass
                 if getattr(resp, "status", 200) < 400:
-                    return True, ""
-                return False, f"HTTP {resp.status}"
+                    return True, "", last_active
+                return False, f"HTTP {resp.status}", last_active
     except OSError as exc:
-        return False, f"健康检查未通过: {exc.__class__.__name__}"
+        return False, f"健康检查未通过: {exc.__class__.__name__}: {exc}", None
     except Exception as exc:  # noqa: BLE001
-        return False, f"健康检查异常: {exc}"
-    return False, f"未知健康类型 {htype}"
+        return False, f"健康检查异常: {exc}", None
+    return False, f"未知健康类型 {htype}", None

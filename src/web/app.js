@@ -132,8 +132,20 @@
 
   async function postAction(name, action) {
     var res = await api("POST", "/api/services/" + encodeURIComponent(name) + "/" + action);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    await res.json().catch(function () { return {}; });
+    var data = await res.json().catch(function () { return {}; });
+    if (!res.ok) throw new Error(data.message || ("HTTP " + res.status));
+    return data;
+  }
+
+  // 懒打开：直接打开"启动中转页"（opening.html，秒开、带转圈），由中转页负责
+  // 启动服务、轮询就绪后跳转。window.open 在用户手势的同步栈内执行，不被弹窗拦截。
+  function openService(name, url, display) {
+    var target = "/opening.html?name=" + encodeURIComponent(name)
+      + "&url=" + encodeURIComponent(url)
+      + "&title=" + encodeURIComponent(display || name);
+    var w = null;
+    try { w = window.open(target, "_blank"); } catch (e) { /* 忽略：w 为 null 时下方提示 */ }
+    if (!w) toast("浏览器拦截了弹窗，请允许此站点弹窗后重试", "err");
   }
 
   async function postAutostart(name, value) {
@@ -275,17 +287,17 @@
     inner.appendChild(actions);
     card.appendChild(inner);
 
-    // 整行点击跳转（核心新需求）
+    // 整行点击跳转（懒打开：先弹中转页，就绪后跳转）
     card.addEventListener("click", function () {
       if (!card.classList.contains("clickable")) return;
       var u = card.dataset.url;
-      if (u) window.open(u, "_blank");
+      if (u) openService(card.dataset.name, u, card.dataset.display);
     });
     card.addEventListener("keydown", function (e) {
       if (!card.classList.contains("clickable")) return;
       if (e.key === "Enter") {
         var u = card.dataset.url;
-        if (u) { e.preventDefault(); window.open(u, "_blank"); }
+        if (u) { e.preventDefault(); openService(card.dataset.name, u, card.dataset.display); }
       }
     });
 
@@ -295,6 +307,7 @@
   function renderCard(svc, card) {
     var status = svc.status || "stopped";
     var url = safeUrl(svc.url);
+    card.dataset.display = svc.display || svc.name;
 
     // 整行点击：仅 url 合法时 clickable
     if (url) {
@@ -335,6 +348,14 @@
       arrow.textContent = "\u2197";
       arrow.title = "点击整行打开服务网页";
       info.appendChild(arrow);
+    }
+    if (svc.mode === "on_demand") {
+      var idleMin = Math.round((svc.idle_timeout || 600) / 60);
+      var od = document.createElement("span");
+      od.className = "chip";
+      od.textContent = "按需 · 空闲" + idleMin + "分钟停";
+      od.title = "点开自动启动；页面无操作 " + idleMin + " 分钟后框架自动停止";
+      info.appendChild(od);
     }
     if (svc.port) {
       var pc = document.createElement("span");

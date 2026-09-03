@@ -41,7 +41,9 @@ my-service\
     │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查
     │   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛
     │   └─ api.py             # REST API + web 静态托管
-    └─ web\                   # Dashboard（原生 JS 零依赖）
+    ├─ web\                   # Dashboard + 启动中转页（原生 JS 零依赖）
+    │   ├─ index.html / app.js / style.css  # 管理面板
+    │   └─ opening.html       # 点 ↗ 的中转页（秒开转圈 → 启动 → 就绪后跳转）
 ```
 
 ## 转接层（adapters\，可选）
@@ -91,7 +93,9 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
   "args": [],
   "cwd": ".",
   "mode": "managed",               // managed=托管进程树 | detached=点火器型(官方启停脚本)
+                                   // on_demand=按需（点开即启、空闲自动回收，需 health.type=http）
                                    // detached 需 stop_script 或 pidfile 之一；health 禁 process
+  "idle_timeout_sec": 600,         // 可选，仅 on_demand：最后业务请求起、认为"用完"的空闲秒数
   "health": { "type": "http", "url": "http://localhost:8090/health", "timeout_sec": 60 },
                                    // type: port|http|process|none
   "url": "http://localhost:8090/", // 可选：服务自带网页，Dashboard 一键 ↗
@@ -102,9 +106,12 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 }
 ```
 
-**地址用 `localhost` 而非 `127.0.0.1`（实测教训）**：服务可能只监听 IPv6 `::`
-（如 some-service 升级后），框架用 `127.0.0.1` 走 IPv4 直连会探测失败而误报超时；
-`localhost` 优先解析 IPv6，更贴合实际监听面。
+**健康 `url` 的 host 按服务实际监听的地址栈选（实测教训，双向）**：
+- 服务只监听 IPv6 `::`（如 some-service 升级后）→ 用 `localhost`（优先解析 IPv6）；
+  用 `127.0.0.1` 会走 IPv4 直连失败而误报超时
+- 服务只监听 IPv4 `0.0.0.0`/`127.0.0.1`（如 your-service）→ 用 `127.0.0.1`；
+  用 `localhost` 会让探测先敲一个它根本没监听的 IPv6 空门，白白多等一次超时
+- 判断依据：`Get-NetTCPConnection -LocalPort <port> -State Listen` 看 LocalAddress 是 `::` 还是 `127.0.0.1`
 
 **`timeout_sec` 要放宽的场景**：带自升级/冷启动慢的服务（some-service 跨版本升级即超 20s），
 建议 60s 起，否则会"进程其实活着、状态却超时误判 failed"。
@@ -115,6 +122,24 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 **停止方式**：`managed` 默认 `taskkill /T /F` 整树收割，可另配 `stop_script` 先执行再收树；
 `detached`（点火器型：启动脚本点完火即退场算正常，死活只信健康探测，停止执行官方
 `stop_script`）适合自带官方启停脚本的商用/外部服务（参见 `reg\some-service.json` 样例）。
+
+### 按需服务（`on_demand`）——网页类服务不再常驻
+
+看一眼就走的服务（如查询仪表盘）不应整天占着进程。`mode: "on_demand"` 提供：
+
+- **点开即启**：Dashboard 点 ↗（或整行点击）先秒开宿主的 `web\opening.html` 启动中转页
+  （转圈 + 文案，绝不白屏），中转页发起 start、直连探测目标端口，就绪后自动跳进服务网页
+  （已在运行则几乎零等待直接跳；启动失败/超时会显示原因 + 重试/返回面板按钮）
+- **空闲自动回收**：框架 monitor 每 5 秒健康复检时解析 `/health` 响应 JSON 里的
+  `last_active`（秒）字段——**服务自报"最近一次业务请求"时间**（框架自身的健康探测
+  不计入，否则永远判不死）；空闲超过 `idle_timeout_sec`（默认 600 秒）→
+  走正规停止流程（先 `stop_script` 优雅停，再树杀兜底）→ 状态干净回到 stopped，无 failed 噪音
+- **业务请求续命**：用户在网页上的操作（刷新查询、改 key 等）都会推迟回收
+
+**约束（违反标 invalid）**：`health.type` 必须 `http`；`autostart` 必须 `false`
+（按需服务由点击拉起，不随宿主运行）。`/health` 不带 `last_active` 字段时
+自动回收失效，退化为"仅点开即启"。实现样例见 `reg\your-service.json`
+与其 `server.py` 的 `last_active` 处理。
 
 ## 注册服务：最小要求与步骤
 
@@ -165,7 +190,7 @@ entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` �
 
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转/日志窗/自启开关；header 右上含宿主运行时长 + 重启/停止按钮） |
+| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/日志窗/自启开关；header 右上含宿主运行时长 + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|log <n>\|start\|stop\|restart <name>`（终端/AI 会话用） |
 | REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/logs/{svc}?n=`、`GET /api/host-log?n=`、`POST /api/services/{svc}/start\|stop\|restart`、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
@@ -181,6 +206,22 @@ start http://127.0.0.1:1236              # 打开面板
 .\entry\install_autostart.ps1          # 登录自启（一次性，需 gsudo 提权）
 ```
 ## 排坑记录
+
+### 按需服务启动被「无监听端口探测」拖慢数秒（已解决 2026-09-03）
+
+**现象**：on_demand 服务点开冷启动 6.2 秒，其中约 4 秒花在「探测一个还没起来的服务端口」。
+
+**根因**：本机由 clash 类 TUN / 安全软件的流量过滤，把「连一个无监听的端口」这种
+本应瞬时返回"拒绝"的操作，拖成**每地址 2 秒**才超时；`localhost` 解析成 IPv6+IPv4
+两个地址 → 一次防双开探测就 4 秒。纯 `socket` 直连同样慢，属系统层，非代码问题。
+
+**解决**：
+1. 防双开（`external_alive`）与 starting 判定改用 `runner.port_listening()` 快速端口探测
+   （50ms 超时），不再用 urlopen 做可达判断——真服务 12ms 内必答，空门 50ms 即放弃
+2. 健康 `url` 的 host 按服务实际监听栈选（见注册协议节），避免探测先敲一个服务没监听的地址
+3. 健康探测统一走 `runner._NO_PROXY_OPENER`（`ProxyHandler({})`），强制绕过代理直连本机（防御性加固）
+
+**效果**：冷启动 6245ms → 646ms（探测仅剩 ~64ms，其余是进程冷启动的固有开销）。
 
 ### 登录自启黑窗（已解决 2026-08-30）
 
