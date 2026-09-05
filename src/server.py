@@ -27,7 +27,7 @@ from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 SERVER_PY = SRC_DIR / "server.py"
-VERSION = "0.2"
+VERSION = "0.2.0"
 
 _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
