@@ -662,8 +662,8 @@
   async function doHostAction(action) {
     if (hostAction) return;
     var tip = action === "restart"
-      ? "重启 my-service 会短暂中断面板连接，并重启全部被管服务。\n确认重启？"
-      : "停止 my-service 会停止全部被管服务，且不会自动重启\n（需手动运行 entry\\start.ps1 才能恢复）。\n确认停止？";
+      ? "重启 my-service 会短暂中断面板连接，被管服务不受影响、继续运行。\n确认重启？"
+      : "停止 my-service 后宿主退出，被管服务不受影响、继续运行\n（需手动运行 entry\\start.ps1 才能恢复宿主）。\n确认停止？";
     if (!window.confirm(tip)) return;
 
     var oldPid = hostPid;
