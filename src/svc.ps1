@@ -1,8 +1,10 @@
 # my-service 服务管理 CLI（位于 src\，程序化接口层：终端/AI 会话/脚本用，非双击入口；内部全部转调 REST API）
 # 用法:
-#   .\src\svc.ps1 ls                      列出全部服务与状态
+#   .\src\svc.ps1 ls                        列出全部服务与状态
 #   .\src\svc.ps1 <start|stop|restart> <name>
-#   .\src\svc.ps1 log <name> [n=50]      尾读日志
+#   .\src\svc.ps1 events [name] [n=50]      尾读启停登记簿（可按服务名过滤）
+#   .\src\svc.ps1 host-err [n]              尾读宿主异常栈
+# 注：服务自身的业务日志由服务自己管（<服务目录>\logs\），框架不收集、故本 CLI 不提供读取
 param(
     [Parameter(Position = 0)][string]$Cmd = "ls",
     [Parameter(Position = 1)][string]$Name,
@@ -19,6 +21,18 @@ function Invoke-Api([string]$Method, [string]$Path, $Body = $null) {
     catch { Write-Host "[连接失败] 先运行 C:\path\to\my-service\entry\start.ps1 启动宿主 ($($_.Exception.Message))"; exit 1 }
 }
 
+function Show-Events([string]$Svc, [int]$Count) {
+    $q = "/api/audit?n=$Count"
+    if ($Svc) { $q += "&svc=$([Uri]::EscapeDataString($Svc))" }
+    (Invoke-Api GET $q).events | Format-Table @{n = "时间"; e = { $_.ts } },
+                                               @{n = "服务"; e = { if ($_.svc) { $_.svc } else { "(host)" } } },
+                                               @{n = "动作"; e = { $_.act } },
+                                               @{n = "成败"; e = { if ($_.ok) { 'ok' } else { 'FAIL' } } },
+                                               @{n = "耗时ms"; e = { $_.dur_ms } },
+                                               @{n = "pid"; e = { $_.pid } },
+                                               @{n = "备注"; e = { $_.note } } -AutoSize
+}
+
 switch ($Cmd.ToLower()) {
     "ls" {
         $r = Invoke-Api GET "/api/services"
@@ -30,12 +44,17 @@ switch ($Cmd.ToLower()) {
                                    @{n = "自启"; e = { $_.autostart } },
                                    @{n = "备注"; e = { $_.error } } -AutoSize
     }
-    "start" { $r = Invoke-Api POST "/api/services/$Name/start";  Write-Host "$Name -> $($r.status) ($($r.message))" }
+    "start" { $r = Invoke-Api POST "/api/services/$Name/start?via=cli";  Write-Host "$Name -> $($r.status) ($($r.message))" }
     "stop"  { $r = Invoke-Api POST "/api/services/$Name/stop";   Write-Host "$Name -> $($r.status) ($($r.message))" }
     "restart" { $r = Invoke-Api POST "/api/services/$Name/restart"; Write-Host "$Name -> $($r.status) ($($r.message))" }
-    "log" {
-        $r = Invoke-Api GET "/api/logs/$Name`?n=$N"
-        $r.lines | ForEach-Object { $_ }
+    "events" { Show-Events -Svc $(if ($Name -eq 'all') { '' } else { $Name }) -Count $N }
+    "host-err" {
+        if ($Name) { $N = $Name }
+        (Invoke-Api GET "/api/host-err?n=$N").lines | ForEach-Object { $_ }
     }
-    default { Write-Host "用法: svc.ps1 ls | log <name> [n] | start|stop|restart <name>"; exit 1 }
+    default {
+        Write-Host "用法: svc.ps1 ls | events [name] [n] | host-err [n] | start|stop|restart <name>"
+        exit 1
+    }
 }
+

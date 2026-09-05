@@ -18,6 +18,7 @@
       <span class="conn-text" id="conn-text">— 服务</span>
       <span class="host-uptime" id="host-uptime" title="my-service 自身运行时长">宿主 —</span>
       <span class="conn-sep" aria-hidden="true"></span>
+      <button class="btn-host btn-host-audit" id="btn-host-audit" title="查看 my-service 启停登记簿（host.jsonl）">▤ 登记簿</button>
       <button class="btn-host btn-host-restart" id="btn-host-restart" title="重启 my-service（会重启全部被管服务）">⟳ 重启</button>
       <button class="btn-host btn-host-stop" id="btn-host-stop" title="停止 my-service（会停止全部被管服务）">■ 停止</button>
       <button class="btn-refresh" id="btn-refresh" title="刷新" aria-label="刷新">↻</button>
@@ -26,6 +27,7 @@
   </header>
 
   <main class="app-main">
+    <div id="audit-drawer" class="audit-drawer" hidden></div>
     <div id="empty-state" class="empty-state" hidden>
       尚无服务 —— 在 C:\path\to\&lt;名字&gt;\ 放一份 manifest.json 即可注册
     </div>

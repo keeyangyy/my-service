@@ -15,10 +15,15 @@ import threading
 import time
 from pathlib import Path
 
-from . import runner
+from . import audit, runner
 from .scanner import Scanner, Spec
 
 TICK_SEC = 1.0
+
+
+def _dur(t0: float) -> int:
+    """距 t0 的毫秒数（登记簿 dur_ms 用）。"""
+    return int((time.time() - t0) * 1000)
 
 
 class Manager:
@@ -43,19 +48,23 @@ class Manager:
                 if name not in self.state:
                     if not spec.valid:
                         self.state[name] = {"status": "invalid", "error": spec.error}
+                        audit.emit("spec_invalid", ok=False, svc=name, note=spec.error)
                     else:
                         self.state[name] = {
                             "status": "stopped", "started_at": None,
                             "error": None, "fail_at": None,
                         }
             for gone in [n for n in self.state if n not in specs]:
-                # manifest 被删：无论进程是否存活都摘除条目并回收日志句柄
+                # manifest 被删：无论进程是否存活都摘除条目
                 h = self.handles.pop(gone, None)
-                if h:
-                    if h.popen.poll() is None:
-                        runner.stop_managed(h)   # 内部 finally 会 close fh + 清 pid
-                    else:
+                if h and h.popen.poll() is None:
+                    runner.stop_managed(h)   # 内部 finally 会清 pid 文件
+                    why = "注册条已移除，顺带收割其运行实例"
+                else:
+                    if h:
                         runner.close_handle(h)
+                    why = "注册条已移除，条目摘除"
+                audit.emit("spec_invalid", svc=gone, note=why)
                 del self.state[gone]
             # 端口冲突检查（跨服务）
             seen: dict[int, str] = {}
@@ -68,10 +77,6 @@ class Manager:
                         st["error"] = f"health.port {port} 与 {seen[port]} 冲突"
                     else:
                         seen[port] = name
-
-    def _log_path(self, name: str) -> Path:
-        # 兼容保留：服务自身日志归位于 <服务文件夹>/logs/service.log（见 runner.logs_dir）
-        return runner.logs_dir(self.specs[name]) / "service.log"
 
     # ------------------------------------------------------------ 查询
     def snapshot(self) -> list[dict]:
@@ -140,7 +145,7 @@ class Manager:
             return False, "pidfile 不存在"
         return False, "无法判定（none/process 无 pidfile）"
 
-    def adopt_external(self, name: str, reason: str) -> None:
+    def adopt_external(self, name: str, reason: str, act: str = "adopt_external") -> None:
         """把已在外部运行的实例归位为 running（自启跳过等场景，让状态如实反映）。"""
         with self.lock:
             st = self.state.get(name)
@@ -149,40 +154,56 @@ class Manager:
             if st["status"] != "running":
                 st.update(status="running", started_at=st.get("started_at") or time.time(),
                           error=None, fail_at=None)
+                audit.emit(act, svc=name, note=reason)
 
     # ------------------------------------------------------------ 操作
-    def start(self, name: str) -> tuple[bool, str]:
+    def start(self, name: str, via: str = "api") -> tuple[bool, str]:
+        """拉起服务。via 只影响登记簿文案（api/autostart/cli/面板点开即启）。"""
+        began = time.time()
         with self.lock:
             spec = self.specs.get(name)
             st = self.state.get(name)
             if spec is None or st is None:
+                audit.emit("start", ok=False, svc=name, note=f"未知服务 {name}",
+                           dur_ms=_dur(began))
                 return False, f"未知服务 {name}"
             if not spec.valid:
+                audit.emit("start", ok=False, svc=name, note=f"注册条无效：{spec.error}",
+                           dur_ms=_dur(began))
                 return False, f"注册条无效: {spec.error}"
             if not spec.enabled:
+                audit.emit("start", ok=False, svc=name, note="服务已被 enabled:false 停用",
+                           dur_ms=_dur(began))
                 return False, "服务已被 enabled:false 停用"
             cur = st["status"]
             if cur in ("running", "starting"):
-                return True, f"已在 {cur}"
+                return True, f"已在 {cur}"   # 无状态变化，不记事件
             # 防双开：冷启动（stopped/failed）前确认没有已存在的实例（外部/残留/手动），
             # 否则会双重拉起（some-service 实弹教训；process 型靠 pidfile 判定）。
             if cur in ("stopped", "failed"):
                 alive, _reason = self.external_alive(name)
                 if alive:
-                    st.update(status="failed",
-                              error=f"检测到已有实例在运行（{_reason}），已拒绝重复启动",
-                              fail_at=time.time())
-                    return False, f"检测到已有实例在运行（{_reason}），已拒绝重复启动"
+                    why = f"检测到已有实例在运行（{_reason}），已拒绝重复启动"
+                    st.update(status="failed", error=why, fail_at=time.time())
+                    audit.emit("reject_double", ok=False, svc=name, note=_reason,
+                               dur_ms=_dur(began))
+                    return False, why
             try:
                 handle = runner.start_process(spec)
             except Exception as exc:  # noqa: BLE001
                 st.update(status="failed", error=f"启动失败: {exc}", fail_at=time.time())
+                audit.emit("spawn_fail", ok=False, svc=name, note=f"启动失败：{exc}",
+                           dur_ms=_dur(began))
                 return False, str(exc)
             self.handles[name] = handle
-            st.update(status="starting", started_at=handle.started_at, error=None, fail_at=None)
+            # 发起不成一条事件：成败由 monitor 在 starting 收敛时落终态（含耗时）
+            st.update(status="starting", started_at=handle.started_at, error=None,
+                      fail_at=None, start_began=began, start_via=via)
             return True, "starting"
 
-    def stop(self, name: str) -> tuple[bool, str]:
+    def stop(self, name: str, act: str = "stop", reason: str = "") -> tuple[bool, str]:
+        """停止服务。act/reason 只影响登记簿文案（idle_reclaim、宿主收割等复用本函数）。"""
+        began = time.time()
         # 阶段一（持锁）：标记 stopping 并把 handle 从登记表摘除——
         # 此后 monitor 对该服务的 starting/running 分支因 handle 缺席而不再干预
         with self.lock:
@@ -190,14 +211,17 @@ class Manager:
             st = self.state.get(name)
             handle = self.handles.pop(name, None)
             if spec is None or st is None:
+                audit.emit(act, ok=False, svc=name, note=f"未知服务 {name}",
+                           dur_ms=_dur(began))
                 return False, f"未知服务 {name}"
             if (st["status"] in ("stopped", "failed", "invalid")) and handle is None:
                 if not st["status"].startswith("invalid"):
                     st.update(status="stopped", error=None, started_at=None)
-                return True, "已停止"
+                return True, "已停止"      # 本来就没跑，不记事件
             self._user_stopping.add(name)
             self._pending_stop[name] = time.time()
             st["status"] = "stopping"
+            was_pid = handle.pid if handle else None
 
         # 阶段二（锁外）：阻塞式收割进程，不占用 RLock 妨碍其他请求
         ok, msg = True, "stopped"
@@ -225,19 +249,22 @@ class Manager:
             if st2 is not None:
                 st2["status"] = "stopped"
                 st2["started_at"] = None
+        audit.emit(act, ok=ok, svc=name, dur_ms=_dur(began), pid=was_pid,
+                   note=reason or ("" if ok else f"停止异常：{msg}"))
         return ok, msg
 
-    def restart(self, name: str) -> tuple[bool, str]:
+    def restart(self, name: str, via: str = "api") -> tuple[bool, str]:
+        # 登记簿里表现为「stop → start」两条事件，不再单独造 restart 记录
         ok, msg = self.stop(name)
         if not ok:
             return ok, msg
-        return self.start(name)
+        return self.start(name, via=via)
 
-    def stop_all(self) -> None:
+    def stop_all(self, reason: str = "宿主退出，收割全部被管服务") -> None:
         """收割当前所有托管中的服务（宿主退出/重启前调用）。"""
         for name in list(self.handles.keys()):
             try:
-                self.stop(name)
+                self.stop(name, reason=reason)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -251,7 +278,8 @@ class Manager:
                 return
             self._idle_reaping.add(name)
         try:
-            self.stop(name)
+            self.stop(name, act="idle_reclaim",
+                      reason=f"空闲超 {int(spec.idle_timeout)}s，按需服务自动回收")
         finally:
             with self.lock:
                 self._idle_reaping.discard(name)
@@ -261,6 +289,8 @@ class Manager:
             spec = self.specs.get(name)
             if spec is None:
                 return False, f"未知服务 {name}"
+            if spec.mode == "on_demand":
+                return False, "on_demand 模式按需启动，不支持设置自启"
             try:
                 raw = json.loads(spec.reg_path.read_text(encoding="utf-8-sig"))
             except Exception as exc:  # noqa: BLE001
@@ -302,6 +332,9 @@ class Manager:
                 handle = self.handles.get(name)
 
                 if status == "starting":
+                    began = st.get("start_began")
+                    dur = _dur(float(began)) if began else None
+                    via = str(st.get("start_via") or "api")
                     alive = handle.popen.poll() is None if handle else False
                     # 快速可达判定，不做完整 urlopen（无监听端口可能被代理/TUN拖成数秒，
                     # 会卡住整个 monitor 循环）；running 后仍由复检兜底核对真健康
@@ -311,6 +344,11 @@ class Manager:
                     elapsed = now - float(st.get("started_at") or now)
                     if healthy:
                         st["status"], st["error"] = ("running", None)
+                        st.pop("start_began", None)
+                        st.pop("start_via", None)
+                        audit.emit("start", svc=name, dur_ms=dur,
+                                   pid=handle.pid if handle else None,
+                                   note=f"{spec.mode} 健康就绪（{via}）")
                         continue
                     if spec.mode == "detached" and handle and not alive:
                         # 点火器脚本退场 = 正常；摘句柄，继续只等健康就绪
@@ -325,12 +363,19 @@ class Manager:
                                 runner.close_handle(handle)
                             st.update(status="failed",
                                       error=f"进程启动即退出 rc={rc}", fail_at=now)
+                            st.pop("start_began", None)
+                            st.pop("start_via", None)
+                            audit.emit("crash", ok=False, svc=name, dur_ms=dur,
+                                       note=f"进程启动即退出 rc={rc}（{via}）")
                             continue
                     if elapsed > timeout:
                         # 关键修复点：超时必须收敛，不能像 早期内部版本 那样残留 starting
-                        st.update(status="failed",
-                                  error=f"健康检查超时({timeout:.0f}s){('，' + why) if why else ''}",
-                                  fail_at=now)
+                        note = (f"健康检查超时({timeout:.0f}s)"
+                                f"{('，' + why) if why else ''}（{via}）")
+                        st.update(status="failed", error=note, fail_at=now)
+                        st.pop("start_began", None)
+                        st.pop("start_via", None)
+                        audit.emit("start", ok=False, svc=name, dur_ms=dur, note=note)
 
                 elif status == "failed" and spec.mode == "detached":
                     # 假失败自愈：detached 型服务被外部拉起/升级慢未就绪时，
@@ -339,6 +384,8 @@ class Manager:
                         alive, _w = runner.check_health(spec, None)
                         if alive:
                             st.update(status="running", started_at=now, error=None)
+                            audit.emit("health_flip", svc=name,
+                                       note="假失败自愈：健康探测通过，归位 running")
 
                 elif status == "running":
                     if spec.mode == "detached":
@@ -353,6 +400,8 @@ class Manager:
                             if not healthy:
                                 st.update(status="stopped", started_at=None,
                                           error=(why or "健康检查失联，进程可能已被外部停止"))
+                                audit.emit("health_flip", ok=False, svc=name,
+                                           note=why or "健康失联：进程可能已被外部停止")
                         continue
                     if handle and handle.popen.poll() is not None:
                         rc = handle.popen.returncode
@@ -362,6 +411,8 @@ class Manager:
                         if crashed:
                             st.update(status="failed", error=f"进程意外退出 rc={rc}",
                                       fail_at=now)
+                            audit.emit("crash", ok=False, svc=name,
+                                       note=f"进程意外退出 rc={rc}")
                         else:
                             st.update(status="stopped", started_at=None, error=None)
                         continue
@@ -379,13 +430,22 @@ class Manager:
                                 threading.Thread(
                                     target=self._reap_idle, args=(name,), daemon=True).start()
                         else:
-                            healthy, why, last_active = runner.check_health(spec, handle), None
+                            healthy, why = runner.check_health(spec, handle)
+                        if healthy:
+                            st.pop("flip_noted", None)   # 恢复后允许再记一次翻转
                         if not healthy:
                             if handle is None:
                                 # 外部归位实例（无句柄）：健康失联 = 已被外部停止，干净归位
                                 st.update(status="stopped", started_at=None, error=None)
+                                audit.emit("health_flip", ok=False, svc=name,
+                                           note="外部实例已失联，归位 stopped")
                             else:
                                 st["error"] = why or "健康检查失败(复检)"
+                                # 状态未翻转（仍 running）：只记第一次，否则每 5 秒刷一条噪音
+                                if not st.get("flip_noted"):
+                                    st["flip_noted"] = True
+                                    audit.emit("health_flip", ok=False, svc=name,
+                                               note=why or "健康检查失败(复检)")
 
                 elif status == "stopped":
                     # 外部/手动启动的实例：定期探测端口，活着就归位 running。
@@ -395,8 +455,8 @@ class Manager:
                         st["last_check"] = now
                         alive, _reason = self.external_alive(name)
                         if alive:
-                            st.update(status="running", started_at=now,
-                                      error=None, fail_at=None)
+                            # 外部/手动实例归位——统一走 adopt_external（含登记簿埋点）
+                            self.adopt_external(name, f"检测到外部实例：{_reason}")
 
                 elif status == "stopping":
                     began = self._pending_stop.get(name)

@@ -29,16 +29,19 @@ my-service\
 │   ├─ restart.ps1            # → 重启宿主
 │   ├─ install_autostart.ps1 / uninstall_autostart.ps1  # 自启注册/注销（一次性运维）
 │   └─ Dashboard.url          # 双击 → 直接打开管理面板
-├─ logs\                      # 运行时产物（两档模型约定）：宿主日志 + pid
-│   ├─ service.log / service.err.log               # 宿主自身日志（只有启停事件）
-│   └─ service.pid
+├─ logs\                      # ★ 框架侧运行时产物（唯一作者 = my-service）
+│   ├─ host.jsonl             # 启停登记簿：一行一事件（详见「日志边界」）
+│   ├─ host.err.log           # 宿主自身异常栈（sys.stderr）
+│   ├─ host.pid               # 宿主 pid（ctl.ps1 优先读它）
+│   └─ pids\<服务名>.pid       # 被管服务 pid——框架记账留在框架家
 └─ src\                       # 实现细节 + 程序化接口
     ├─ server.py              # 组装入口（含 HostController 自管理）
     ├─ ctl.ps1                # 内部引擎（entry\ 入口的底层，勿直接调用）
     ├─ svc.ps1                # 服务管理 CLI（带参数：终端/AI 会话/脚本用，非双击入口）
     ├─ core\
     │   ├─ scanner.py         # 扫描 reg\*.json（注册中心唯一源）
-    │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查
+    │   ├─ audit.py           # 启停登记簿（host.jsonl 的唯一作者）
+    │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查（输出不接管）
     │   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛
     │   └─ api.py             # REST API + web 静态托管
     ├─ web\                   # Dashboard + 启动中转页（原生 JS 零依赖）
@@ -81,11 +84,61 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 
 > 典型场景：宿主重启时旧子进程成孤儿仍在跑、或你先手动起了服务——现在都不会双开。
 
+## 日志边界（三条流，一个文件只有一个作者）
+
+**框架不写服务日志，也不读。** 服务加不加进 my-service，它的日志形态一字不变；
+my-service 只在自己家记一本"谁、何时、启停了什么、成没成"的登记簿。
+
+| 流 | 文件 | 唯一作者 | 内容 |
+|:--|:--|:--|:--|
+| 控制面 | `my-service\logs\host.jsonl` | my-service | 启停生命周期事件，一行一条 |
+| 宿主自身 | `my-service\logs\host.err.log` | my-service | 宿主未捕获异常栈 |
+| 数据面 | `<服务 path>\logs\service.log` / `.err.log` | 服务本人 | 业务日志，格式与轮转自定 |
+
+被管进程的 stdout/stderr **一律 DEVNULL**（不接管 = 不成为第二个作者）。
+代价与补偿：服务自己 `print` 的启动报错不再留档，所以**框架能观测到的失败原因全部
+落进登记簿的 `note`**（健康超时 / 端口占用 / 拒绝双开 / 退出码 / 入口不存在）。
+接入前提因此更硬一条：常驻服务必须自己写文件日志（见 `C:\path\to\README.md`「日志合规」）。
+
+### 登记簿事件字典（`host.jsonl`）
+
+固定 7 字段：`ts`（本地时间·毫秒）/ `svc`（宿主事件为 null）/ `act` / `ok` / `dur_ms` / `pid` / `note`。
+
+| `act` | 何时出现 |
+|:--|:--|
+| `host_start` / `host_stop` | 宿主起来 / 收工（含面板「重启·停止宿主」） |
+| `start` | `starting` 收敛为终态：成功带耗时与 pid，失败 `note` 给原因（含 `via` 来源） |
+| `stop` | 一次停止完成（宿主收割、空闲回收会带各自 reason） |
+| `autostart_skip` | 自启时实例已在运行 → 跳过并归位 |
+| `adopt_external` | 检测到外部/手动实例，归位 running |
+| `health_flip` | running 期健康翻转（失联归位 stopped / 假失败自愈） |
+| `idle_reclaim` | on_demand 空闲超时自动回收 |
+| `crash` | 托管进程意外退出（含 rc） |
+| `spawn_fail` | 进程根本没能起来（入口异常 / 拒绝访问） |
+| `reject_double` | 防双开拒绝启动 |
+| `spec_invalid` | 注册条被判无效或被移除 |
+
+`restart` 不单独成事件，表现为 `stop → start` 两条。动作枚举以 `src\core\audit.py`
+的 `ACTS` 为准，新增须同步前端 `app.js` 的 `ACT_MAP`。
+
+查看途径：面板「▤ 登记簿」（全局）/ 卡片「事件」（单服务）；
+命令行 `.\src\svc.ps1 events [name] [n]`；接口 `GET /api/audit?n=&svc=&fail=1`。
+
+### 本次重构明确不做（不是遗漏）
+
+- **detached 商业软件的本体日志留在程序自己的目录**：some-service 的真日志是
+  `%LOCALAPPDATA%\SomeService\some-service.log`（已 38 MB 无轮转），框架既不代管也不代理读取，
+  要看请自己开文件；给它加轮转属于该软件自己的合规义务。
+- 官方 `some-service\start.ps1` 把本体输出重定向到 TEMP 随机文件后再 `Remove-Item` 删掉，
+  那份输出注定丢失——不是 my-service 能修的事。
+- 服务的裸 `print` 不落文件就是没有日志：框架不再兜这个底（历史上正是"框架代笔
+  `service.log`"与服务自写抢同一个文件，才造成混码与归属不清）。
+
 ## 注册条协议（reg\*.json）
 
 ```jsonc
 {
-  "path": "D:/program(portable)/some-service", // ★ 服务真实家（绝对路径或相对 reg\ 目录）
+  "path": "C:/path/to/your-service",              // ★ 服务真实家（绝对路径或相对 reg\ 目录）
   "enabled": true,                 // false = 暂时停用（不参与编排）
   "display": "SomeService",
   "description": "AI agent 通信网关",
@@ -116,8 +169,10 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 **`timeout_sec` 要放宽的场景**：带自升级/冷启动慢的服务（some-service 跨版本升级即超 20s），
 建议 60s 起，否则会"进程其实活着、状态却超时误判 failed"。
 
-**路径语义**：注册条里除 `path` 外的一切路径（entry/cwd/stop_script）都**相对 `path`** 解析；
-框架收集的 stdout 写 `<path>\logs\service.log[.err]`，遵循 services 总目录两档约定。
+**路径语义**：注册条里除 `path` 外的一切路径（entry/cwd/stop_script）都**相对 `path`** 解析。
+框架**不向服务目录写任何东西**：进程 stdout/stderr 一律 DEVNULL，服务日志由服务自管
+（约定见 `C:\path\to\README.md`「日志合规」）；被管进程的 pid 记账写
+`my-service\logs\pids\<服务名>.pid`，停止时由框架清理。
 
 **停止方式**：`managed` 默认 `taskkill /T /F` 整树收割，可另配 `stop_script` 先执行再收树；
 `detached`（点火器型：启动脚本点完火即退场算正常，死活只信健康探测，停止执行官方
@@ -156,7 +211,9 @@ monitor 线程每秒以健康探测校正状态并强制超时收敛——杜绝
 
 **接入检查单**：列表出现但状态不对时按序查——注册条无效（红标 invalid 附原因）→
 端口冲突（健康端口被占用/假健康防护拒绝）→ 入口文件不存在 → 健康超时
-（`timeout_sec` 内未达健康判定，日志面板看启动输出）。
+（`timeout_sec` 内未达健康判定）。这四类原因都会出现在登记簿的 `note`
+（卡片「事件」或 `svc.ps1 events <name>`）；至于服务**内部**为什么起不来，
+看服务自己家 `logs\` 的日志——框架不代管，也不代理读取。
 
 failed 提示「检测到已有实例在运行」= **正常防护**，说明服务其实活着（外部/残留实例），
 按需去对方那边停止，或直接点面板重启走框架原子切换；提示「健康目标已被占用」同理。
@@ -167,7 +224,7 @@ failed 提示「检测到已有实例在运行」= **正常防护**，说明服�
 
 ```json
 {
-  "path": "D:/program(portable)/some-service",
+  "path": "C:/path/to/your-service",
   "enabled": true,
   "display": "SomeService",
   "description": "AI agent 通信网关（8090）——单处维护：直指官方脚本",
@@ -183,17 +240,17 @@ failed 提示「检测到已有实例在运行」= **正常防护**，说明服�
 }
 ```
 
-要点回顾：`path`=便携目录（**exe 与数据分离的服务，cwd 钉死在此防漂移空库**）、
+要点回顾：`path`=服务在 `C:\path\to\` 下的家目录（**exe 与数据分离的服务，cwd 钉死在此防漂移空库**）、
 entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` 关掉官方脚本交互等待。
 
 ## 用户操作接口
 
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/日志窗/自启开关；header 右上含宿主运行时长 + 重启/停止按钮） |
+| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
-| 服务 CLI | `.\src\svc.ps1 ls\|log <n>\|start\|stop\|restart <name>`（终端/AI 会话用） |
-| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/logs/{svc}?n=`、`GET /api/host-log?n=`、`POST /api/services/{svc}/start\|stop\|restart`、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
+| 服务 CLI | `.\src\svc.ps1 ls\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
+| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`GET /api/host-err?n=`(宿主异常栈)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注销 = 删除注册条或 `"enabled": false` |
 
 ## 快速上手

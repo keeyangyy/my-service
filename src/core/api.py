@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import runner
+from . import audit
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -80,26 +80,24 @@ def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Mana
                     return self._json(404, {"ok": False, "error": f"未知服务 {name}"})
                 return self._json(200, svc)
 
-            if path.startswith("/api/logs/"):
-                name = path[len("/api/logs/"):]
+            if path == "/api/audit":
+                # 控制面登记簿（my-service\logs\host.jsonl）——不含任何服务业务输出
                 qs = parse_qs(parsed.query)
-                try:
-                    n = max(1, min(1000, int(qs.get("n", ["200"])[0])))
-                except ValueError:
-                    n = 200
-                payload = read_log_tail(manager, name, n)
-                if payload is None:
-                    return self._json(404, {"ok": False, "error": f"未知服务 {name}"})
-                return self._json(200, payload)
+                n = _num(qs, "n", 200)
+                svc = (qs.get("svc") or [None])[0] or None
+                only_fail = (qs.get("fail") or ["0"])[0].lower() in ("1", "true", "yes")
+                return self._json(200, {
+                    "ok": True,
+                    "source": str(audit.current_path() or ""),
+                    "events": audit.tail(n, svc, only_fail),
+                })
 
-            if path == "/api/host-log":
+            if path == "/api/host-err":
+                # 宿主自身异常栈（my-service\logs\host.err.log）
                 qs = parse_qs(parsed.query)
-                try:
-                    n = max(1, min(1000, int(qs.get("n", ["200"])[0])))
-                except ValueError:
-                    n = 200
-                return self._json(200, read_host_log(
-                    manager, n, getattr(host, "rdir", None)))
+                n = _num(qs, "n", 200)
+                return self._json(200, _tail_file(
+                    _host_logs_dir(manager, host) / "host.err.log", "(host-err)", n))
 
             rest = path.lstrip("/")
             if rest and not rest.startswith("api/"):
@@ -123,15 +121,18 @@ def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Mana
             parsed = urlparse(self.path)
             parts = [p for p in unquote(parsed.path).split("/") if p]
 
-            # POST /api/services/{name}/{start|stop|restart}
+            # POST /api/services/{name}/{start|stop|restart}[?via=cli]
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "services":
                 name, action = parts[2], parts[3]
-                fn = {"start": manager.start,
-                      "stop": manager.stop,
-                      "restart": manager.restart}.get(action)
-                if fn is None:
+                if action not in ("start", "stop", "restart"):
                     return self._json(404, {"ok": False, "error": f"未知动作 {action}"})
-                ok, msg = fn(name)
+                via = (parse_qs(parsed.query).get("via") or ["api"])[0]
+                if action == "start":
+                    ok, msg = manager.start(name, via=via)
+                elif action == "stop":
+                    ok, msg = manager.stop(name)
+                else:
+                    ok, msg = manager.restart(name, via=via)
                 status_now = next(
                     (s["status"] for s in manager.snapshot() if s["name"] == name), None)
                 return self._json(202 if ok else 500,
@@ -161,19 +162,19 @@ def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Mana
     return Handler
 
 
-def read_log_tail(manager, name: str, n: int) -> dict | None:  # noqa: ANN001
-    """服务自身日志：<服务文件夹>/logs/service.log（stdout 为主，err 单独成文件）。"""
-    spec = manager.specs.get(name)
-    if spec is None:
-        return None
-    return _tail_file(runner.logs_dir(spec) / "service.log", name, n)
+def _num(qs: dict, key: str, default: int) -> int:
+    try:
+        return max(1, min(1000, int(qs.get(key, [str(default)])[0])))
+    except (TypeError, ValueError):
+        return default
 
 
-def read_host_log(manager, n: int, rdir: Path | None = None) -> dict:  # noqa: ANN001
-    """宿主自身日志：<my-service>/logs/service.log —— 只含启停事件。"""
-    if rdir is None:  # 兜底：controller 未注入时按 reg 目录推断宿主根
-        rdir = Path(manager.scanner.reg_dir).parent / "logs"
-    return _tail_file(rdir / "service.log", "(host)", n)
+def _host_logs_dir(manager, host) -> Path:  # noqa: ANN001
+    """宿主运行时产物目录：<my-service>/logs —— 框架侧文件的唯一落点。"""
+    rdir = getattr(host, "rdir", None)
+    if rdir:
+        return Path(rdir)
+    return Path(manager.scanner.reg_dir).parent / "logs"
 
 
 def _tail_file(path: Path, name: str, n: int) -> dict:

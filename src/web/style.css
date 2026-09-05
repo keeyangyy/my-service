@@ -328,6 +328,37 @@ html, body {
 .log-line .lc { white-space: pre; color: var(--text); }
 .log-empty { color: var(--muted); padding: 4px; }
 
+/* 9. 登记簿：启停事件时间线（my-service 自己记的，非服务业务日志） */
+.btn-host-audit { color: var(--muted); }
+.btn-host-audit:hover,
+.btn-host-audit.active {
+  color: var(--blue);
+  border-color: rgba(88,166,255,.4);
+  background: rgba(88,166,255,.14);
+}
+.audit-drawer[hidden] { display: none; }
+.audit-drawer.open { max-height: 300px; margin-top: 0; }
+.ev {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+.ev-ts  { flex: 0 0 auto; color: var(--muted); }
+.ev-svc { flex: 0 0 auto; min-width: 88px; color: var(--blue); }
+.ev-act { flex: 0 0 auto; min-width: 76px; color: var(--text); }
+.ev-dur { flex: 0 0 auto; min-width: 56px; color: var(--muted); }
+.ev-note {
+  flex: 1 1 auto;
+  white-space: pre;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ev.fail .ev-act,
+.ev.fail .ev-svc,
+.ev.fail .ev-note { color: var(--red); }
+
 /* 响应式 */
 @media (max-width: 900px) {
   .app-main { padding: 12px; }

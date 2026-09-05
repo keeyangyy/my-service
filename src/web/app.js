@@ -6,6 +6,18 @@
   var POLL_FAST = 1000;
   var POLL_SLOW = 3000;
   var LOG_N = 200;
+  var ALL_KEY = "(all)";   // 登记簿抽屉的伪服务名（不带 svc 过滤）
+
+  // 登记簿动作中文名（与 src/core/audit.py 的 ACTS 保持一致）
+  var ACT_MAP = {
+    host_start: "宿主启动", host_stop: "宿主停止",
+    start: "启动", stop: "停止", restart: "重启",
+    autostart: "自启发起", autostart_skip: "自启跳过",
+    adopt_external: "外部实例归位", health_flip: "健康翻转",
+    idle_reclaim: "空闲回收", crash: "意外退出",
+    spawn_fail: "拉起失败", reject_double: "拒绝双开",
+    spec_invalid: "注册条无效"
+  };
 
   // 中文字义映射表（状态 -> 样式类 + 文案）
   var STATUS_MAP = {
@@ -26,11 +38,13 @@
     toasts: document.getElementById("toast-container"),
     refresh: document.getElementById("btn-refresh"),
     hostUptime: document.getElementById("host-uptime"),
+    auditBtn: document.getElementById("btn-host-audit"),
+    auditDrawer: document.getElementById("audit-drawer"),
     hostRestart: document.getElementById("btn-host-restart"),
     hostStop: document.getElementById("btn-host-stop")
   };
 
-  // 状态：同一时刻只允许一张卡片展开日志
+  // 状态：同一时刻只允许一个事件视图展开（某张卡片内，或顶部全局抽屉）
   var openLogs = new Set();
   var logAtBottom = new Map();   // name -> 是否贴底
   var stableLayout = new Map();  // name -> 过渡态锚定稳定态
@@ -123,11 +137,14 @@
     return await res.json();
   }
 
-  async function fetchLogs(name) {
-    var res = await api("GET", "/api/logs/" + encodeURIComponent(name) + "?n=" + LOG_N);
+  async function fetchAudit(name) {
+    // 控制面登记簿：只含 my-service 记的启停事件，服务的业务日志由服务自管（框架不读）
+    var q = "/api/audit?n=" + LOG_N
+      + (name && name !== ALL_KEY ? "&svc=" + encodeURIComponent(name) : "");
+    var res = await api("GET", q);
     if (!res.ok) throw new Error("HTTP " + res.status);
     var data = await res.json();
-    return Array.isArray(data.lines) ? data.lines : [];
+    return Array.isArray(data.events) ? data.events : [];
   }
 
   async function postAction(name, action) {
@@ -393,7 +410,11 @@
       info.appendChild(er);
     }
 
-    // 自启滑块（复用，只更新勾选态）
+    // 自启滑块（复用，只更新勾选态）；on_demand 按需启动，不支持自启，隐藏
+    var toggleEl = card.querySelector(".toggle");
+    if (toggleEl) {
+      toggleEl.style.display = (svc.mode === "on_demand") ? "none" : "";
+    }
     card.querySelector(".toggle-input").checked = !!svc.autostart;
 
     // 操作按钮组（焦点保护）
@@ -426,40 +447,39 @@
       opGroup.appendChild(note);
     }
 
-    // 日志按钮（复用，更新文案/激活态）
+    // 事件按钮（复用，更新文案/激活态）——展开的是 my-service 启停登记簿，不是服务日志
     var logBtn = card.querySelector(".btn-log");
     var isOpen = openLogs.has(svc.name);
     logBtn.classList.toggle("active", isOpen);
-    logBtn.textContent = isOpen ? "收起" : "日志";
+    logBtn.textContent = isOpen ? "收起" : "事件";
   }
 
-  // ===== 日志面板 =====
-  function openLog(name, card) {
-    if (openLogs.has(name)) {
-      openLogs.delete(name);
-      logAtBottom.delete(name);
-      var p = card.querySelector(".log-panel");
-      if (p) { p.classList.remove("open"); setTimeout(function () { p.remove(); }, 260); }
-      card.classList.remove("log-open");
-      var btn = card.querySelector(".btn-log");
-      if (btn) { btn.textContent = "日志"; btn.classList.remove("active"); }
+  // ===== 事件面板（登记簿视图；服务的业务日志由服务自管，面板不读）=====
+  function closeLog(name) {
+    if (!openLogs.has(name)) return;
+    openLogs.delete(name);
+    logAtBottom.delete(name);
+    if (name === ALL_KEY) {
+      els.auditDrawer.hidden = true;
+      els.auditDrawer.classList.remove("open");
+      els.auditDrawer.replaceChildren();
+      if (els.auditBtn) els.auditBtn.classList.remove("active");
       return;
     }
+    var card = cardByName(name);
+    if (!card) return;
+    var p = card.querySelector(".log-panel");
+    if (p) { p.classList.remove("open"); setTimeout(function () { p.remove(); }, 260); }
+    card.classList.remove("log-open");
+    var btn = card.querySelector(".btn-log");
+    if (btn) { btn.textContent = "事件"; btn.classList.remove("active"); }
+  }
 
-    // 同一时刻只允许一张展开：收起其他
-    openLogs.forEach(function (other) {
-      if (other === name) return;
-      openLogs.delete(other);
-      logAtBottom.delete(other);
-      var oc = cardByName(other);
-      if (oc) {
-        var op = oc.querySelector(".log-panel");
-        if (op) op.remove();
-        oc.classList.remove("log-open");
-        var ob = oc.querySelector(".btn-log");
-        if (ob) { ob.textContent = "日志"; ob.classList.remove("active"); }
-      }
-    });
+  function openLog(name, card) {
+    if (name === ALL_KEY) { toggleAllAudit(); return; }
+    if (openLogs.has(name)) { closeLog(name); return; }
+    // 同一时刻只允许一个视图展开（含全局抽屉）
+    Array.prototype.slice.call(openLogs).forEach(closeLog);
 
     openLogs.add(name);
     logAtBottom.set(name, true);
@@ -470,8 +490,25 @@
     bindLogDrag(panel);
     panel.addEventListener("click", function (e) { e.stopPropagation(); });
     requestAnimationFrame(function () { panel.classList.add("open"); });
-    refreshLog(name, panel);
+    refreshEvents(name, panel);
     card.classList.add("log-open");
+  }
+
+  function toggleAllAudit() {
+    if (!els.auditDrawer) return;
+    if (openLogs.has(ALL_KEY)) { closeLog(ALL_KEY); return; }
+    Array.prototype.slice.call(openLogs).forEach(closeLog);
+    openLogs.add(ALL_KEY);
+    logAtBottom.set(ALL_KEY, true);
+    els.auditDrawer.hidden = false;
+    if (!els.auditDrawer.dataset.bound) {   // 抽屉是复用节点，监听只装一次
+      bindLogScroll(ALL_KEY, els.auditDrawer);
+      bindLogDrag(els.auditDrawer);
+      els.auditDrawer.dataset.bound = "1";
+    }
+    requestAnimationFrame(function () { els.auditDrawer.classList.add("open"); });
+    if (els.auditBtn) els.auditBtn.classList.add("active");
+    refreshEvents(ALL_KEY, els.auditDrawer);
   }
 
   function bindLogScroll(name, panel) {
@@ -499,29 +536,39 @@
     if (dragState) { dragState.panel.classList.remove("dragging"); dragState = null; }
   });
 
-  async function refreshLog(name, panel) {
+  async function refreshEvents(name, panel) {
     if (!panel || !openLogs.has(name)) return;
     var wasBottom = logAtBottom.get(name) !== false;
     try {
-      var lines = await fetchLogs(name);
+      var events = await fetchAudit(name);
       panel.replaceChildren();
-      if (!lines.length) {
+      if (!events.length) {
         var empty = document.createElement("div");
         empty.className = "log-empty";
-        empty.textContent = "（暂无日志）";
+        empty.textContent = "（暂无事件 —— 服务的运行日志写在它自己目录的 logs\\ 下，框架不代管）";
         panel.appendChild(empty);
       } else {
-        lines.forEach(function (ln, i) {
+        events.forEach(function (ev) {
+          var fail = ev.ok === false;
           var row = document.createElement("div");
-          row.className = "log-line";
-          var num = document.createElement("span");
-          num.className = "ln";
-          num.textContent = String(i + 1);
-          var content = document.createElement("span");
-          content.className = "lc";
-          content.textContent = ln;
-          row.appendChild(num);
-          row.appendChild(content);
+          row.className = "ev" + (fail ? " fail" : "");
+          var ts = document.createElement("span");
+          ts.className = "ev-ts";
+          ts.textContent = String(ev.ts || "").slice(11, 19);   // 只留时分秒
+          var svc = document.createElement("span");
+          svc.className = "ev-svc";
+          svc.textContent = ev.svc || "(host)";
+          var act = document.createElement("span");
+          act.className = "ev-act";
+          act.textContent = ACT_MAP[ev.act] || ev.act;
+          var dur = document.createElement("span");
+          dur.className = "ev-dur";
+          dur.textContent = (typeof ev.dur_ms === "number") ? ev.dur_ms + "ms" : "";
+          var note = document.createElement("span");
+          note.className = "ev-note";
+          note.textContent = (fail ? "✗ " : "") + (ev.note || "");
+          row.appendChild(ts); row.appendChild(svc); row.appendChild(act);
+          row.appendChild(dur); row.appendChild(note);
           panel.appendChild(row);
         });
       }
@@ -576,12 +623,16 @@
       renderCard(svc, card);
     });
 
-    // 刷新所有已展开日志面板（跟随轮询频率）
+    // 刷新所有已展开的事件面板（跟随轮询频率）
     openLogs.forEach(function (name) {
+      if (name === ALL_KEY) {
+        refreshEvents(ALL_KEY, els.auditDrawer);
+        return;
+      }
       var card = cardByName(name);
       if (!card) return;
       var panel = card.querySelector(".log-panel");
-      if (panel) refreshLog(name, panel);
+      if (panel) refreshEvents(name, panel);
     });
 
     poll(false);
@@ -612,7 +663,7 @@
     if (hostAction) return;
     var tip = action === "restart"
       ? "重启 my-service 会短暂中断面板连接，并重启全部被管服务。\n确认重启？"
-      : "停止 my-service 会停止全部被管服务，且不会自动重启\n（需手动运行 run\\start.ps1 才能恢复）。\n确认停止？";
+      : "停止 my-service 会停止全部被管服务，且不会自动重启\n（需手动运行 entry\\start.ps1 才能恢复）。\n确认停止？";
     if (!window.confirm(tip)) return;
 
     var oldPid = hostPid;
@@ -645,14 +696,14 @@
           setTimeout(function () { location.reload(); }, 700);
         } else if (tries > 40) {
           clearInterval(iv); hostAction = null;
-          toast("重启超时，请查看 run\\service.err.log", "err");
+          toast("重启超时，请查看 logs\\host.err.log", "err");
           els.refresh.disabled = false; poll(false);
         }
       } else { // stop：一旦宿主无响应即确认已停止
         if (!meta) {
           clearInterval(iv); hostAction = null;
           setConnected(false);
-          els.text.textContent = "宿主已停止 — 运行 run\\start.ps1 重新启动";
+          els.text.textContent = "宿主已停止 — 运行 entry\\start.ps1 重新启动";
           els.text.classList.add("off");
         } else if (tries > 20) {
           clearInterval(iv); hostAction = null;
@@ -666,6 +717,9 @@
     if (!document.hidden) poll(true);
   });
   els.refresh.addEventListener("click", function () { poll(true); });
+  if (els.auditBtn) {
+    els.auditBtn.addEventListener("click", function () { toggleAllAudit(); });
+  }
   els.hostRestart.addEventListener("click", function () { doHostAction("restart"); });
   els.hostStop.addEventListener("click", function () { doHostAction("stop"); });
 

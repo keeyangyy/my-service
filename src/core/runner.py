@@ -3,6 +3,9 @@
 
 纯工具层：构建命令行、启动托管进程、按停止模式终结进程、执行健康检查。
 不做状态决策（那是 state.Manager 的事），只提供原子操作。
+
+日志边界：本层不写任何日志文件——被管进程 stdout/stderr 一律 DEVNULL，服务日志由
+服务自管（服务目录下的 logs）；框架侧的启停事件走 core/audit.py 的登记簿。
 """
 from __future__ import annotations
 
@@ -28,6 +31,10 @@ _STOP_SCRIPT_WAIT = 15.0  # stop_script 同步执行的兜底超时
 # 探测失败（URLError），导致 some-service 等被误判 stopped/failed。
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+# 健康探测的 User-Agent——供服务侧识别"机器流量"并对其静默访问日志
+# （规范见 C:\path\to\README.md「日志合规」：/health 不该灌进业务日志）
+HEALTH_UA = "my-service-health"
+
 
 def _interpreter_for(entry: Path) -> list[str]:
     ext = entry.suffix.lower()
@@ -52,14 +59,16 @@ def build_command(spec: Spec) -> list[str]:
 
 
 class ProcessHandle:
-    """一次成功 start 对应的运行句柄。"""
+    """一次成功 start 对应的运行句柄。
 
-    def __init__(self, popen: subprocess.Popen, log_fhs, started_at: float,
-                 logs_dir: Path):
+    框架不持有日志句柄——服务的输出不属于框架职责（见 README「日志边界」）。
+    """
+
+    def __init__(self, popen: subprocess.Popen, started_at: float,
+                 pidfile: Path):
         self.popen = popen
-        self.log_fhs = log_fhs        # (stdout_fh, stderr_fh) 追加句柄，stop 后关闭
         self.started_at = started_at
-        self.rdir = logs_dir          # 该服务的 logs\ 目录（pid/日志所在）
+        self.pidfile = pidfile        # my-service\logs\pids\<svc>.pid（框架产物）
 
     @property
     def pid(self) -> int | None:
@@ -67,48 +76,46 @@ class ProcessHandle:
 
 
 # ---------------------------------------------------------------- 启动/停止
-def logs_dir(spec: Spec) -> Path:
-    """该服务的运行时产物目录（两档模型约定）：logs\\service.log / service.err.log / service.pid"""
-    return spec.path / "logs"
+_RUNTIME_DIR: Path | None = None    # my-service\logs —— 框架自家运行时产物
 
 
-def _tail_path(p: Path):
-    return open(p, "ab", buffering=0)
+def set_runtime_dir(p: Path) -> Path:
+    """宿主启动时注入运行时目录；被管服务的 pid 文件归置在其下 pids\\。"""
+    global _RUNTIME_DIR
+    _RUNTIME_DIR = Path(p)
+    (_RUNTIME_DIR / "pids").mkdir(parents=True, exist_ok=True)
+    return _RUNTIME_DIR
+
+
+def pidfile_path(spec: Spec) -> Path:
+    """pid 是框架自己需要的记账，故写框架家，不在服务目录里留痕。"""
+    base = _RUNTIME_DIR or Path(__file__).resolve().parents[2] / "logs"
+    return base / "pids" / f"{spec.folder}.pid"
 
 
 def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
-    """拉起进程：stdout/stderr 分流写入服务自己的 logs\\service.log[.err]，并写 pid 文件。
+    """拉起进程：stdout/stderr 一律丢弃（DEVNULL），pid 写 my-service\\logs\\pids\\。
 
+    服务日志由服务自己写（它家 logs\\），框架零接管——纳管与否不改变服务的日志形态。
+    代价：服务自己 print 的启动报错不留档，故失败原因由审计流 note 字段兜住。
     log_base 参数保留兼容旧签名（已弃用）。
     """
     cmd = build_command(spec)
-    rdir = logs_dir(spec)
-    rdir.mkdir(parents=True, exist_ok=True)
-    out_fh = _tail_path(rdir / "service.log")
-    err_fh = _tail_path(rdir / "service.err.log")
     env = {**os.environ, **spec.env}
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(spec.workdir),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=CREATE_FLAGS,
+    )
     try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(spec.workdir),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=out_fh,
-            stderr=err_fh,
-            creationflags=CREATE_FLAGS,
-        )
-    except Exception:
-        out_fh.close()
-        err_fh.close()
-        raise
-    stamp = time.strftime('%Y-%m-%d %H:%M:%S')
-    try:
-        out_fh.write(f"\n===== my-service 启动 {stamp} pid={proc.pid} =====\n".encode("utf-8"))
-        err_fh.write(f"\n===== my-service 启动 {stamp} pid={proc.pid} =====\n".encode("utf-8"))
-        (rdir / "service.pid").write_text(str(proc.pid), encoding="ascii")
+        pidfile_path(spec).write_text(str(proc.pid), encoding="ascii")
     except OSError:
         pass
-    return ProcessHandle(proc, (out_fh, err_fh), time.time(), rdir)
+    return ProcessHandle(proc, time.time(), pidfile_path(spec))
 
 
 def _taskkill_tree(pid: int) -> None:
@@ -144,21 +151,20 @@ def wait_gone(pid: int, deadline: float) -> bool:
     return False
 
 
-def close_handle(handle: ProcessHandle) -> None:
-    """仅回收文件句柄（进程已退出时用）。"""
-    for fh in handle.log_fhs:
-        try:
-            fh.close()
-        except OSError:
-            pass
+def _drop_pidfile(handle: ProcessHandle) -> None:
     try:
-        (handle.rdir / "service.pid").unlink(missing_ok=True)
+        handle.pidfile.unlink(missing_ok=True)
     except OSError:
         pass
 
 
+def close_handle(handle: ProcessHandle) -> None:
+    """回收框架侧产物（pid 文件）。进程已退出时用，无日志句柄可关。"""
+    _drop_pidfile(handle)
+
+
 def stop_managed(handle: ProcessHandle) -> None:
-    """温和等待 2 秒 → taskkill /T /F 树杀 → 清理 pid 文件与日志句柄。"""
+    """温和等待进程自退 → taskkill /T /F 整树收割 → 清理 pid 文件。"""
     proc, pid = handle.popen, handle.popen.pid
     try:
         time.sleep(2.0)  # 给 python HTTP 服务一点点体面退出的机会
@@ -167,15 +173,7 @@ def stop_managed(handle: ProcessHandle) -> None:
             if not wait_gone(pid, time.time() + _STOP_WAIT_SEC):
                 pass  # 树杀基本必中；此处留兜底不阻塞
     finally:
-        for fh in handle.log_fhs:
-            try:
-                fh.close()
-            except OSError:
-                pass
-        try:
-            (handle.rdir / "service.pid").unlink(missing_ok=True)
-        except OSError:
-            pass
+        _drop_pidfile(handle)
 
 
 def run_stop_script(spec: Spec) -> None:
@@ -262,7 +260,9 @@ def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, st
                 return True, "", None
         if htype == "http":
             assert spec.health_url
-            with _NO_PROXY_OPENER.open(spec.health_url, timeout=2.5) as resp:
+            req = urllib.request.Request(spec.health_url,
+                                        headers={"User-Agent": HEALTH_UA})
+            with _NO_PROXY_OPENER.open(req, timeout=2.5) as resp:
                 last_active: float | None = None
                 try:
                     payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
