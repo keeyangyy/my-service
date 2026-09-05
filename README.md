@@ -27,7 +27,7 @@ my-service\
 │   ├─ start.ps1              # PowerShell 运行 → 启动宿主（幂等）
 │   ├─ stop.ps1               # → 停止宿主（被管服务不受影响，继续运行）
 │   ├─ restart.ps1            # → 重启宿主
-│   ├─ install_autostart.ps1 / uninstall_autostart.ps1  # 自启注册/注销（一次性运维）
+│   ├─ install_autostart.ps1 / uninstall_autostart.ps1  # 自启安装/卸载（默认 Startup 启动文件夹方案）
 │   └─ Dashboard.url          # 双击 → 直接打开管理面板
 ├─ logs\                      # ★ 框架侧运行时产物（唯一作者 = my-service）
 │   ├─ host.jsonl             # 启停登记簿：一行一事件（详见「日志边界」）
@@ -260,7 +260,7 @@ cd C:\path\to\my-service
 # 图形入口：直接打开 entry\ 文件夹，运行 start.ps1，或双击 Dashboard.url
 pwsh -File .\entry\start.ps1             # 命令行起宿主
 start http://127.0.0.1:1236              # 打开面板
-.\entry\install_autostart.ps1          # 登录自启（一次性，需 gsudo 提权）
+.\entry\install_autostart.ps1          # 安装自启（默认 Startup 模式：启动文件夹；可 -Mode Logon/Boot 换计划任务方案）
 ```
 ## 排坑记录
 
@@ -305,3 +305,18 @@ Register-ScheduledTask ... -Principal $principal ...
 - 手动运行 `entry\start.ps1` / 面板 / `svc.ps1` 不经任务计划程序，行为一字不变
 - 全链窗口语义已审计：python 子进程 `-WindowStyle Hidden`、托管服务与 stop 脚本 `CREATE_NO_WINDOW`、
   宿主重建 `DETACHED_PROCESS`——除任务外层之外全部本就无窗
+
+**实践演进（2026-09-05）**：S4U 方案实际用下来，任务进程跑在「后台房间」
+（非交互窗口站），对习惯于「进程就在我桌面上、随手可脚本操作」的场景仍显别扭；
+当日改成 **启动文件夹方案** 并沿用至今（git 无记录——改动在系统目录，不在仓库）：
+
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start-my-service.cmd   （GBK）
+@echo off
+start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\my-service\entry\start.ps1" start
+```
+
+- 登录时由启动体验执行，进程跑在**当前用户交互会话** → `svc.ps1`/`ctl.ps1`/面板直接可操作，无凭据限制、无 session 0 概念
+- 黑窗：`start "" /min` + `-WindowStyle Hidden` 最小化秒退，实测可接受
+- 卸载 = 删除该 cmd（`uninstall_autostart.ps1` 一并清理计划任务，双保险）
+- 计划任务方案（S4U / SYSTEM-AtStartup / nssm 服务）保留为 `install_autostart.ps1` 的 `-Mode` 备选
