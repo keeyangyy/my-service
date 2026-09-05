@@ -25,7 +25,7 @@ my-service\
 ├─ adapters\                  # ★ 可选转接层：<服务名>\ 下放薄适配脚本(自动优先命中)
 ├─ entry\                     # ★ 人的操作入口：无参/有默认值，可直接运行
 │   ├─ start.ps1              # PowerShell 运行 → 启动宿主（幂等）
-│   ├─ stop.ps1               # → 停止宿主（连带收割全部被管服务）
+│   ├─ stop.ps1               # → 停止宿主（被管服务不受影响，继续运行）
 │   ├─ restart.ps1            # → 重启宿主
 │   ├─ install_autostart.ps1 / uninstall_autostart.ps1  # 自启注册/注销（一次性运维）
 │   └─ Dashboard.url          # 双击 → 直接打开管理面板
@@ -108,7 +108,7 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 |:--|:--|
 | `host_start` / `host_stop` | 宿主起来 / 收工（含面板「重启·停止宿主」） |
 | `start` | `starting` 收敛为终态：成功带耗时与 pid，失败 `note` 给原因（含 `via` 来源） |
-| `stop` | 一次停止完成（宿主收割、空闲回收会带各自 reason） |
+| `stop` | 一次停止完成（用户停止、空闲回收会带各自 reason） |
 | `autostart_skip` | 自启时实例已在运行 → 跳过并归位 |
 | `adopt_external` | 检测到外部/手动实例，归位 running |
 | `health_flip` | running 期健康翻转（失联归位 stopped / 假失败自愈） |

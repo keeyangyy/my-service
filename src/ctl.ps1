@@ -37,7 +37,8 @@ switch ($Action.ToLower()) {
     }
     "stop" {
         if ($p = Get-HostPid) {
-            & taskkill "/PID" "$p" "/T" "/F" | Out-Null
+            # 只杀宿主自身（不带 /T）：被管服务生命周期独立，宿主停止/重启时不收割
+            & taskkill "/PID" "$p" "/F" | Out-Null
             Remove-Item -LiteralPath (Join-Path $base "logs\host.pid") -Force -ErrorAction SilentlyContinue
             Write-Host "stopped pid=$p"
         } else { Write-Host "未在运行" }

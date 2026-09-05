@@ -63,8 +63,7 @@ class HostController:
         try:
             if action == "restart":
                 self._spawn_replacement()   # 新进程会重试绑定，等本进程释放端口
-            audit.emit("host_stop", note=f"面板/API 发起 {action}")
-            self.manager.stop_all(reason=f"宿主 {action}，收割全部被管服务")
+            audit.emit("host_stop", note=f"面板/API 发起 {action}（被管服务不受影响，继续运行）")
         except Exception:  # noqa: BLE001
             pass
         os._exit(0)                          # 立即退出，释放 1236
@@ -158,8 +157,7 @@ def main() -> int:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        audit.emit("host_stop", note="Ctrl+C 收到，收割全部被管服务后退出")
-        manager.stop_all(reason="宿主 Ctrl+C 退出，收割全部被管服务")
+        audit.emit("host_stop", note="Ctrl+C 收到，被管服务不收割，宿主退出")
     return 0
 
 

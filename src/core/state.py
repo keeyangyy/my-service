@@ -202,7 +202,7 @@ class Manager:
             return True, "starting"
 
     def stop(self, name: str, act: str = "stop", reason: str = "") -> tuple[bool, str]:
-        """停止服务。act/reason 只影响登记簿文案（idle_reclaim、宿主收割等复用本函数）。"""
+        """停止服务。act/reason 只影响登记簿文案（idle_reclaim 等复用本函数）。"""
         began = time.time()
         # 阶段一（持锁）：标记 stopping 并把 handle 从登记表摘除——
         # 此后 monitor 对该服务的 starting/running 分支因 handle 缺席而不再干预
@@ -259,14 +259,6 @@ class Manager:
         if not ok:
             return ok, msg
         return self.start(name, via=via)
-
-    def stop_all(self, reason: str = "宿主退出，收割全部被管服务") -> None:
-        """收割当前所有托管中的服务（宿主退出/重启前调用）。"""
-        for name in list(self.handles.keys()):
-            try:
-                self.stop(name, reason=reason)
-            except Exception:  # noqa: BLE001
-                pass
 
     def _reap_idle(self, name: str) -> None:
         """on_demand 空闲回收：条件复核后走正规 stop 流程（优雅停 + 状态回 stopped）。"""
