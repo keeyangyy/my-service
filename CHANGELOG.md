@@ -2,9 +2,27 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
-## 未发布（v0.2.0 之后）
+## v0.3.0（2026-09-06）
 
-- **宿主启停与被管服务生命周期解耦**：宿主 stop/restart（面板、API、Ctrl+C、`ctl.ps1`）均不再收割被管服务；`ctl.ps1` 的 `taskkill` 去掉 `/T` 只杀宿主自身。重启宿主后，继续运行的服务由端口探测 + `adopt_external` 归位 running，全程不中断。彻底停止宿主也不停服务，要停哪个用 `svc.ps1 stop <名字>`。
+宿主与被管服务生命周期解耦：宿主启停不再连坐被管服务，自启方案落地文档化。
+
+### 框架内核
+- **宿主启停与被管服务生命周期解耦**：宿主 stop/restart（面板、API、Ctrl+C、`ctl.ps1`）均不再收割被管服务；`ctl.ps1` 的 `taskkill` 去掉 `/T` 只杀宿主自身。重启宿主后，继续运行的服务由端口探测 + `adopt_external` 归位 running，全程不中断。彻底停止宿主也不停服务，要停哪个用 `svc.ps1 stop <名字>`
+
+### Web Dashboard
+- 登记簿抽屉补齐基础样式（overflow/max-height/背景/边框仿 `.log-panel`），修复事件超过 300px 时内容溢出叠到服务卡片上的布局混乱
+- 宿主重启/停止按钮与确认弹窗文案改为「被管服务不受影响，继续运行」，同步解耦后的真实行为
+
+### 自启方案
+- 自启方案文档化：启动文件夹为当前方案（`start-my-service.cmd`，进程跑在当前用户交互会话，脚本可直接操作），README 排坑记录补齐实践演进
+- `install_autostart.ps1` 默认 `Mode` 改为 `Startup`（写启动文件夹 cmd，无需提权），`Logon(S4U)/Boot(SYSTEM)/Nssm` 保留为 `-Mode` 备选
+- `uninstall_autostart.ps1` 同时清理启动文件夹 cmd + 计划任务
+
+### 接入实例
+- **your-service**：`reg\your-service.json` 新增，path 指 `C:/path/to/your-service`，entry=server.py，本机 8081
+  - `mode=on_demand`：点开即启、空闲 600s 自动回收，不常驻后台
+  - `health=http(127.0.0.1:8081/health)`，服务自报 `last_active` 供空闲回收
+  - 纯增量：未改动框架任何源码
 
 ## v0.2.0（2026-09-05）
 
