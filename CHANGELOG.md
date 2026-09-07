@@ -2,6 +2,31 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.4.0（2026-09-07）
+
+新增定时任务支持：与常驻服务并行的第二物种——`reg\cron\` 注册、宿主内置调度线程到点执行脚本，无常驻进程、无健康检查、无状态机。
+
+### 框架内核
+- 新增 `src\core\scheduler.py`：调度器（与 monitor 并列的第二个永动线程）。扫描 `reg\cron\*.json`，每秒 tick，到点开独立线程执行 `runner.run_once`
+- 新增注册目录 `reg\cron\<任务名>.json`（零侵入隔离：`reg` 的 glob 不递归，定时任务与服务注册天然分家，互不改动对方一行代码）；注册条复用服务的 `path/entry/args/cwd/env` 字段语义，新增 `schedule`（daily HH:MM / interval every_sec）、`timeout_sec`（默认 300，下限 5s）、`catch_up`（默认 false）
+- `runner.py` 新增 `run_once` 一次性执行原子操作：无窗 + 新进程组 + 输出 DEVNULL（日志边界不变），超时 `taskkill /T /F` 树杀
+- 调度语义：防重叠（上一轮未完不触发，跑完统一走"错过"处理，不堆积连发）；错过判定宽限 60 秒，`catch_up=true` 补跑一次、默认登记 `cron_skip` 顺延（开机绝不齐跑）；interval 新任务起算一个周期后首跑；执行超长后 next_run 统一重排
+- 状态持久化 `logs\cron_state.json`（临时文件 + `os.replace` 原子写）：last_run/last_ok/last_rc/last_dur_ms/next_run，宿主重启后照单恢复
+- `audit.py` 事件字典新增 `cron_run`（成功带耗时/失败给 rc/超时/启动原因）与 `cron_skip`（错过顺延）
+- 宿主装配（`server.py`）：`reg\cron` 目录不存在则建空目录（用户一眼可见）；调度线程在 host_start 之后启动（首条事件因果一致约束）；host_start 登记附定时任务清单
+
+### REST API
+- `GET /api/crons`：定时任务列表（调度规则/下次执行/上次结果/invalid 原因）
+- `POST /api/crons/{name}/run[?via=cli]`：手动立即触发；运行中重复触发返回 409
+
+### Web Dashboard
+- 服务列表下方新增「⏱ 定时任务」区块：状态徽章（执行中呼吸/已启用/已停用/无效）、调度规则与下次执行 chip、上次结果 chip（✓/✗ rc/超时）、「▶ 立即运行」按钮；无任务时整块隐藏
+- 登记簿动作中文化同步：定时执行 / 定时跳过
+
+### CLI
+- `svc.ps1 crons`：定时任务表格（状态/调度/下次/上次结果）
+- `svc.ps1 cron-run <名>`：手动触发
+
 ## v0.3.0（2026-09-06）
 
 宿主与被管服务生命周期解耦：宿主启停不再连坐被管服务，自启方案落地文档化。
