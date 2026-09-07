@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;   /* 原生控件（time picker / number spinner）跟随暗色 */
   --bg: #0d1117;
   --card: #161b22;
   --card-hover: #1c2333;
@@ -108,7 +109,9 @@ html, body {
 
 /* 2. 主容器 */
 .app-main {
-  max-width: 840px;
+  /* 960：定时任务主行需容纳 徽章+名称+3 个信息 chip+4 个操作控件，
+     840 会让 chip 全部被省略号截断（服务卡片的描述截断也同步受益） */
+  max-width: 960px;
   margin: 0 auto;
   padding: 16px;
   display: flex;
@@ -224,7 +227,8 @@ html, body {
   position: relative;
   width: 36px; height: 20px;
   border-radius: 10px;
-  background: var(--border);
+  background: #3a4358;   /* 关闭态也要看得出是开关：比卡片背景亮一档 */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07);
   transition: background .2s;
   flex: 0 0 auto;
 }
@@ -390,6 +394,63 @@ html, body {
 .ver-tag { font-size: 11px; font-weight: 400; color: var(--muted); font-family: var(--mono); }
 
 /* 10. 定时任务区块（reg\cron\ —— 第二物种：无常驻进程，到点跑一次脚本） */
+/* 一行卡片：主行常驻（概览+启用+设置+事件+立即运行），配置面板点「⚙ 设置」展开 */
+.cron-config {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+}
+.cron-config[hidden] { display: none; }   /* display:flex 会盖掉 hidden，必须显式压制 */
+.cfg-iv { display: inline-flex; align-items: center; gap: 4px; }
+.cfg-iv[hidden] { display: none; }
+/* 模式分段切换：定时执行 / 间隔执行 二选一 */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.seg-btn {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 11px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn:hover:not(:disabled):not(.active) { color: var(--text); }
+.seg-btn.active { background: rgba(88, 166, 255, .16); color: var(--blue); font-weight: 600; }
+.seg-btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn-cfg { color: var(--muted); }
+.btn-cfg.active { border-color: var(--blue); color: var(--blue); }
+.cfg-label, .cfg-unit-txt, .cfg-na { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.cron-config input, .cron-config select {
+  background: #0d1119;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 3px 7px;
+  font-family: var(--mono);
+  font-size: 12px;
+  transition: border-color .15s;
+}
+.cron-config input:hover:not(:disabled),
+.cron-config select:hover:not(:disabled) { border-color: var(--muted); }
+.cron-config input:focus, .cron-config select:focus { outline: none; border-color: var(--blue); }
+.cron-config input:disabled, .cron-config select:disabled { opacity: .4; cursor: not-allowed; }
+.cfg-time { width: 92px; }
+.cfg-num { width: 66px; }
+.cron-switch { margin-left: 6px; }
+.cron-switch .toggle-label { font-size: 11px; }
 .section-title {
   margin: 14px 0 2px;
   font-size: 13px;
@@ -403,6 +464,15 @@ html, body {
 .cron-list { display: flex; flex-direction: column; gap: 8px; }
 .cron-card { padding: 10px 16px; }
 .cron-card .card-inner { gap: 12px; }
+/* 主行防溢出：info 不得越过 actions，chip 空间不足时压缩省略 */
+.cron-card .info { overflow: hidden; }
+.cron-card .info .chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .btn-run { background: rgba(88, 166, 255, 0.12); color: var(--blue); border-color: rgba(88, 166, 255, 0.4); }
 .btn-run:hover:not(:disabled) { background: rgba(88, 166, 255, 0.2); }
 

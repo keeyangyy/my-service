@@ -272,5 +272,97 @@ class TestDailyMath(unittest.TestCase):
         self.assertEqual(dt.date(), (target + timedelta(days=1)).date())
 
 
+class TestUpdateConfig(unittest.TestCase):
+    """面板行内编辑：schedule / timeout_sec / catch_up / enabled 补丁写回。"""
+
+    def setUp(self):
+        self.box = _Sandbox()
+        self.box.put("d", schedule={"type": "daily", "at": "23:00"},
+                     display="每日快照", description="带额外字段的任务")
+        self.box.put("i", schedule={"type": "interval", "every_sec": 600})
+        self.sched = self.box.sched()
+        self.sched.scan()
+        self.sched.tick()          # 初始化 next_run
+
+    def tearDown(self):
+        self.box.cleanup()
+
+    def _raw(self, name):
+        return json.loads((self.box.reg / f"{name}.json").read_text(encoding="utf-8"))
+
+    def _snap(self, name):
+        return {x["name"]: x for x in self.sched.snapshot()}[name]
+
+    def test_change_daily_at_rewrites_and_reschedules(self):
+        ok, code, _ = self.sched.update_config("d", {"schedule":
+                                {"type": "daily", "at": "07:15"}})
+        self.assertTrue(ok, code)
+        self.assertEqual(self._raw("d")["schedule"]["at"], "07:15")
+        snap = self._snap("d")
+        self.assertEqual(snap["at"], "07:15")
+        self.assertEqual(snap["schedule"], "每天 07:15")
+        # next_run 必须按新时刻重算（否则面板显示新时间、实际旧时间触发）
+        self.assertEqual(datetime.fromtimestamp(snap["next_run"]).hour, 7)
+        self.assertEqual(datetime.fromtimestamp(snap["next_run"]).minute, 15)
+
+    def test_change_interval_every_sec(self):
+        ok, code, _ = self.sched.update_config("i", {"schedule":
+                                {"type": "interval", "every_sec": 1800}})
+        self.assertTrue(ok, code)
+        self.assertEqual(self._raw("i")["schedule"]["every_sec"], 1800)
+        self.assertEqual(self._snap("i")["schedule"], "每 30 分钟")
+
+    def test_change_timeout_and_catch_up(self):
+        ok, _, _ = self.sched.update_config(
+            "d", {"timeout_sec": 60, "catch_up": True})
+        self.assertTrue(ok)
+        raw = self._raw("d")
+        self.assertEqual(raw["timeout_sec"], 60.0)
+        self.assertIs(raw["catch_up"], True)
+        snap = self._snap("d")
+        self.assertEqual(snap["timeout_sec"], 60.0)
+        self.assertIs(snap["catch_up"], True)
+
+    def test_invalid_schedule_rolls_back(self):
+        before = self._raw("d")
+        ok, code, msg = self.sched.update_config(
+            "d", {"schedule": {"type": "daily", "at": "99:99"}})
+        self.assertFalse(ok)
+        self.assertEqual(code, "invalid")
+        self.assertIn("回滚", msg)
+        # 注册条必须原样恢复，且内存 spec 仍是旧的合法状态
+        self.assertEqual(self._raw("d")["schedule"], before["schedule"])
+        snap = self._snap("d")
+        self.assertTrue(snap["valid"], snap["error"])
+        self.assertEqual(snap["at"], "23:00")
+
+    def test_interval_below_floor_rolls_back(self):
+        ok, code, _ = self.sched.update_config(
+            "i", {"schedule": {"type": "interval", "every_sec": 2}})
+        self.assertFalse(ok and code == "invalid")
+        self.assertEqual(self._raw("i")["schedule"]["every_sec"], 600)
+
+    def test_unknown_type_and_task(self):
+        ok, code, _ = self.sched.update_config(
+            "d", {"schedule": {"type": "weekly", "at": "08:00"}})
+        self.assertFalse(ok and code == "invalid")
+        self.assertEqual(self._raw("d")["schedule"]["type"], "daily")
+        self.assertEqual(self.sched.update_config("ghost", {"catch_up": True})[1],
+                         "not_found")
+
+    def test_enabled_patch_still_works_via_toggle(self):
+        ok, msg = self.sched.toggle_enabled("d", False)
+        self.assertTrue(ok, msg)
+        self.assertIs(self._raw("d")["enabled"], False)
+        self.assertIs(self._snap("d")["enabled"], False)
+
+    def test_other_fields_preserved_on_write(self):
+        """写回不得丢失未编辑的字段（display/entry/path 等）。"""
+        self.sched.update_config("d", {"timeout_sec": 45})
+        raw = self._raw("d")
+        for key in ("path", "entry", "schedule", "display"):
+            self.assertIn(key, raw)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

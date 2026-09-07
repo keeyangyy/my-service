@@ -240,6 +240,11 @@ class Scheduler:
                     "valid": spec.valid,
                     "error": spec.error,
                     "schedule": spec.schedule_desc,
+                    # 编辑控件用的原始参数（schedule_desc 仅供展示）
+                    "schedule_type": spec.schedule_type,
+                    "at": (f"{spec.schedule_at[0]:02d}:{spec.schedule_at[1]:02d}"
+                           if spec.schedule_at else None),
+                    "every_sec": spec.every_sec if spec.every_sec >= 5 else None,
                     "timeout_sec": spec.timeout_sec,
                     "catch_up": spec.catch_up,
                     "running": name in self.running,
@@ -349,33 +354,86 @@ class Scheduler:
             with self.lock:
                 self.running.discard(name)
 
-    def toggle_enabled(self, name: str, value: bool) -> tuple[bool, str]:
-        """开关任务调度（面板滑块）：权威值回写注册条 enabled 字段。
+    def update_config(self, name: str, patch: dict) -> tuple[bool, str, str]:
+        """面板行内编辑：改注册条的 schedule / timeout_sec / catch_up / enabled。
 
-        与服务的 toggle_autostart 同一原子写回模式（临时文件 + os.replace）。
-        只影响下一次触发；正在跑的一轮让它自然跑完，不打断。
+        安全网：写回后立即用 CronSpec 重解析校验，判无效则回滚原内容并报错
+        ——绝不留一个坏注册条（否则任务直接变 invalid 不可用）。
+        schedule 变更时重算 next_run（否则面板显示新时间、实际仍按旧时间触发）。
+
+        返回 (ok, code, message)；code 同 run_now 的映射约定。
         """
         with self.lock:
             spec = self.specs.get(name)
             if spec is None:
-                return False, f"未知定时任务 {name}"
+                return False, "not_found", f"未知定时任务 {name}"
             try:
-                raw = json.loads(spec.reg_path.read_text(encoding="utf-8-sig"))
+                old_text = spec.reg_path.read_text(encoding="utf-8-sig")
+                raw = json.loads(old_text)
+                if not isinstance(raw, dict):
+                    raise ValueError("注册条根节点不是对象")
             except Exception as exc:  # noqa: BLE001
-                return False, f"读注册条失败: {exc}"
-            raw["enabled"] = bool(value)
-            try:
-                import tempfile
-                text = json.dumps(raw, ensure_ascii=False, indent=2)
-                fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
-                                           suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(text + "\n")
-                os.replace(tmp, spec.reg_path)
-            except Exception as exc:  # noqa: BLE001
-                return False, f"写注册条失败: {exc}"
-            spec.enabled = bool(value)
-            return True, "ok"
+                return False, "io", f"读注册条失败: {exc}"
+
+            # ---- 应用补丁（粗校验，细校验交给写后重解析）----
+            if "enabled" in patch:
+                raw["enabled"] = bool(patch["enabled"])
+            if "catch_up" in patch:
+                raw["catch_up"] = bool(patch["catch_up"])
+            if "timeout_sec" in patch:
+                try:
+                    raw["timeout_sec"] = float(patch["timeout_sec"])
+                except (TypeError, ValueError):
+                    return False, "invalid", "timeout_sec 需为数字"
+            if "schedule" in patch:
+                sched = patch["schedule"]
+                if not isinstance(sched, dict):
+                    return False, "invalid", "schedule 需为对象"
+                stype = str(sched.get("type", "")).lower()
+                if stype not in ("daily", "interval"):
+                    return False, "invalid", "schedule.type 仅支持 daily/interval"
+                raw["schedule"] = sched
+
+            def _write(payload: dict) -> bool:
+                try:
+                    import tempfile
+                    fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
+                                               suffix=".tmp")
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fh.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+                    os.replace(tmp, spec.reg_path)
+                    return True
+                except Exception:  # noqa: BLE001
+                    return False
+
+            if not _write(raw):
+                return False, "io", "写注册条失败"
+
+            # ---- 写后校验：新配置必须自身合法，否则回滚 ----
+            new_spec = CronSpec(name, spec.reg_path)
+            if not new_spec.valid:
+                try:
+                    _write(json.loads(old_text))
+                except Exception:  # noqa: BLE001
+                    pass
+                self.scan()
+                return False, "invalid", f"新配置无效，已回滚：{new_spec.error}"
+
+            self.specs[name] = new_spec
+            if "schedule" in patch:
+                p = self.persist.setdefault(name, {})
+                p["next_run"] = self._init_next_run(new_spec, time.time())
+            self._save_state()
+            return True, "ok", "已更新"
+
+    def toggle_enabled(self, name: str, value: bool) -> tuple[bool, str]:
+        """开关任务调度（面板滑块）：权威值回写注册条 enabled 字段。
+
+        转调 update_config（同一原子写回 + 写后校验路径）。
+        只影响下一次触发；正在跑的一轮让它自然跑完，不打断。
+        """
+        ok, _code, msg = self.update_config(name, {"enabled": value})
+        return ok, msg
 
     def run_now(self, name: str, via: str = "manual") -> tuple[bool, str, str]:
         """手动立即触发（面板按钮 / CLI / API）。

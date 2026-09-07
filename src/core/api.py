@@ -173,16 +173,27 @@ def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager:
                              "busy": 409, "disabled": 409}.get(code, 500)
                 return self._json(http_code, {"ok": ok, "message": msg})
 
-            # POST /api/crons/{name}/config  {"enabled": bool}
+            # POST /api/crons/{name}/config  补丁式改配置：
+            # {"enabled":bool} / {"catch_up":bool} / {"timeout_sec":N} /
+            # {"schedule":{"type":"daily","at":"HH:MM"}} 可任意组合
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "crons" \
                     and parts[3] == "config":
                 if scheduler is None:
                     return self._json(501, {"ok": False, "error": "调度器不可用"})
-                value = body.get("enabled")
-                if not isinstance(value, bool):
-                    return self._json(400, {"ok": False, "error": '需要布尔字段 "enabled"'})
-                ok, msg = scheduler.toggle_enabled(parts[2], value)
-                return self._json(200 if ok else 500, {"ok": ok, "error": None if ok else msg})
+                patch = {k: v for k, v in body.items()
+                         if k in ("enabled", "catch_up", "timeout_sec", "schedule")}
+                if not patch:
+                    return self._json(400, {
+                        "ok": False, "error":
+                            "至少提供 enabled / catch_up / timeout_sec / schedule 之一"})
+                for flag in ("enabled", "catch_up"):
+                    if flag in patch and not isinstance(patch[flag], bool):
+                        return self._json(400, {"ok": False, "error": f"{flag} 需为布尔"})
+                ok, code, msg = scheduler.update_config(parts[2], patch)
+                http_code = {"ok": 200, "not_found": 404, "invalid": 400,
+                             "io": 500}.get(code, 500)
+                return self._json(http_code, {"ok": ok, "message": msg,
+                                              "error": None if ok else msg})
 
             # POST /api/config/{name}  {"autostart": bool}
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "config":

@@ -244,6 +244,15 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 - **开关**：面板滑块（同服务自启滑块）控制是否参与调度，权威值回写注册条
   `enabled` 字段；只影响下一次触发，正在跑的一轮自然跑完；停用期间不排新计划，
   重新启用即恢复
+- **面板行内编辑**：任务行默认**一行**（概览 + `启用`开关 + `⚙ 设置` + `事件` +
+  `▶ 立即运行`）；点 `⚙ 设置` 展开配置面板——**模式用分段按钮二选一**
+  （定时执行 / 间隔执行）、时刻选择器或间隔数值+单位、`⏲ 超时保护`秒数（卡死强杀阈值，
+  非执行频率）、`补跑`开关；改完即原子写回注册条并即时生效（无需重启宿主）
+  - 改调度时间会**立即重算下次执行时刻**（否则面板显示新时间、实际仍按旧时间触发）
+  - 写回前用注册条规则重解析校验，不合法则**拒绝并回滚**，绝不留坏注册条
+  - 模式切换保留两种模式各自的最后已知值（本会话内），误点不会把原时间冲掉
+  - 展开态跨轮询保持；正在输入的框不被轮询打断
+  - 坏注册条（invalid）的配置面板控件与 `⚙ 设置` 按钮一律禁用（面板改不了根因）
 - **状态恢复**：`last_run/last_ok/last_rc/next_run` 持久化在
   `logs\cron_state.json`（scheduler 独写，运行期以内存为准），宿主重启后照单恢复
 - **触发记录**：卡片「事件」窗展开该任务的 `cron_run/cron_skip` 时间线
@@ -310,10 +319,10 @@ entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` �
 
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；下方「⏱ 定时任务」区块：调度规则/下次执行/上次结果/▶ 立即运行；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
+| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；下方「⏱ 定时任务」区块：主行显示下次执行/上次结果 + 事件窗/▶ 立即运行，配置行可行内改调度时间/超时/补跑/启用；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
-| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/{name}/config`(`{"enabled":bool}` 开关)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
+| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/{name}/config`(补丁：`enabled`/`catch_up`/`timeout_sec`/`schedule` 任意组合，面板行内编辑用)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条或 `"enabled": false` |
 
 ## 快速上手

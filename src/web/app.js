@@ -186,49 +186,195 @@
     return c;
   }
 
+  // 上次结果：只显示时间（耗时挪进悬停提示，避免与右侧开关挤压重叠）；
+  // 失败原因（rc / 超时）不是时长，保留在标签上
   function lastResultChip(c) {
     if (typeof c.last_run !== "number") return cronChip("未运行过");
     var t = fmtClock(c.last_run);
-    if (c.last_ok === true) return cronChip("上次 ✓ " + t + " · " + fmtDur(c.last_dur_ms), "上次执行成功");
+    var dur = fmtDur(c.last_dur_ms);
+    var durTip = dur ? " · 耗时 " + dur : "";
+    if (c.last_ok === true) return cronChip("上次 ✓ " + t, "上次执行成功" + durTip);
     if (c.last_rc === null || c.last_rc === undefined)
-      return cronChip("上次 ✗ " + t + " · 超时/未启动", "上次执行失败（超时被终止，或进程没能起来）");
-    return cronChip("上次 ✗ " + t + " · rc=" + c.last_rc, "上次执行失败（退出码 " + c.last_rc + "）");
+      return cronChip("上次 ✗ " + t + " · 超时",
+        "上次执行失败（超时被终止，或进程没能起来）" + durTip);
+    return cronChip("上次 ✗ " + t + " · rc=" + c.last_rc,
+      "上次执行失败（退出码 " + c.last_rc + "）" + durTip);
   }
 
-  // 定时任务开关（同服务自启滑块：权威值回写注册条 enabled 字段）
-  function buildCronToggle(name) {
-    var toggle = document.createElement("label");
-    toggle.className = "toggle";
-    var cb = document.createElement("input");
+  // ===== 定时任务配置行（行内编辑：时间 / 超时 / 补跑 / 启用）=====
+  function cfgEl(tag, cls, role) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (role) el.dataset.role = role;
+    return el;
+  }
+
+  async function saveCronConfig(name, patch, rollback) {
+    try {
+      var res = await api("POST", "/api/crons/" + encodeURIComponent(name) + "/config", patch);
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || data.message || ("HTTP " + res.status));
+      toast("已保存 " + Object.keys(patch).join("、"), "ok");
+    } catch (e) {
+      toast("保存失败：" + (e && e.message ? e.message : "未知错误"), "err");
+      if (rollback) rollback();
+    }
+    poll(true);
+  }
+
+  // 间隔秒数 → 最友好的「数值 + 单位」（3600→1 时、900→15 分、45→45 秒）
+  function everyToDisplay(sec) {
+    var units = [86400, 3600, 60, 1];
+    for (var i = 0; i < units.length; i++) {
+      if (sec % units[i] === 0) return { mult: units[i], val: sec / units[i] };
+    }
+    return { mult: 1, val: sec };
+  }
+
+  function buildCronSwitch(name, label, field) {
+    var toggle = cfgEl("label", "toggle cron-switch");
+    var cb = cfgEl("input", "toggle-input", field);
     cb.type = "checkbox";
-    cb.className = "toggle-input";
-    var track = document.createElement("span");
-    track.className = "toggle-track";
-    var knob = document.createElement("span");
-    knob.className = "toggle-knob";
-    track.appendChild(knob);
-    var tlabel = document.createElement("span");
-    tlabel.className = "toggle-label";
-    tlabel.textContent = "启用";
-    toggle.appendChild(cb);
-    toggle.appendChild(track);
-    toggle.appendChild(tlabel);
+    var track = cfgEl("span", "toggle-track");
+    track.appendChild(cfgEl("span", "toggle-knob"));
+    var tl = cfgEl("span", "toggle-label");
+    tl.textContent = label;
+    toggle.appendChild(cb); toggle.appendChild(track); toggle.appendChild(tl);
+    toggle.title = field === "catch_up"
+      ? "错过计划时刻是否补跑（跨日补跑可能误签次日额度）"
+      : "是否参与调度（停用只暂停下一次触发，不打断正在跑的一轮）";
     toggle.addEventListener("click", function (e) { e.stopPropagation(); });
-    cb.addEventListener("change", async function () {
-      var newVal = cb.checked;
-      try {
-        var res = await api("POST", "/api/crons/" + encodeURIComponent(name) + "/config",
-          { enabled: newVal });
-        var data = await res.json().catch(function () { return {}; });
-        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-        toast(newVal ? "已启用调度" : "已停用调度（正在跑的一轮不受影响）", "ok");
-      } catch (e) {
-        cb.checked = !newVal;
-        toast("设置失败：" + (e && e.message ? e.message : "未知错误"), "err");
-      }
-      poll(true);
+    cb.addEventListener("change", function () {
+      var patch = {};
+      patch[field] = cb.checked;
+      saveCronConfig(name, patch, function () { cb.checked = !cb.checked; });
     });
     return toggle;
+  }
+
+  var cronCfgOpen = new Set();   // 配置面板展开态（轮询重建时保持）
+  var cronData = new Map();      // name -> 最新 snapshot（控件回调取最新值，不用建骨架时的旧快照）
+  var cronModeMemo = new Map();  // name -> {at, every_sec} 两种模式各自的最后已知值
+                                 // 注册条只存当前类型的参数，切回来若用硬编码默认会丢原时间
+
+  function toggleCronConfig(name, row) {
+    if (cronCfgOpen.has(name)) cronCfgOpen.delete(name);
+    else cronCfgOpen.add(name);
+    var bar = row.querySelector(".cron-config");
+    if (bar) bar.hidden = !cronCfgOpen.has(name);
+    var btn = row.querySelector(".btn-cfg");
+    if (btn) btn.classList.toggle("active", cronCfgOpen.has(name));
+  }
+
+  // 定时/间隔是二选一的两种模式，用分段按钮切换；参数优先取本会话记忆，
+  // 避免「误点一下模式就把原时间冲掉」
+  function switchMode(name, type) {
+    var cur = cronData.get(name) || {};
+    var memo = cronModeMemo.get(name) || {};
+    var sched = (type === "daily")
+      ? { type: "daily", at: memo.at || cur.at || "08:00" }
+      : { type: "interval", every_sec: memo.every_sec || cur.every_sec || 3600 };
+    saveCronConfig(name, { schedule: sched });
+  }
+
+  function buildCronConfig(c) {
+    var bar = cfgEl("div", "cron-config");
+    bar.hidden = true;                       // 默认收起，点「⚙ 设置」展开
+
+    var seg = cfgEl("div", "seg");
+    [["daily", "定时执行"], ["interval", "间隔执行"]].forEach(function (p) {
+      var b = cfgEl("button", "seg-btn", "mode-" + p[0]);
+      b.type = "button";
+      b.textContent = p[1];
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var cur = cronData.get(c.name) || c;
+        if (cur.schedule_type !== p[0]) switchMode(c.name, p[0]);
+      });
+      seg.appendChild(b);
+    });
+    bar.appendChild(seg);
+
+    var t = cfgEl("input", "cfg-time", "at");
+    t.type = "time";
+    t.title = "每日执行时刻（本地时间）";
+    t.addEventListener("change", function () {
+      var cur = cronData.get(c.name) || c;
+      saveCronConfig(c.name, { schedule: { type: "daily", at: t.value } },
+        function () { t.value = cur.at || ""; });
+    });
+    bar.appendChild(t);
+
+    var iv = cfgEl("span", "cfg-iv");
+    var n = cfgEl("input", "cfg-num", "every");
+    n.type = "number"; n.min = "1"; n.title = "执行间隔";
+    var u = cfgEl("select", "cfg-unit", "unit");
+    [[1, "秒"], [60, "分"], [3600, "时"], [86400, "天"]].forEach(function (p) {
+      var o = document.createElement("option");
+      o.value = String(p[0]); o.textContent = p[1];
+      u.appendChild(o);
+    });
+    var push = function () {
+      var mult = parseFloat(u.value) || 60;
+      var secs = Math.round((parseFloat(n.value) || 0) * mult);
+      saveCronConfig(c.name, { schedule: { type: "interval", every_sec: secs } },
+        function () { syncCronConfig(bar, cronData.get(c.name) || c); });
+    };
+    n.addEventListener("change", push);
+    u.addEventListener("change", push);
+    iv.appendChild(n); iv.appendChild(u);
+    bar.appendChild(iv);
+
+    var lab2 = cfgEl("span", "cfg-label");
+    lab2.textContent = "⏲ 超时保护";
+    bar.appendChild(lab2);
+    var to = cfgEl("input", "cfg-num", "timeout");
+    to.type = "number"; to.min = "5";
+    to.title = "卡死保护，不是执行频率：脚本运行超过此秒数即整树强杀并记失败（下限 5 秒）。"
+             + "执行频率请用左侧「间隔执行」模式";
+    to.addEventListener("change", function () {
+      var cur = cronData.get(c.name) || c;
+      saveCronConfig(c.name, { timeout_sec: parseFloat(to.value) },
+        function () { to.value = cur.timeout_sec; });
+    });
+    bar.appendChild(to);
+    var unitTxt = cfgEl("span", "cfg-unit-txt");
+    unitTxt.textContent = "秒";
+    bar.appendChild(unitTxt);
+
+    bar.appendChild(buildCronSwitch(c.name, "补跑", "catch_up"));
+    return bar;
+  }
+
+  // 每轮同步：模式高亮、参数控件显隐、控件值、展开态；正在输入的不打断
+  function syncCronConfig(bar, c) {
+    if (!bar) return;
+    bar.hidden = !cronCfgOpen.has(c.name);
+    var setVal = function (el, v) {
+      if (el && document.activeElement !== el && el.value !== String(v)) el.value = String(v);
+    };
+    var dBtn = bar.querySelector('[data-role="mode-daily"]');
+    var iBtn = bar.querySelector('[data-role="mode-interval"]');
+    if (dBtn) dBtn.classList.toggle("active", c.schedule_type === "daily");
+    if (iBtn) iBtn.classList.toggle("active", c.schedule_type === "interval");
+    var atEl = bar.querySelector('[data-role="at"]');
+    var ivEl = bar.querySelector('[data-role="every"]');
+    if (atEl) atEl.hidden = (c.schedule_type !== "daily");
+    if (ivEl && ivEl.parentNode) ivEl.parentNode.hidden = (c.schedule_type !== "interval");
+    setVal(atEl, c.at || "");
+    var every = bar.querySelector('[data-role="every"]');
+    var unit = bar.querySelector('[data-role="unit"]');
+    if (every && unit && typeof c.every_sec === "number" && c.every_sec) {
+      var d = everyToDisplay(c.every_sec);
+      setVal(unit, d.mult);
+      setVal(every, d.val);
+    }
+    setVal(bar.querySelector('[data-role="timeout"]'), c.timeout_sec);
+    var cu = bar.querySelector('[data-role="catch_up"]');
+    if (cu) cu.checked = !!c.catch_up;
+    Array.prototype.slice.call(bar.querySelectorAll("input,select,button.seg-btn")).forEach(function (el) {
+      el.disabled = !c.valid;   // 坏注册条不可面板编辑（改不了根因）
+    });
   }
 
   function renderCrons(crons) {
@@ -236,9 +382,14 @@
     els.cronSection.hidden = !crons.length;
     var names = crons.map(function (c) { return c.name; });
 
-    // 移除已消失的任务行
+    // 移除已消失的任务行（连带清理其数据快照与展开态）
     Array.prototype.slice.call(els.cronList.children).forEach(function (row) {
-      if (row.dataset.name && names.indexOf(row.dataset.name) === -1) row.remove();
+      if (row.dataset.name && names.indexOf(row.dataset.name) === -1) {
+        cronData.delete(row.dataset.name);
+        cronCfgOpen.delete(row.dataset.name);
+        cronModeMemo.delete(row.dataset.name);
+        row.remove();
+      }
     });
 
     crons.forEach(function (c) {
@@ -253,7 +404,15 @@
         info.className = "info";
         var actions = document.createElement("div");
         actions.className = "actions";
-        var toggle = buildCronToggle(c.name);
+        actions.appendChild(buildCronSwitch(c.name, "启用", "enabled"));
+        var cfgBtn = document.createElement("button");
+        cfgBtn.className = "btn btn-cfg";
+        cfgBtn.textContent = "⚙ 设置";
+        cfgBtn.title = "展开/收起调度配置（模式、时间、超时、补跑）";
+        cfgBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          toggleCronConfig(c.name, row);
+        });
         var logBtn = document.createElement("button");
         logBtn.className = "btn btn-log";
         logBtn.addEventListener("click", function (e) {
@@ -267,12 +426,13 @@
           e.stopPropagation();
           runCron(c.name, runBtn);
         });
-        actions.appendChild(toggle);
+        actions.appendChild(cfgBtn);
         actions.appendChild(logBtn);
         actions.appendChild(runBtn);
         inner.appendChild(info);
         inner.appendChild(actions);
         row.appendChild(inner);
+        row.appendChild(buildCronConfig(c));   // 配置面板（默认收起）
         els.cronList.appendChild(row);
       }
 
@@ -291,22 +451,17 @@
       var nm = document.createElement("span");
       nm.className = "svc-name";
       nm.textContent = c.display || c.name;
+      // 描述挂到任务名悬停：主行空间留给状态与调度信息，避免溢出压到右侧开关
+      if (c.description) nm.title = c.description;
       info.appendChild(nm);
-      info.appendChild(cronChip(c.schedule, "调度规则（timeout " + c.timeout_sec + "s" +
-        (c.catch_up ? "，错过补跑" : "") + "）"));
+      info.appendChild(cronChip(c.schedule, "调度规则（超时 " + c.timeout_sec + "s" +
+        (c.catch_up ? "，错过补跑" : "") + "）——点「⚙ 设置」修改"));
       if (c.running) {
         info.appendChild(cronChip("本轮运行中…"));
       } else if (c.enabled && c.valid && typeof c.next_run === "number") {
         info.appendChild(cronChip("下次 " + fmtClock(c.next_run)));
       }
       if (c.valid) info.appendChild(lastResultChip(c));
-      if (c.description) {
-        var d = document.createElement("span");
-        d.className = "svc-desc";
-        d.textContent = c.description;
-        d.title = c.description;
-        info.appendChild(d);
-      }
       if (c.error) {
         var er = document.createElement("span");
         er.className = "svc-error";
@@ -315,10 +470,23 @@
         info.appendChild(er);
       }
 
-      // 开关（复用，只更新勾选态）；invalid 任务滑块禁用（反正不参与调度）
-      var toggleInput = row.querySelector(".toggle-input");
-      toggleInput.checked = !!c.enabled;
-      toggleInput.disabled = !c.valid;
+      cronData.set(c.name, c);   // 控件回调取最新值用
+      // 记录两种模式各自的最后已知值（供模式切换时恢复，不丢原参数）
+      var memo = cronModeMemo.get(c.name) || {};
+      if (c.at) memo.at = c.at;
+      if (typeof c.every_sec === "number" && c.every_sec) memo.every_sec = c.every_sec;
+      cronModeMemo.set(c.name, memo);
+      // 主行的「启用」开关同步勾选态
+      var enCb = row.querySelector('.actions [data-role="enabled"]');
+      if (enCb) enCb.checked = !!c.enabled;
+      // 设置按钮：展开态高亮；坏注册条禁用（面板改不了根因）
+      var cfgBtnEl = row.querySelector(".btn-cfg");
+      if (cfgBtnEl) {
+        cfgBtnEl.classList.toggle("active", cronCfgOpen.has(c.name));
+        cfgBtnEl.disabled = !c.valid;
+      }
+      // 配置面板同步（模式高亮、参数显隐、控件值、展开态）
+      syncCronConfig(row.querySelector(".cron-config"), c);
 
       // 事件按钮（与服务卡片同一套展开体系）
       var logBtn = row.querySelector(".btn-log");
