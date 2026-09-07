@@ -375,6 +375,20 @@ html, body {
 .ev.fail .ev-svc,
 .ev.fail .ev-note { color: var(--red); }
 
+/* 11. 事件窗工具条（清空按钮，sticky 保持可见）+ 标题旁版本号 */
+.log-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+  position: sticky;
+  top: 0;
+  background: #0b1220;
+  z-index: 1;
+}
+.btn-log-clear { font-size: 11px; padding: 2px 8px; color: var(--red); border-color: rgba(248, 81, 73, .4); }
+.btn-log-clear:hover:not(:disabled) { background: rgba(248, 81, 73, .14); }
+.ver-tag { font-size: 11px; font-weight: 400; color: var(--muted); font-family: var(--mono); }
+
 /* 10. 定时任务区块（reg\cron\ —— 第二物种：无常驻进程，到点跑一次脚本） */
 .section-title {
   margin: 14px 0 2px;

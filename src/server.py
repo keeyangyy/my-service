@@ -28,7 +28,7 @@ from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 SERVER_PY = SRC_DIR / "server.py"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
@@ -75,6 +75,7 @@ def load_config() -> dict:
         "host": "127.0.0.1",
         "port": 1236,
         "reg_dir": "reg",
+        "audit_retention_days": 7,   # 登记簿事件保留天数（0 = 永不自动清理）
     }
     if CONFIG_PATH.is_file():
         try:
@@ -148,6 +149,23 @@ def main() -> int:
     # 定时任务调度线程：同样在 host_start 之后（首条事件因果一致的同一约束）
     threading.Thread(target=scheduler.loop, daemon=True,
                      name="scheduler").start()
+
+    # 登记簿自动清理：启动时清一次，此后每小时复查（保留 config.audit_retention_days 天）
+    retention = float(cfg.get("audit_retention_days", 7))
+
+    def _audit_prune_loop() -> None:
+        while True:
+            try:
+                removed = audit.prune(retention)
+                if removed:
+                    print(f"[audit] 自动清理 {removed} 条超过 {retention:.0f} 天的事件",
+                          flush=True)
+            except Exception:  # noqa: BLE001 - 清理失败不影响宿主
+                pass
+            time.sleep(3600)
+
+    threading.Thread(target=_audit_prune_loop, daemon=True,
+                     name="audit-prune").start()
 
     # 延迟半拍先让 HTTP 就绪，再按 manifest 声明自动拉起
     # 防双开：自启前先判定是否已有实例在运行（外部/残留/手动），已在运行则跳过

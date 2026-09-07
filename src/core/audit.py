@@ -21,8 +21,10 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 MAX_BYTES = 5 * 1024 * 1024   # 登记簿按大小轮转（框架自家文件，几行成本）
@@ -144,3 +146,80 @@ def tail(n: int = 200, svc: str | None = None,
             continue
         out.append(rec)
     return out[-n:]
+
+
+def _rewrite_lines(kept: list[str]) -> bool:
+    """原子写回登记簿（临时文件 + os.replace）。失败返回 False，原文件不动。"""
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(_path.parent), suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(kept) + ("\n" if kept else ""))
+        os.replace(tmp, _path)
+        return True
+    except OSError:
+        return False
+
+
+def clear(svc: str | None = None) -> int:
+    """手动清空登记簿：svc=None 清空全部；否则只删该 svc（服务/任务）的事件行。
+
+    返回删除行数。轮转归档（host.jsonl.1/.2/.3）不受影响；坏行保留不误删。
+    """
+    if _path is None or not _path.is_file():
+        return 0
+    with _lock:
+        try:
+            lines = _path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return 0
+        kept: list[str] = []
+        removed = 0
+        for line in lines:
+            drop = False
+            s = line.strip()
+            if s:
+                try:
+                    rec = json.loads(s)
+                    if isinstance(rec, dict) and (svc is None or rec.get("svc") == svc):
+                        drop = True
+                except ValueError:
+                    pass  # 坏行（半行/截断）保留
+            if drop:
+                removed += 1
+            else:
+                kept.append(line)
+        return removed if _rewrite_lines(kept) else 0
+
+
+def prune(days: float) -> int:
+    """自动清理：删除 ts 早于 now-days 的事件行（宿主定期调用）。
+
+    days<=0 表示永不清理；ts 解析失败的行保留不误删。返回删除行数。
+    """
+    if days <= 0 or _path is None or not _path.is_file():
+        return 0
+    with _lock:
+        try:
+            lines = _path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return 0
+        cutoff = datetime.now() - timedelta(days=days)
+        kept: list[str] = []
+        removed = 0
+        for line in lines:
+            drop = False
+            s = line.strip()
+            if s:
+                try:
+                    rec = json.loads(s)
+                    ts = datetime.strptime(str(rec.get("ts", "")),
+                                           "%Y-%m-%d %H:%M:%S.%f")
+                    if ts < cutoff:
+                        drop = True
+                except (ValueError, TypeError):
+                    pass  # 坏行/无 ts 行保留
+            if drop:
+                removed += 1
+            else:
+                kept.append(line)
+        return removed if _rewrite_lines(kept) else 0

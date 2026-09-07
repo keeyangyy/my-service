@@ -44,7 +44,8 @@
     hostRestart: document.getElementById("btn-host-restart"),
     hostStop: document.getElementById("btn-host-stop"),
     cronSection: document.getElementById("cron-section"),
-    cronList: document.getElementById("cron-list")
+    cronList: document.getElementById("cron-list"),
+    verTag: document.getElementById("ver-tag")
   };
 
   // 状态：同一时刻只允许一个事件视图展开（某张卡片内，或顶部全局抽屉）
@@ -351,6 +352,37 @@
     if (!res.ok) throw new Error("HTTP " + res.status);
     var data = await res.json();
     return Array.isArray(data.events) ? data.events : [];
+  }
+
+  // 事件窗工具条：清空按钮（卡片窗清该服务/任务，全局抽屉清整本登记簿）
+  function buildLogToolbar(name) {
+    var bar = document.createElement("div");
+    bar.className = "log-toolbar";
+    var btn = document.createElement("button");
+    btn.className = "btn btn-log-clear";
+    btn.textContent = "✕ 清空";
+    btn.addEventListener("click", async function (e) {
+      e.stopPropagation();
+      var all = (name === ALL_KEY);
+      var tip = all
+        ? "清空整个登记簿？（轮转归档 .1/.2/.3 不受影响，此操作不可恢复）"
+        : "清空 " + name + " 的全部事件记录？（此操作不可恢复）";
+      if (!window.confirm(tip)) return;
+      try {
+        var body = all ? {} : { svc: name };
+        var res = await api("POST", "/api/audit/clear", body);
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+        toast("已清空 " + (data.removed || 0) + " 条事件", "ok");
+        var card = all ? els.auditDrawer : cardByName(name);
+        var panel = card ? (all ? card : card.querySelector(".log-panel")) : null;
+        if (panel) refreshEvents(name, panel);
+      } catch (err) {
+        toast("清空失败：" + (err && err.message ? err.message : "未知错误"), "err");
+      }
+    });
+    bar.appendChild(btn);
+    return bar;
   }
 
   async function postAction(name, action) {
@@ -747,7 +779,10 @@
     var wasBottom = logAtBottom.get(name) !== false;
     try {
       var events = await fetchAudit(name);
+      var toolbar = panel.querySelector(".log-toolbar");
       panel.replaceChildren();
+      if (!toolbar) toolbar = buildLogToolbar(name);   // 首次注入；重建行时保留
+      panel.appendChild(toolbar);
       if (!events.length) {
         var empty = document.createElement("div");
         empty.className = "log-empty";
@@ -796,11 +831,15 @@
     els.text.textContent = running + "/" + data.length + " 运行中";
     els.text.classList.remove("off");
 
-    // 宿主自身运行时长（区别于单个服务的 uptime）
+    // 宿主自身运行时长（区别于单个服务的 uptime）+ 版本号钉在标题旁
     if (host && typeof host.uptime_sec === "number") {
       els.hostUptime.textContent = "宿主运行 " + fmtUptime(host.uptime_sec);
       els.hostUptime.title = "my-service 自身已运行 " + fmtUptime(host.uptime_sec)
         + "（pid " + host.pid + "，v" + host.version + "）";
+    }
+    if (host && host.version && els.verTag) {
+      els.verTag.hidden = false;
+      els.verTag.textContent = "v" + host.version;
     }
     var pending = data.some(function (s) {
       return s.status === "starting" || s.status === "stopping";

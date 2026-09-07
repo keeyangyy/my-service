@@ -127,6 +127,11 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 `restart` 不单独成事件，表现为 `stop → start` 两条。动作枚举以 `src\core\audit.py`
 的 `ACTS` 为准，新增须同步前端 `app.js` 的 `ACT_MAP`。
 
+**清空与自动清理**：事件窗右上「✕ 清空」按钮——卡片窗只清该服务/任务的事件，
+全局登记簿抽屉清整本（归档 .1/.2/.3 不受影响，均需确认）。自动清理由
+`config.json` 的 `audit_retention_days` 控制（默认 7 天，`0` = 永不），
+宿主启动时清一次、此后每小时复查。
+
 查看途径：面板「▤ 登记簿」（全局）/ 卡片「事件」（单服务）；
 命令行 `.\src\svc.ps1 events [name] [n]`；接口 `GET /api/audit?n=&svc=&fail=1`。
 
@@ -308,7 +313,7 @@ entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` �
 | Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；下方「⏱ 定时任务」区块：调度规则/下次执行/上次结果/▶ 立即运行；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
-| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/{name}/config`(`{"enabled":bool}` 开关)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
+| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/{name}/config`(`{"enabled":bool}` 开关)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条或 `"enabled": false` |
 
 ## 快速上手

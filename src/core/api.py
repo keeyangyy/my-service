@@ -153,6 +153,15 @@ def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager:
                 host.schedule(action)   # 延迟执行，先让本响应发出
                 return self._json(202, {"ok": True, "action": action})
 
+            # POST /api/audit/clear  {"svc": "name"} 或 {} 清空全部
+            if len(parts) == 3 and parts[0] == "api" and parts[1] == "audit" \
+                    and parts[2] == "clear":
+                svc = body.get("svc")
+                if svc is not None and not isinstance(svc, str):
+                    return self._json(400, {"ok": False, "error": 'svc 需为字符串或 null'})
+                removed = audit.clear(svc or None)
+                return self._json(200, {"ok": True, "removed": removed})
+
             # POST /api/crons/{name}/run  —— 手动立即触发定时任务
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "crons" \
                     and parts[3] == "run":
