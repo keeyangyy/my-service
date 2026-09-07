@@ -2,6 +2,32 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.8.0（2026-09-08）
+
+面板支持拖拽排序：**服务列表与定时任务列表**都可手动调整顺序。
+
+### 框架内核
+- `state.Manager` 与 `scheduler.Scheduler` 各自新增顺序账本（`logs\service_order.json`
+  / `logs\cron_order.json`，原子写；缺失或损坏退回字母序）
+- 两者都新增 `set_order(names)`：只接受已注册名并去重，未提及的按字母序追加末尾
+- `snapshot()` 改按拖拽顺序返回——新注册的服务/任务自动排末尾，不打乱已排好的顺序
+- `refresh()` / `scan()` 自动清理已注销条目的顺序项，避免重启后复活
+- 新增 `POST /api/services/order` 与 `POST /api/crons/order`（`{"names":[...]}`，非数组 400）
+
+### Web Dashboard
+- 服务卡片与定时任务行首都新增拖拽把手 `⠿`：**按住把手才开启 draggable**（整行常驻可拖
+  会干扰选文字与点按钮）；拖动中实时插入换位 + 半透明高亮，松手自动保存并 toast
+- 拖拽逻辑通用化（`buildDragHandle` / `bindRowDrag` / `saveOrder`），两个列表共用一套
+- 服务卡片「点整行打开服务网页」与拖拽冲突已处理：拖完 250ms 内抑制补发的 click
+  （实测拖动后不会误开中转页）
+- 拖动期间以 `sortBusy` 冻结两个列表的轮询重绘（轮询本身继续），防 DOM 被刷掉打断手势
+- 每轮按后端顺序 `appendChild` 同步 DOM（移动已有节点，不重建、事件与焦点保留）
+
+### 测试
+- 新增 `TestOrdering` 8 例（任务）+ `tests/test_state_order.py` 8 例（服务）：默认字母序、
+  重排生效、未知名忽略与去重、部分列表追加、跨重启保持、新条目不打乱、注销自动清理、
+  无 order 路径退化；合计 49 例全绿
+
 ## v0.7.0（2026-09-08）
 
 定时任务支持面板行内编辑配置（此前改时间只能手编注册条）。
