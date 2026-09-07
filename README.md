@@ -36,6 +36,8 @@ my-service\
 │   ├─ host.err.log           # 宿主自身异常栈（sys.stderr）
 │   ├─ host.pid               # 宿主 pid（ctl.ps1 优先读它）
 │   ├─ cron_state.json        # 定时任务账本：last_run/next_run 等（scheduler 独写）
+│   ├─ cron_order.json        # 定时任务面板顺序（拖拽排序结果，注销任务自动清理）
+│   ├─ service_order.json     # 服务列表面板顺序（同上，注销服务自动清理）
 │   └─ pids\<服务名>.pid       # 被管服务 pid——框架记账留在框架家
 └─ src\                       # 实现细节 + 程序化接口
     ├─ server.py              # 组装入口（含 HostController 自管理）
@@ -244,6 +246,11 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 - **开关**：面板滑块（同服务自启滑块）控制是否参与调度，权威值回写注册条
   `enabled` 字段；只影响下一次触发，正在跑的一轮自然跑完；停用期间不排新计划，
   重新启用即恢复
+- **拖拽排序**：**服务列表与定时任务列表都支持**——行首把手 `⠿`，按住即可上下拖动，
+  松手自动保存（服务存 `logs\service_order.json`、任务存 `logs\cron_order.json`，
+  均为框架侧记账，不污染注册条）；新注册的服务/任务自动排在末尾，不打乱你排好的顺序；
+  注销条目的顺序自动清理；重启宿主后顺序保持。想恢复默认字母序：把行拖回字母序即可
+  （只删账本文件不会重置内存里的顺序，需配合重启宿主）
 - **面板行内编辑**：任务行默认**一行**（概览 + `启用`开关 + `⚙ 设置` + `事件` +
   `▶ 立即运行`）；点 `⚙ 设置` 展开配置面板——**模式用分段按钮二选一**
   （定时执行 / 间隔执行）、时刻选择器或间隔数值+单位、`⏲ 超时保护`秒数（卡死强杀阈值，
@@ -319,10 +326,10 @@ entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` �
 
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；下方「⏱ 定时任务」区块：主行显示下次执行/上次结果 + 事件窗/▶ 立即运行，配置行可行内改调度时间/超时/补跑/启用；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
+| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关，行首 `⠿` 可拖动排序；下方「⏱ 定时任务」区块：主行显示下次执行/上次结果 + 事件窗/▶ 立即运行，`⚙ 设置` 展开可行内改调度模式与时间/超时保护/补跑/启用，同样支持拖拽排序；header 右上含宿主运行时长 + 版本号 + `▤ 登记簿` + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
-| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/{name}/config`(补丁：`enabled`/`catch_up`/`timeout_sec`/`schedule` 任意组合，面板行内编辑用)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
+| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/order`(`{"names":[...]}` 拖拽排序)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/order`(`{"names":[...]}` 拖拽排序)、`POST /api/crons/{name}/config`(补丁：`enabled`/`catch_up`/`timeout_sec`/`schedule` 任意组合，面板行内编辑用)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条或 `"enabled": false` |
 
 ## 快速上手
@@ -392,3 +399,28 @@ start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File 
 - 黑窗：`start "" /min` + `-WindowStyle Hidden` 最小化秒退，实测可接受
 - 卸载 = 删除该 cmd（`uninstall_autostart.ps1` 一并清理计划任务，双保险）
 - 计划任务方案（S4U / SYSTEM-AtStartup / nssm 服务）保留为 `install_autostart.ps1` 的 `-Mode` 备选
+
+### AI/自动化会话改代码后如何重载宿主（实测 2026-09-08）
+
+**现象**：AI 会话里启动的宿主，会随该会话结束而消失（面板打不开、定时任务停摆），
+而用户自己双击 `entry\start.ps1` 起的宿主能稳定跑一整天（实测 09:29→20:09 无中断）。
+
+**根因**：agent 的 shell 工具把命令包在 Windows **Job Object** 里，命令/会话结束时
+连带清理 Job 内全部进程。`Start-Process` 的分离、`DETACHED_PROCESS`、
+`CREATE_NEW_PROCESS_GROUP` 都只脱离**父进程**，**脱离不了继承的 Job 边界**——
+所以 agent 无能力生成一个真正与自己无关的常驻进程。
+
+**正确工作流（关键：第一代必须由用户起）**：
+
+1. 用户起第一代：双击/运行 `entry\start.ps1`，或靠开机自启（启动文件夹）
+   - 判据：`Get-CimInstance Win32_Process -Filter "ProcessId=<pid>"` 的命令行是
+     **绝对路径** `C:/path/to/my-service/src/server.py`（`ctl.ps1` 的 `Start-Process` 写法）；
+     agent 直跑的是相对路径 `src/server.py`，一看便知是谁起的
+2. 之后 agent 改完代码要重载，一律走 `POST /api/host/restart`（等价面板 `⟳ 重启`）
+   ——新进程由旧宿主自己派生，仍是用户那一代的后代，agent 会话结束不影响它
+   （实测：31912 → 32296 换代成功，跨命令边界存活，`cron_state.json` 的 next_run 原样恢复）
+3. **禁止** agent 用 `python src/server.py` 后台直跑方式长期托管宿主——那只会造出一个
+   随会话死亡的实例，把"用户又得手动重启"的代价转嫁给用户
+
+> 同理适用于被管服务：agent 需要重启某个服务时，用 `POST /api/services/{svc}/restart`
+> 让宿主去做，而不是自己 `Popen` 一个进程。

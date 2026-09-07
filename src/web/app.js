@@ -377,8 +377,70 @@
     });
   }
 
+  // ===== 拖拽排序（服务列表与定时任务共用一套把手与保存逻辑）=====
+  var dragRow = null;        // 正在拖的行
+  var sortBusy = false;      // 拖动期间冻结两个列表的重绘，防手势被打断
+  var suppressClick = false; // 拖完浏览器可能补一次 click，抑制掉（服务卡片整行可点）
+
+  function buildDragHandle(row) {
+    var h = cfgEl("span", "drag-handle");
+    h.textContent = "⠿";
+    h.title = "按住拖动排序";
+    // 只在把手按下时开启 draggable：整行常驻可拖会干扰选文字与点按钮
+    h.addEventListener("mousedown", function () { row.draggable = true; });
+    h.addEventListener("mouseup", function () { row.draggable = false; });
+    h.addEventListener("click", function (e) { e.stopPropagation(); });
+    return h;
+  }
+
+  function listOrderNames(listEl) {
+    return Array.prototype.slice.call(listEl.querySelectorAll(".card[data-name]"))
+      .map(function (r) { return r.dataset.name; });
+  }
+
+  async function saveOrder(kind, names) {
+    try {
+      var res = await api("POST", "/api/" + kind + "/order", { names: names });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || data.message || ("HTTP " + res.status));
+      toast("顺序已保存", "ok");
+    } catch (e) {
+      toast("排序保存失败：" + (e && e.message ? e.message : "未知错误"), "err");
+    }
+    poll(true);
+  }
+
+  function bindRowDrag(row, listEl, kind) {
+    row.addEventListener("dragstart", function (e) {
+      dragRow = row;
+      sortBusy = true;
+      row.classList.add("dragging");
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", row.dataset.name || ""); } catch (_e) {}
+      }
+    });
+    row.addEventListener("dragover", function (e) {
+      e.preventDefault();
+      if (!dragRow || dragRow === row || dragRow.parentNode !== listEl) return;
+      var rect = row.getBoundingClientRect();
+      var before = (e.clientY - rect.top) < rect.height / 2;   // 上半插前，下半插后
+      listEl.insertBefore(dragRow, before ? row : row.nextSibling);
+    });
+    row.addEventListener("drop", function (e) { e.preventDefault(); });
+    row.addEventListener("dragend", function () {
+      row.classList.remove("dragging");
+      row.draggable = false;
+      dragRow = null;
+      sortBusy = false;
+      suppressClick = true;
+      setTimeout(function () { suppressClick = false; }, 250);
+      saveOrder(kind, listOrderNames(listEl));
+    });
+  }
+
   function renderCrons(crons) {
-    if (!els.cronSection) return;
+    if (!els.cronSection || sortBusy) return;   // 拖动中不重绘
     els.cronSection.hidden = !crons.length;
     var names = crons.map(function (c) { return c.name; });
 
@@ -400,6 +462,7 @@
         row.dataset.name = c.name;
         var inner = document.createElement("div");
         inner.className = "card-inner";
+        inner.appendChild(buildDragHandle(row));
         var info = document.createElement("div");
         info.className = "info";
         var actions = document.createElement("div");
@@ -433,6 +496,7 @@
         inner.appendChild(actions);
         row.appendChild(inner);
         row.appendChild(buildCronConfig(c));   // 配置面板（默认收起）
+        bindRowDrag(row, els.cronList, "crons");
         els.cronList.appendChild(row);
       }
 
@@ -496,6 +560,9 @@
 
       var runBtn = row.querySelector(".btn-run");
       runBtn.disabled = c.running || !c.valid || !c.enabled;
+
+      // 跟随后端顺序：appendChild 移动已有节点（不重建、事件与焦点保留）
+      els.cronList.appendChild(row);
     });
   }
 
@@ -661,6 +728,8 @@
     var inner = document.createElement("div");
     inner.className = "card-inner";
 
+    inner.appendChild(buildDragHandle(card));   // 行首把手：按住才能拖动排序
+
     var info = document.createElement("div");
     info.className = "info";
 
@@ -712,6 +781,7 @@
 
     // 整行点击跳转（懒打开：先弹中转页，就绪后跳转）
     card.addEventListener("click", function () {
+      if (suppressClick) return;   // 刚拖完的补发 click 不算点击
       if (!card.classList.contains("clickable")) return;
       var u = card.dataset.url;
       if (u) openService(card.dataset.name, u, card.dataset.display);
@@ -724,6 +794,7 @@
       }
     });
 
+    bindRowDrag(card, els.list, "services");
     card.dataset.built = "1";
   }
 
@@ -991,6 +1062,7 @@
 
   // ===== 渲染 + 轮询 =====
   async function render(data, host) {
+    if (sortBusy) { poll(false); return; }   // 拖动中冻结重绘，但轮询继续
     var names = data.map(function (s) { return s.name; });
     var running = data.filter(function (s) { return s.status === "running"; }).length;
 
@@ -1034,6 +1106,8 @@
         els.list.appendChild(card);
       }
       renderCard(svc, card);
+      // 跟随后端顺序：appendChild 移动已有节点（不重建、事件与焦点保留）
+      els.list.appendChild(card);
     });
 
     // 刷新所有已展开的事件面板（跟随轮询频率）

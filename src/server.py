@@ -28,7 +28,7 @@ from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 SERVER_PY = SRC_DIR / "server.py"
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
@@ -119,11 +119,11 @@ def main() -> int:
     except OSError:
         pass
     scanner = Scanner((base / cfg["reg_dir"]).resolve())
-    manager = Manager(scanner)
+    manager = Manager(scanner, rdir / "service_order.json")
     # 定时任务注册目录（reg\cron\）：不存在则建空目录，用户一眼可见往哪放注册条
     cron_dir = (base / cfg["reg_dir"] / "cron").resolve()
     cron_dir.mkdir(parents=True, exist_ok=True)
-    scheduler = Scheduler(cron_dir, rdir / "cron_state.json")
+    scheduler = Scheduler(cron_dir, rdir / "cron_state.json", rdir / "cron_order.json")
     controller = HostController(manager, rdir)
 
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),

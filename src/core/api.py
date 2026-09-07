@@ -126,6 +126,15 @@ def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager:
             parsed = urlparse(self.path)
             parts = [p for p in unquote(parsed.path).split("/") if p]
 
+            # POST /api/services/order  {"names": [...]}  —— 面板拖拽排序
+            if len(parts) == 3 and parts[0] == "api" and parts[1] == "services" \
+                    and parts[2] == "order":
+                names = body.get("names")
+                if not isinstance(names, list):
+                    return self._json(400, {"ok": False, "error": '需要数组字段 "names"'})
+                ok, code, msg = manager.set_order([str(n) for n in names])
+                return self._json(200 if ok else 500, {"ok": ok, "message": msg})
+
             # POST /api/services/{name}/{start|stop|restart}[?via=cli]
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "services":
                 name, action = parts[2], parts[3]
@@ -161,6 +170,17 @@ def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager:
                     return self._json(400, {"ok": False, "error": 'svc 需为字符串或 null'})
                 removed = audit.clear(svc or None)
                 return self._json(200, {"ok": True, "removed": removed})
+
+            # POST /api/crons/order  {"names": [...]}  —— 面板拖拽排序
+            if len(parts) == 3 and parts[0] == "api" and parts[1] == "crons" \
+                    and parts[2] == "order":
+                if scheduler is None:
+                    return self._json(501, {"ok": False, "error": "调度器不可用"})
+                names = body.get("names")
+                if not isinstance(names, list):
+                    return self._json(400, {"ok": False, "error": '需要数组字段 "names"'})
+                ok, code, msg = scheduler.set_order([str(n) for n in names])
+                return self._json(200 if ok else 500, {"ok": ok, "message": msg})
 
             # POST /api/crons/{name}/run  —— 手动立即触发定时任务
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "crons" \

@@ -46,7 +46,8 @@ class _Sandbox:
         return p
 
     def sched(self) -> Scheduler:
-        return Scheduler(self.reg, self.root / "state.json")
+        return Scheduler(self.reg, self.root / "state.json",
+                         self.root / "order.json")
 
     @staticmethod
     def wait_running(sched: Scheduler, name: str, timeout: float = 5.0) -> bool:
@@ -362,6 +363,72 @@ class TestUpdateConfig(unittest.TestCase):
         raw = self._raw("d")
         for key in ("path", "entry", "schedule", "display"):
             self.assertIn(key, raw)
+
+
+class TestOrdering(unittest.TestCase):
+    """面板拖拽排序：顺序持久化、新任务不打乱、注销自动清理。"""
+
+    def setUp(self):
+        self.box = _Sandbox()
+        for n in ("a-task", "b-task", "c-task"):
+            self.box.put(n, schedule={"type": "interval", "every_sec": 3600})
+        self.sched = self.box.sched()
+        self.sched.scan()
+
+    def tearDown(self):
+        self.box.cleanup()
+
+    def _names(self):
+        return [x["name"] for x in self.sched.snapshot()]
+
+    def test_default_is_alphabetical(self):
+        self.assertEqual(self._names(), ["a-task", "b-task", "c-task"])
+
+    def test_set_order_reorders(self):
+        ok, code, _ = self.sched.set_order(["c-task", "a-task", "b-task"])
+        self.assertTrue(ok)
+        self.assertEqual(self._names(), ["c-task", "a-task", "b-task"])
+
+    def test_unknown_names_ignored_and_deduped(self):
+        self.sched.set_order(["ghost", "b-task", "b-task", "a-task"])
+        self.assertEqual(self._names(), ["b-task", "a-task", "c-task"])
+
+    def test_partial_list_appends_rest(self):
+        self.sched.set_order(["c-task"])          # 只提一个，其余按字母序追加
+        self.assertEqual(self._names(), ["c-task", "a-task", "b-task"])
+
+    def test_order_persisted_across_restart(self):
+        self.sched.set_order(["b-task", "c-task", "a-task"])
+        s2 = self.box.sched()
+        s2.scan()
+        self.assertEqual([x["name"] for x in s2.snapshot()],
+                         ["b-task", "c-task", "a-task"])
+
+    def test_new_task_appended_not_disrupting(self):
+        self.sched.set_order(["c-task", "b-task", "a-task"])
+        self.box.put("d-new", schedule={"type": "interval", "every_sec": 3600})
+        self.sched.scan()
+        self.assertEqual(self._names(), ["c-task", "b-task", "a-task", "d-new"])
+
+    def test_removed_task_cleaned_from_order(self):
+        self.sched.set_order(["c-task", "b-task", "a-task"])
+        (self.box.reg / "b-task.json").unlink()
+        self.sched.scan()
+        self.assertEqual(self.sched._order, ["c-task", "a-task"])
+        self.assertEqual(self._names(), ["c-task", "a-task"])
+        # 落盘账本同步（重启后不会复活已注销任务）
+        saved = json.loads((self.box.root / "order.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, ["c-task", "a-task"])
+
+    def test_no_order_path_still_works(self):
+        """未提供 order 文件路径时（如单测/脚本直调）退化为字母序，不报错。"""
+        s = Scheduler(self.box.reg, self.box.root / "state2.json")
+        s.scan()
+        self.assertEqual([x["name"] for x in s.snapshot()],
+                         ["a-task", "b-task", "c-task"])
+        s.set_order(["c-task", "a-task", "b-task"])
+        self.assertEqual([x["name"] for x in s.snapshot()],
+                         ["c-task", "a-task", "b-task"])
 
 
 if __name__ == "__main__":

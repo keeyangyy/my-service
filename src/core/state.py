@@ -11,6 +11,7 @@ Manager：把 Scanner（发现）+ Runner（进程原子操作）编成一个带
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -27,17 +28,66 @@ def _dur(t0: float) -> int:
 
 
 class Manager:
-    def __init__(self, scanner: Scanner):
+    def __init__(self, scanner: Scanner, order_path: Path | None = None):
         self.scanner = scanner
+        self.order_path = Path(order_path) if order_path else None
         self.specs: dict[str, Spec] = {}
         self.handles: dict[str, runner.ProcessHandle] = {}
         # svc -> 状态字典：status/started_at/error/fail_at
         self.state: dict[str, dict] = {}
+        self._order: list[str] = []          # 面板拖拽顺序（持久化在 order_path）
         self._user_stopping: set[str] = set()   # 区分"用户主动停"与"崩溃"
         self._pending_stop: dict[str, float] = {}  # stop 发起时刻，stopping 超时兜底
         self._idle_reaping: set[str] = set()    # on_demand 空闲回收进行中（防重复触发）
         self.lock = threading.RLock()
+        self._load_order()
         self.refresh()
+
+    # ------------------------------------------------------------ 顺序账本
+    def _load_order(self) -> None:
+        if not self.order_path:
+            return
+        try:
+            data = json.loads(self.order_path.read_text(encoding="utf-8-sig"))
+            if isinstance(data, list):
+                self._order = [str(n) for n in data]
+        except Exception:  # noqa: BLE001 - 缺失/损坏都退回字母序
+            self._order = []
+
+    def _save_order(self) -> None:
+        if not self.order_path:
+            return
+        try:
+            import tempfile
+            self.order_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(self.order_path.parent), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._order, ensure_ascii=False, indent=1) + "\n")
+            os.replace(tmp, self.order_path)
+        except OSError:
+            pass
+
+    def _ordered_names(self) -> list[str]:
+        """按拖拽顺序返回服务名；未入册的新服务按字母序追加末尾（不打乱已有顺序）。"""
+        known = set(self.specs)
+        picked = [n for n in self._order if n in known]
+        picked += sorted(known - set(picked))
+        return picked
+
+    def set_order(self, names: list[str]) -> tuple[bool, str, str]:
+        """面板拖拽排序：只接受已注册服务名（去重），未提及的按字母序追加末尾。"""
+        with self.lock:
+            known = set(self.specs)
+            seen: set[str] = set()
+            picked: list[str] = []
+            for n in names:
+                if isinstance(n, str) and n in known and n not in seen:
+                    seen.add(n)
+                    picked.append(n)
+            picked += sorted(known - seen)
+            self._order = picked
+            self._save_order()
+            return True, "ok", "已排序"
 
     # ------------------------------------------------------------ 发现
     def refresh(self) -> None:
@@ -66,6 +116,10 @@ class Manager:
                     why = "注册条已移除，条目摘除"
                 audit.emit("spec_invalid", svc=gone, note=why)
                 del self.state[gone]
+            stale = [n for n in self._order if n not in specs]
+            if stale:
+                self._order = [n for n in self._order if n in specs]
+                self._save_order()   # 注销服务的顺序条目一并清掉
             # 端口冲突检查（跨服务）
             seen: dict[int, str] = {}
             for name, spec in specs.items():
@@ -82,7 +136,10 @@ class Manager:
     def snapshot(self) -> list[dict]:
         with self.lock:
             out = []
-            for name, spec in sorted(self.specs.items()):
+            for name in self._ordered_names():   # 面板拖拽顺序，非字母序
+                spec = self.specs.get(name)
+                if spec is None:
+                    continue
                 st = self.state.get(name, {})
                 status = st.get("status", "unknown")
                 handle = self.handles.get(name)
