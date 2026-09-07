@@ -78,7 +78,10 @@
   }
 
   function cardByName(name) {
-    return els.list.querySelector('.card[data-name="' + cssEscape(name) + '"]');
+    return els.list.querySelector('.card[data-name="' + cssEscape(name) + '"]')
+      || (els.cronList
+        ? els.cronList.querySelector('.cron-card[data-name="' + cssEscape(name) + '"]')
+        : null);
   }
 
   // ===== toast =====
@@ -191,6 +194,42 @@
     return cronChip("上次 ✗ " + t + " · rc=" + c.last_rc, "上次执行失败（退出码 " + c.last_rc + "）");
   }
 
+  // 定时任务开关（同服务自启滑块：权威值回写注册条 enabled 字段）
+  function buildCronToggle(name) {
+    var toggle = document.createElement("label");
+    toggle.className = "toggle";
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "toggle-input";
+    var track = document.createElement("span");
+    track.className = "toggle-track";
+    var knob = document.createElement("span");
+    knob.className = "toggle-knob";
+    track.appendChild(knob);
+    var tlabel = document.createElement("span");
+    tlabel.className = "toggle-label";
+    tlabel.textContent = "启用";
+    toggle.appendChild(cb);
+    toggle.appendChild(track);
+    toggle.appendChild(tlabel);
+    toggle.addEventListener("click", function (e) { e.stopPropagation(); });
+    cb.addEventListener("change", async function () {
+      var newVal = cb.checked;
+      try {
+        var res = await api("POST", "/api/crons/" + encodeURIComponent(name) + "/config",
+          { enabled: newVal });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+        toast(newVal ? "已启用调度" : "已停用调度（正在跑的一轮不受影响）", "ok");
+      } catch (e) {
+        cb.checked = !newVal;
+        toast("设置失败：" + (e && e.message ? e.message : "未知错误"), "err");
+      }
+      poll(true);
+    });
+    return toggle;
+  }
+
   function renderCrons(crons) {
     if (!els.cronSection) return;
     els.cronSection.hidden = !crons.length;
@@ -213,6 +252,13 @@
         info.className = "info";
         var actions = document.createElement("div");
         actions.className = "actions";
+        var toggle = buildCronToggle(c.name);
+        var logBtn = document.createElement("button");
+        logBtn.className = "btn btn-log";
+        logBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          openLog(c.name, row);
+        });
         var runBtn = document.createElement("button");
         runBtn.className = "btn btn-run";
         runBtn.textContent = "▶ 立即运行";
@@ -220,6 +266,8 @@
           e.stopPropagation();
           runCron(c.name, runBtn);
         });
+        actions.appendChild(toggle);
+        actions.appendChild(logBtn);
         actions.appendChild(runBtn);
         inner.appendChild(info);
         inner.appendChild(actions);
@@ -228,6 +276,7 @@
       }
 
       var st = CRON_STATUS_MAP[cronStatus(c)];
+      row.classList.toggle("log-open", openLogs.has(c.name));
       var badge = document.createElement("span");
       badge.className = "status-badge " + st.cls;
       var dot = document.createElement("span");
@@ -264,6 +313,17 @@
         er.title = c.error;
         info.appendChild(er);
       }
+
+      // 开关（复用，只更新勾选态）；invalid 任务滑块禁用（反正不参与调度）
+      var toggleInput = row.querySelector(".toggle-input");
+      toggleInput.checked = !!c.enabled;
+      toggleInput.disabled = !c.valid;
+
+      // 事件按钮（与服务卡片同一套展开体系）
+      var logBtn = row.querySelector(".btn-log");
+      var isOpen = openLogs.has(c.name);
+      logBtn.classList.toggle("active", isOpen);
+      logBtn.textContent = isOpen ? "收起" : "事件";
 
       var runBtn = row.querySelector(".btn-run");
       runBtn.disabled = c.running || !c.valid || !c.enabled;
@@ -691,7 +751,7 @@
       if (!events.length) {
         var empty = document.createElement("div");
         empty.className = "log-empty";
-        empty.textContent = "（暂无事件 —— 服务的运行日志写在它自己目录的 logs\\ 下，框架不代管）";
+        empty.textContent = "（暂无事件 —— 任务/服务的业务输出由其自己记录，框架只记编排动作）";
         panel.appendChild(empty);
       } else {
         events.forEach(function (ev) {

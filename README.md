@@ -236,8 +236,14 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 - **错过**（宿主关闭/睡眠/执行超长导致，宽限阈 60 秒）：`catch_up: true` 立即
   补跑一次（签到类建议开）；默认 `false` 只登记 `cron_skip` 并顺延到下一合法
   时刻，开机绝不齐跑
+- **开关**：面板滑块（同服务自启滑块）控制是否参与调度，权威值回写注册条
+  `enabled` 字段；只影响下一次触发，正在跑的一轮自然跑完；停用期间不排新计划，
+  重新启用即恢复
 - **状态恢复**：`last_run/last_ok/last_rc/next_run` 持久化在
   `logs\cron_state.json`（scheduler 独写，运行期以内存为准），宿主重启后照单恢复
+- **触发记录**：卡片「事件」窗展开该任务的 `cron_run/cron_skip` 时间线
+  （登记簿按任务名过滤）；note 只记结果与非常规来源（定时触发无前缀，
+  手动触发/错过补跑以中文前缀区分），脚本自身输出仍由任务自己记录
 - **手动触发**：面板「▶ 立即运行」按钮 / `svc.ps1 cron-run <名>` /
   `POST /api/crons/{名}/run`；运行中重复触发返回 409 拒绝
 
@@ -302,7 +308,7 @@ entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` �
 | Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；下方「⏱ 定时任务」区块：调度规则/下次执行/上次结果/▶ 立即运行；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
-| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
+| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/{name}/config`(`{"enabled":bool}` 开关)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条或 `"enabled": false` |
 
 ## 快速上手

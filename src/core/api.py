@@ -164,6 +164,17 @@ def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager:
                              "busy": 409, "disabled": 409}.get(code, 500)
                 return self._json(http_code, {"ok": ok, "message": msg})
 
+            # POST /api/crons/{name}/config  {"enabled": bool}
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "crons" \
+                    and parts[3] == "config":
+                if scheduler is None:
+                    return self._json(501, {"ok": False, "error": "调度器不可用"})
+                value = body.get("enabled")
+                if not isinstance(value, bool):
+                    return self._json(400, {"ok": False, "error": '需要布尔字段 "enabled"'})
+                ok, msg = scheduler.toggle_enabled(parts[2], value)
+                return self._json(200 if ok else 500, {"ok": ok, "error": None if ok else msg})
+
             # POST /api/config/{name}  {"autostart": bool}
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "config":
                 name = parts[2]

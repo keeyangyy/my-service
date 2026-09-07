@@ -228,6 +228,31 @@ class TestRunNowAndPersist(unittest.TestCase):
         self.sched.scan()                               # 注册条已删 → 账目清零
         self.assertNotIn("t", self.sched.persist)
 
+    def test_toggle_enabled_writes_back_and_takes_effect(self):
+        ok, _ = self.sched.toggle_enabled("t", False)
+        self.assertTrue(ok)
+        # 权威值回写注册条
+        raw = json.loads((self.box.reg / "t.json").read_text(encoding="utf-8"))
+        self.assertIs(raw["enabled"], False)
+        # 内存态同步 → tick 不再调度
+        snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
+        self.assertIs(snap["enabled"], False)
+        self.assertIsNone(snap["next_run"])             # 未初始化/不再推进
+        self.sched.tick()
+        snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
+        self.assertIsNone(snap["next_run"])             # 停用期间不排新计划
+        # 重新启用 → tick 恢复排程
+        ok2, _ = self.sched.toggle_enabled("t", True)
+        self.assertTrue(ok2)
+        self.sched.tick()
+        snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
+        self.assertTrue(snap["enabled"] and snap["next_run"])
+
+    def test_toggle_enabled_unknown_task(self):
+        ok, msg = self.sched.toggle_enabled("ghost", False)
+        self.assertFalse(ok)
+        self.assertIn("未知", msg)
+
 
 class TestDailyMath(unittest.TestCase):
     def test_next_daily_today_future(self):

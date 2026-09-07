@@ -302,8 +302,7 @@ class Scheduler:
                     p["next_run"] = self._defer_after_miss(spec, now)
                     self._save_state()
                     audit.emit("cron_skip", ok=True, svc=name,
-                               note=f"错过计划时刻（{spec.schedule_desc}），"
-                                    f"catch_up=false 顺延至下一周期")
+                               note="错过计划时刻，catch_up=false 顺延至下一周期")
                     continue
                 # 到点（或 catch_up 补跑）：via 区分"按计划"与"错过补跑"，
                 # 便于登记簿事后区分两种来源
@@ -335,16 +334,48 @@ class Scheduler:
                           last_dur_ms=dur_ms)
                 p2["next_run"] = self._defer_after_run(spec, began, now)
                 self._save_state()
+            # note 只记结果与非常规来源（定时触发是常态，不加前缀；
+            # 手动/补跑用中文标注，调度规则在卡片上已有，不进事件行）
+            via_note = {"manual": "手动触发，", "cli": "手动触发，",
+                        "api": "手动触发，", "catch_up": "错过补跑，"}.get(via, "")
             if err is not None:
-                note = f"{err}（{via}）"
+                note = f"{via_note}启动失败: {err}"
             elif rc is None:
-                note = f"超时({spec.timeout_sec:.0f}s)已终止（{via}）"
+                note = f"{via_note}超时({spec.timeout_sec:.0f}s)已终止"
             else:
-                note = f"{spec.schedule_desc} rc={rc}（{via}）"
+                note = f"{via_note}rc={rc}"
             audit.emit("cron_run", ok=ok, svc=name, dur_ms=dur_ms, note=note)
         finally:
             with self.lock:
                 self.running.discard(name)
+
+    def toggle_enabled(self, name: str, value: bool) -> tuple[bool, str]:
+        """开关任务调度（面板滑块）：权威值回写注册条 enabled 字段。
+
+        与服务的 toggle_autostart 同一原子写回模式（临时文件 + os.replace）。
+        只影响下一次触发；正在跑的一轮让它自然跑完，不打断。
+        """
+        with self.lock:
+            spec = self.specs.get(name)
+            if spec is None:
+                return False, f"未知定时任务 {name}"
+            try:
+                raw = json.loads(spec.reg_path.read_text(encoding="utf-8-sig"))
+            except Exception as exc:  # noqa: BLE001
+                return False, f"读注册条失败: {exc}"
+            raw["enabled"] = bool(value)
+            try:
+                import tempfile
+                text = json.dumps(raw, ensure_ascii=False, indent=2)
+                fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
+                                           suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(text + "\n")
+                os.replace(tmp, spec.reg_path)
+            except Exception as exc:  # noqa: BLE001
+                return False, f"写注册条失败: {exc}"
+            spec.enabled = bool(value)
+            return True, "ok"
 
     def run_now(self, name: str, via: str = "manual") -> tuple[bool, str, str]:
         """手动立即触发（面板按钮 / CLI / API）。
