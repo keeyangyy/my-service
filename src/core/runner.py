@@ -189,6 +189,45 @@ def run_stop_script(spec: Spec) -> None:
     )
 
 
+def run_once(entry: Path, args: list[str], cwd: Path,
+             env: dict[str, str] | None = None,
+             timeout: float = 300.0) -> tuple[int | None, int, str | None]:
+    """一次性运行脚本并等待结束（定时任务的执行原子操作，scheduler 调用）。
+
+    无窗 + 新进程组 + 输出一律 DEVNULL（日志边界：任务日志由任务自己写，
+    框架不接管）。超时 → taskkill /T /F 整树收割。
+
+    返回 (rc, dur_ms, error)：
+    - rc int 且 error None  → 正常结束，rc 为退出码
+    - rc None 且 error None → 超时被树杀
+    - error 非 None         → 进程根本没能起来（入口异常/拒绝访问）
+    """
+    began = time.time()
+    try:
+        cmd = _interpreter_for(entry) + [entry.as_posix()] + list(args)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            env={**os.environ, **(env or {})},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_FLAGS,
+        )
+    except (OSError, ValueError) as exc:
+        return None, 0, f"启动失败: {exc}"
+    try:
+        rc = proc.wait(timeout=timeout)
+        return rc, int((time.time() - began) * 1000), None
+    except subprocess.TimeoutExpired:
+        _taskkill_tree(proc.pid)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        return None, int((time.time() - began) * 1000), None
+
+
 # ---------------------------------------------------------------- 健康检查
 def parse_http_host_port(url: str) -> tuple[str, int | None]:
     """从 http 健康 URL 解析 (host, port)。解析失败返回 (127.0.0.1, None)。"""

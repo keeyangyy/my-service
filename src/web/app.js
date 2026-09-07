@@ -16,7 +16,8 @@
     adopt_external: "外部实例归位", health_flip: "健康翻转",
     idle_reclaim: "空闲回收", crash: "意外退出",
     spawn_fail: "拉起失败", reject_double: "拒绝双开",
-    spec_invalid: "注册条无效"
+    spec_invalid: "注册条无效",
+    cron_run: "定时执行", cron_skip: "定时跳过"
   };
 
   // 中文字义映射表（状态 -> 样式类 + 文案）
@@ -41,7 +42,9 @@
     auditBtn: document.getElementById("btn-host-audit"),
     auditDrawer: document.getElementById("audit-drawer"),
     hostRestart: document.getElementById("btn-host-restart"),
-    hostStop: document.getElementById("btn-host-stop")
+    hostStop: document.getElementById("btn-host-stop"),
+    cronSection: document.getElementById("cron-section"),
+    cronList: document.getElementById("cron-list")
   };
 
   // 状态：同一时刻只允许一个事件视图展开（某张卡片内，或顶部全局抽屉）
@@ -135,6 +138,149 @@
     var res = await api("GET", "/api/host");
     if (!res.ok) throw new Error("HTTP " + res.status);
     return await res.json();
+  }
+
+  async function fetchCrons() {
+    var res = await api("GET", "/api/crons");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    var data = await res.json();
+    return Array.isArray(data.crons) ? data.crons : [];
+  }
+
+  // ===== 定时任务（reg\cron\ —— 第二物种：到点跑一次脚本，无常驻进程）=====
+  function cronStatus(c) {
+    if (!c.valid) return "invalid";
+    if (c.running) return "running";
+    if (!c.enabled) return "disabled";
+    return "idle";
+  }
+
+  var CRON_STATUS_MAP = {
+    running:  { cls: "starting", label: "执行中" },
+    idle:     { cls: "running",  label: "已启用" },
+    disabled: { cls: "stopped",  label: "已停用" },
+    invalid:  { cls: "invalid",  label: "无效" }
+  };
+
+  function fmtClock(ts) {
+    if (typeof ts !== "number") return null;
+    var d = new Date(ts * 1000);
+    var p = function (n) { return String(n).padStart(2, "0"); };
+    return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+
+  function fmtDur(ms) {
+    if (typeof ms !== "number") return "";
+    return ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms";
+  }
+
+  function cronChip(text, title) {
+    var c = document.createElement("span");
+    c.className = "chip";
+    c.textContent = text;
+    if (title) c.title = title;
+    return c;
+  }
+
+  function lastResultChip(c) {
+    if (typeof c.last_run !== "number") return cronChip("未运行过");
+    var t = fmtClock(c.last_run);
+    if (c.last_ok === true) return cronChip("上次 ✓ " + t + " · " + fmtDur(c.last_dur_ms), "上次执行成功");
+    if (c.last_rc === null || c.last_rc === undefined)
+      return cronChip("上次 ✗ " + t + " · 超时/未启动", "上次执行失败（超时被终止，或进程没能起来）");
+    return cronChip("上次 ✗ " + t + " · rc=" + c.last_rc, "上次执行失败（退出码 " + c.last_rc + "）");
+  }
+
+  function renderCrons(crons) {
+    if (!els.cronSection) return;
+    els.cronSection.hidden = !crons.length;
+    var names = crons.map(function (c) { return c.name; });
+
+    // 移除已消失的任务行
+    Array.prototype.slice.call(els.cronList.children).forEach(function (row) {
+      if (row.dataset.name && names.indexOf(row.dataset.name) === -1) row.remove();
+    });
+
+    crons.forEach(function (c) {
+      var row = els.cronList.querySelector('.cron-card[data-name="' + cssEscape(c.name) + '"]');
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "card cron-card";
+        row.dataset.name = c.name;
+        var inner = document.createElement("div");
+        inner.className = "card-inner";
+        var info = document.createElement("div");
+        info.className = "info";
+        var actions = document.createElement("div");
+        actions.className = "actions";
+        var runBtn = document.createElement("button");
+        runBtn.className = "btn btn-run";
+        runBtn.textContent = "▶ 立即运行";
+        runBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          runCron(c.name, runBtn);
+        });
+        actions.appendChild(runBtn);
+        inner.appendChild(info);
+        inner.appendChild(actions);
+        row.appendChild(inner);
+        els.cronList.appendChild(row);
+      }
+
+      var st = CRON_STATUS_MAP[cronStatus(c)];
+      var badge = document.createElement("span");
+      badge.className = "status-badge " + st.cls;
+      var dot = document.createElement("span");
+      dot.className = "dot";
+      badge.appendChild(dot);
+      badge.appendChild(document.createTextNode(st.label));
+
+      var info = row.querySelector(".info");
+      info.replaceChildren();
+      info.appendChild(badge);
+      var nm = document.createElement("span");
+      nm.className = "svc-name";
+      nm.textContent = c.display || c.name;
+      info.appendChild(nm);
+      info.appendChild(cronChip(c.schedule, "调度规则（timeout " + c.timeout_sec + "s" +
+        (c.catch_up ? "，错过补跑" : "") + "）"));
+      if (c.running) {
+        info.appendChild(cronChip("本轮运行中…"));
+      } else if (c.enabled && c.valid && typeof c.next_run === "number") {
+        info.appendChild(cronChip("下次 " + fmtClock(c.next_run)));
+      }
+      if (c.valid) info.appendChild(lastResultChip(c));
+      if (c.description) {
+        var d = document.createElement("span");
+        d.className = "svc-desc";
+        d.textContent = c.description;
+        d.title = c.description;
+        info.appendChild(d);
+      }
+      if (c.error) {
+        var er = document.createElement("span");
+        er.className = "svc-error";
+        er.textContent = c.error;
+        er.title = c.error;
+        info.appendChild(er);
+      }
+
+      var runBtn = row.querySelector(".btn-run");
+      runBtn.disabled = c.running || !c.valid || !c.enabled;
+    });
+  }
+
+  async function runCron(name, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "已触发…"; }
+    try {
+      var res = await api("POST", "/api/crons/" + encodeURIComponent(name) + "/run?via=manual");
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.message || ("HTTP " + res.status));
+      toast("已触发 " + name + "（结果稍后见卡片与登记簿）", "ok");
+    } catch (e) {
+      toast("触发失败：" + (e && e.message ? e.message : "未知错误"), "err");
+    }
+    poll(true);
   }
 
   async function fetchAudit(name) {
@@ -644,6 +790,8 @@
       var pair = await Promise.all([fetchServices(), fetchHost()]);
       hostPid = pair[1].pid || hostPid;
       await render(pair[0], pair[1]);
+      // 定时任务区块：拉取失败不连坐服务列表（旧宿主无此端点时静默隐藏）
+      try { renderCrons(await fetchCrons()); } catch (e) { /* 保持现状 */ }
     } catch (e) {
       // 连接错误由 api() 处理徽标与断连；宿主自操作的恢复由专用监视循环处理
     }
@@ -729,6 +877,7 @@
       var pair = await Promise.all([fetchServices(), fetchHost()]);
       hostPid = pair[1].pid || 0;
       await render(pair[0], pair[1]);
+      try { renderCrons(await fetchCrons()); } catch (e) { /* 保持现状 */ }
     } catch (e) {
       poll(false);
     }

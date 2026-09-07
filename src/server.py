@@ -23,11 +23,12 @@ sys.path.insert(0, str(SRC_DIR))
 
 from core import api, audit, runner  # noqa: E402
 from core.scanner import Scanner  # noqa: E402
+from core.scheduler import Scheduler  # noqa: E402
 from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 SERVER_PY = SRC_DIR / "server.py"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
@@ -118,25 +119,35 @@ def main() -> int:
         pass
     scanner = Scanner((base / cfg["reg_dir"]).resolve())
     manager = Manager(scanner)
+    # 定时任务注册目录（reg\cron\）：不存在则建空目录，用户一眼可见往哪放注册条
+    cron_dir = (base / cfg["reg_dir"] / "cron").resolve()
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    scheduler = Scheduler(cron_dir, rdir / "cron_state.json")
     controller = HostController(manager, rdir)
 
-    httpd = api.serve(manager, cfg["host"], int(cfg["port"]), controller=controller)
+    httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
+                      controller=controller, scheduler=scheduler)
     controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]
     listing = ", ".join(sorted(manager.specs)) or "(无)"
+    cron_names = ", ".join(sorted(s["name"] for s in scheduler.snapshot())) or "(无)"
     audit.emit("host_start", pid=os.getpid(),
                note=f"v{VERSION} listening http://{cfg['host']}:{cfg['port']}"
-                    f" | 注册服务: {listing}")
+                    f" | 注册服务: {listing} | 定时任务: {cron_names}")
     print(f"my-service v{VERSION} listening on http://{cfg['host']}:{cfg['port']}"
           f"  (pid={os.getpid()})", flush=True)
     print(f"reg = {scanner.reg_dir}  |  注册服务: {listing}  |  登记簿 = {audit_path}",
           flush=True)
+    print(f"cron = {cron_dir}  |  定时任务: {cron_names}", flush=True)
 
     # monitor 与自启都在 host_start 之后才起：登记簿首行必须是宿主自己起来，
     # 否则 monitor 的 adopt_external 会抢在前面，事件因果倒置
     threading.Thread(target=manager.monitor_loop, daemon=True,
                      name="monitor").start()
+    # 定时任务调度线程：同样在 host_start 之后（首条事件因果一致的同一约束）
+    threading.Thread(target=scheduler.loop, daemon=True,
+                     name="scheduler").start()
 
     # 延迟半拍先让 HTTP 就绪，再按 manifest 声明自动拉起
     # 防双开：自启前先判定是否已有实例在运行（外部/残留/手动），已在运行则跳过

@@ -2,7 +2,9 @@
 # 用法:
 #   .\src\svc.ps1 ls                        列出全部服务与状态
 #   .\src\svc.ps1 <start|stop|restart> <name>
-#   .\src\svc.ps1 events [name] [n=50]      尾读启停登记簿（可按服务名过滤）
+#   .\src\svc.ps1 crons                     列出定时任务（reg\cron\*.json）
+#   .\src\svc.ps1 cron-run <name>           手动立即触发定时任务
+#   .\src\svc.ps1 events [name] [n=50]      尾读启停登记簿（可按服务/任务名过滤）
 #   .\src\svc.ps1 host-err [n]              尾读宿主异常栈
 # 注：服务自身的业务日志由服务自己管（<服务目录>\logs\），框架不收集、故本 CLI 不提供读取
 param(
@@ -48,6 +50,21 @@ switch ($Cmd.ToLower()) {
     "stop"  { $r = Invoke-Api POST "/api/services/$Name/stop";   Write-Host "$Name -> $($r.status) ($($r.message))" }
     "restart" { $r = Invoke-Api POST "/api/services/$Name/restart"; Write-Host "$Name -> $($r.status) ($($r.message))" }
     "events" { Show-Events -Svc $(if ($Name -eq 'all') { '' } else { $Name }) -Count $N }
+    "crons" {
+        $r = Invoke-Api GET "/api/crons"
+        $r.crons | Format-Table @{n = "状态"; e = { if (-not $_.valid) { 'invalid' } elseif ($_.running) { 'running' } elseif ($_.enabled) { 'idle' } else { 'disabled' } } },
+                                @{n = "名称"; e = { $_.display } },
+                                @{n = "ID"; e = { $_.name } },
+                                @{n = "调度"; e = { $_.schedule } },
+                                @{n = "下次"; e = { if ($_.next_run) { [DateTimeOffset]::FromUnixTimeSeconds([long]$_.next_run).LocalDateTime.ToString("MM-dd HH:mm") } } },
+                                @{n = "上次结果"; e = { if ($null -eq $_.last_run) { '未运行过' } elseif ($_.last_ok) { "ok ($($_.last_dur_ms)ms)" } elseif ($null -eq $_.last_rc) { "FAIL (超时/未启动)" } else { "FAIL (rc=$($_.last_rc))" } } },
+                                @{n = "备注"; e = { $_.error } } -AutoSize
+    }
+    "cron-run" {
+        if (-not $Name) { Write-Host "用法: svc.ps1 cron-run <任务名>"; exit 1 }
+        $r = Invoke-Api POST "/api/crons/$Name/run?via=cli"
+        Write-Host "$Name -> $($r.message)"
+    }
     "host-err" {
         if ($Name) { $N = $Name }
         (Invoke-Api GET "/api/host-err?n=$N").lines | ForEach-Object { $_ }

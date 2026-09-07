@@ -375,6 +375,23 @@ html, body {
 .ev.fail .ev-svc,
 .ev.fail .ev-note { color: var(--red); }
 
+/* 10. 定时任务区块（reg\cron\ —— 第二物种：无常驻进程，到点跑一次脚本） */
+.section-title {
+  margin: 14px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.section-sub { font-size: 11px; font-weight: 400; }
+.cron-list { display: flex; flex-direction: column; gap: 8px; }
+.cron-card { padding: 10px 16px; }
+.cron-card .card-inner { gap: 12px; }
+.btn-run { background: rgba(88, 166, 255, 0.12); color: var(--blue); border-color: rgba(88, 166, 255, 0.4); }
+.btn-run:hover:not(:disabled) { background: rgba(88, 166, 255, 0.2); }
+
 /* 响应式 */
 @media (max-width: 900px) {
   .app-main { padding: 12px; }

@@ -41,6 +41,8 @@ ACTS = (
     "spawn_fail",                       # 进程根本没能起来（入口不存在/拒绝访问）
     "reject_double",                    # 防双开拒绝启动
     "spec_invalid",                     # 注册条被判无效/被移除
+    "cron_run",                         # 定时任务执行一轮（成功/失败/超时/启动失败）
+    "cron_skip",                        # 定时任务错过计划时刻且不补跑，顺延
 )
 
 _FILE = "host.jsonl"

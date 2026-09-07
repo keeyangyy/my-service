@@ -21,7 +21,9 @@ my-service\
 ├─ README.md                  # 本文档
 ├─ config.json                # host/port/reg_dir 等
 ├─ reg\                       # ★ 注册中心（唯一发现源）：被管服务的"花名册"
-│   └─ <服务名>.json          # 每条注册：path=服务真实家 + 启停/健康/自启声明
+│   ├─ <服务名>.json          # 每条注册：path=服务真实家 + 启停/健康/自启声明
+│   └─ cron\                  # ★ 定时任务注册（第二物种，见「定时任务」章节）
+│       └─ <任务名>.json      # 到点跑一次脚本，无常驻进程
 ├─ adapters\                  # ★ 可选转接层：<服务名>\ 下放薄适配脚本(自动优先命中)
 ├─ entry\                     # ★ 人的操作入口：无参/有默认值，可直接运行
 │   ├─ start.ps1              # PowerShell 运行 → 启动宿主（幂等）
@@ -33,6 +35,7 @@ my-service\
 │   ├─ host.jsonl             # 启停登记簿：一行一事件（详见「日志边界」）
 │   ├─ host.err.log           # 宿主自身异常栈（sys.stderr）
 │   ├─ host.pid               # 宿主 pid（ctl.ps1 优先读它）
+│   ├─ cron_state.json        # 定时任务账本：last_run/next_run 等（scheduler 独写）
 │   └─ pids\<服务名>.pid       # 被管服务 pid——框架记账留在框架家
 └─ src\                       # 实现细节 + 程序化接口
     ├─ server.py              # 组装入口（含 HostController 自管理）
@@ -41,7 +44,8 @@ my-service\
     ├─ core\
     │   ├─ scanner.py         # 扫描 reg\*.json（注册中心唯一源）
     │   ├─ audit.py           # 启停登记簿（host.jsonl 的唯一作者）
-    │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查（输出不接管）
+    │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查/一次性执行（输出不接管）
+    │   ├─ scheduler.py       # 定时任务调度器（reg\cron\ 唯一源，与 monitor 并列线程）
     │   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛
     │   └─ api.py             # REST API + web 静态托管
     ├─ web\                   # Dashboard + 启动中转页（原生 JS 零依赖）
@@ -117,6 +121,8 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 | `spawn_fail` | 进程根本没能起来（入口异常 / 拒绝访问） |
 | `reject_double` | 防双开拒绝启动 |
 | `spec_invalid` | 注册条被判无效或被移除 |
+| `cron_run` | 定时任务执行一轮：成功带耗时；失败 `note` 给 rc/超时/启动原因 |
+| `cron_skip` | 定时任务错过计划时刻且 catch_up=false，顺延至下一周期 |
 
 `restart` 不单独成事件，表现为 `stop → start` 两条。动作枚举以 `src\core\audit.py`
 的 `ACTS` 为准，新增须同步前端 `app.js` 的 `ACT_MAP`。
@@ -196,6 +202,52 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 自动回收失效，退化为"仅点开即启"。实现样例见 `reg\your-service.json`
 与其 `server.py` 的 `last_active` 处理。
 
+## 定时任务（reg\cron\）——第二物种：到点跑一次脚本
+
+不是所有"服务"都需要常驻：签到、备份、清理、定期拉取……这类一次性脚本
+用 `reg\cron\<任务名>.json` 注册，由宿主内置调度线程到点执行，**无常驻进程、
+无健康检查、无状态机**。`reg` 的扫描不递归，`cron\` 子目录与服务注册天然隔离，
+不会混进服务列表。
+
+**注册条协议**：
+
+```jsonc
+{
+  "path": "C:/path/to/your-service",       // ★ 脚本所在真实家（与服务注册条同语义）
+  "enabled": true,                          // false = 暂停调度（面板显示已停用）
+  "display": "每日签到",
+  "description": "工作日早上自动签到",
+  "entry": "checkin.ps1",                   // 相对 path；支持 .py/.ps1/.cmd/.bat/.exe
+  "args": [],
+  "cwd": ".",
+  "schedule": {"type": "daily", "at": "08:30"},   // 或 {"type": "interval", "every_sec": 3600}
+  "timeout_sec": 300,                       // 挂死保护（默认 300，下限 5s），超时 taskkill /T 树杀记失败
+  "catch_up": false,                        // 错过是否补跑（默认 false）
+  "env": {}                                 // 附加环境变量
+}
+```
+
+**调度语义**（实弹验证过的边界行为）：
+
+- **daily**：每天本地时刻 `HH:MM` 触发；**interval**：固定间隔循环，新任务从
+  被调度器见到起算一个周期后首跑（宿主频繁重启不会引发齐跑）
+- **防重叠**：上一轮没跑完，本轮到点不触发；跑完后 next_run 若已过期走统一的
+  "错过"处理，绝不堆积连发
+- **错过**（宿主关闭/睡眠/执行超长导致，宽限阈 60 秒）：`catch_up: true` 立即
+  补跑一次（签到类建议开）；默认 `false` 只登记 `cron_skip` 并顺延到下一合法
+  时刻，开机绝不齐跑
+- **状态恢复**：`last_run/last_ok/last_rc/next_run` 持久化在
+  `logs\cron_state.json`（scheduler 独写，运行期以内存为准），宿主重启后照单恢复
+- **手动触发**：面板「▶ 立即运行」按钮 / `svc.ps1 cron-run <名>` /
+  `POST /api/crons/{名}/run`；运行中重复触发返回 409 拒绝
+
+**日志边界（与服务同一条铁律）**：脚本输出一律 DEVNULL 不接管——任务日志由
+任务自己写（一次性脚本建议自行追加写自己的日志文件）；框架只把"何时触发了、
+成没成、耗时、退出码"记进登记簿（`cron_run`/`cron_skip`）。
+
+**注册/注销**：在 `reg\cron\` 放/删 `<任务名>.json` 即可，无需重启宿主；
+无效注册条在面板标 invalid 并附原因（缺 schedule、入口不存在等）。
+
 ## 注册服务：最小要求与步骤
 
 **最小要求（不满足则拒收，注册条标 invalid 并给原因）**：
@@ -247,11 +299,11 @@ entry/stop_script 直指官方脚本（`adapters\` 留空=不劫持）、`env` �
 
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
+| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关；下方「⏱ 定时任务」区块：调度规则/下次执行/上次结果/▶ 立即运行；header 右上含宿主运行时长 + `▤ 登记簿` + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
-| 服务 CLI | `.\src\svc.ps1 ls\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
-| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`GET /api/host-err?n=`(宿主异常栈)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
-| 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注销 = 删除注册条或 `"enabled": false` |
+| 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
+| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
+| 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条或 `"enabled": false` |
 
 ## 快速上手
 

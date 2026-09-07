@@ -23,7 +23,7 @@ MIME = {
 }
 
 
-def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None
+def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None, scheduler: core.scheduler.Scheduler|None
     class Handler(BaseHTTPRequestHandler):
         server_version = "my-service"
         protocol_version = "HTTP/1.1"
@@ -99,6 +99,11 @@ def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Mana
                 return self._json(200, _tail_file(
                     _host_logs_dir(manager, host) / "host.err.log", "(host-err)", n))
 
+            if path == "/api/crons":
+                # 定时任务列表（reg\cron\*.json）
+                crons = scheduler.snapshot() if scheduler else []
+                return self._json(200, {"crons": crons})
+
             rest = path.lstrip("/")
             if rest and not rest.startswith("api/"):
                 return self._static(rest)
@@ -148,6 +153,17 @@ def make_handler(manager, host=None):  # noqa: ANN001 - manager: core.state.Mana
                 host.schedule(action)   # 延迟执行，先让本响应发出
                 return self._json(202, {"ok": True, "action": action})
 
+            # POST /api/crons/{name}/run  —— 手动立即触发定时任务
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "crons" \
+                    and parts[3] == "run":
+                if scheduler is None:
+                    return self._json(501, {"ok": False, "error": "调度器不可用"})
+                via = (parse_qs(parsed.query).get("via") or ["manual"])[0]
+                ok, code, msg = scheduler.run_now(parts[2], via=via)
+                http_code = {"ok": 202, "not_found": 404, "invalid": 400,
+                             "busy": 409, "disabled": 409}.get(code, 500)
+                return self._json(http_code, {"ok": ok, "message": msg})
+
             # POST /api/config/{name}  {"autostart": bool}
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "config":
                 name = parts[2]
@@ -193,13 +209,14 @@ def _tail_file(path: Path, name: str, n: int) -> dict:
     return {"name": name, "lines": lines}
 
 
-def serve(manager, bind_host: str, port: int, controller=None):  # noqa: ANN001
-    """绑定监听。controller 为 HostController（提供 meta/schedule）。
+def serve(manager, bind_host: str, port: int, controller=None, scheduler=None):  # noqa: ANN001
+    """绑定监听。controller 为 HostController（提供 meta/schedule），
+    scheduler 为定时任务调度器（提供 snapshot/run_now）。
 
     端口重试：restart 时新宿主会在旧进程释放 1236 前反复重试 bind，实现无竞态交接。
     """
     import time
-    handler = make_handler(manager, controller)
+    handler = make_handler(manager, controller, scheduler)
     last_err: OSError | None = None
     for _ in range(40):
         try:
