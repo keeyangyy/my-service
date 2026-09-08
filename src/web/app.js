@@ -890,7 +890,7 @@
       lab.className = "linked-name";
       lab.textContent = c ? (c.display || c.name) : cn;
       if (c) {
-        lab.title = (c.description || "") + " / " + (c.schedule_desc || "");
+        lab.title = (c.description || "") + " / " + (c.schedule || "");
         var meta = document.createElement("span");
         meta.className = "linked-meta";
         meta.textContent = c.enabled ? ("下次 " + fmtClock(c.next_run)) : "已停用";
