@@ -229,6 +229,22 @@ def make_handler(manager, host=None, scheduler=None,
                 ok, code, msg = manager.set_order([str(n) for n in names])
                 return self._json(200 if ok else 500, {"ok": ok, "message": msg})
 
+            # POST /api/services/{name}/config  补丁式改配置：
+            # {"idle_timeout_sec": N}（仅 on_demand 服务）
+            # ★ 必须排在下面的 {start|stop|restart} 之前：同形路由，先到先得
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "services" \
+                    and parts[3] == "config":
+                patch = {k: v for k, v in body.items() if k in ("idle_timeout_sec",)}
+                if not patch:
+                    return self._json(400, {
+                        "ok": False,
+                        "error": '至少提供 idle_timeout_sec'})
+                ok, code, msg = manager.update_config(parts[2], patch)
+                http_code = {"ok": 200, "not_found": 404, "invalid": 400,
+                             "io": 500}.get(code, 500)
+                return self._json(http_code, {"ok": ok, "message": msg,
+                                              "error": None if ok else msg})
+
             # POST /api/services/{name}/{start|stop|restart}[?via=cli]
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "services":
                 name, action = parts[2], parts[3]

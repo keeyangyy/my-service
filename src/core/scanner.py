@@ -15,6 +15,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+# 空闲回收阈值边界（秒）：clamp 1 分钟 ~ 24 小时，防误配导致抖动或永不回收。
+# 单一事实源——Spec 解析时 clamp、面板改配置时校验，两处共用这组常量。
+IDLE_MIN_SEC = 60.0
+IDLE_MAX_SEC = 86400.0
+
 
 class Spec:
     """单个注册条目的解析结果。
@@ -92,7 +97,7 @@ class Spec:
         except (TypeError, ValueError):
             self.idle_timeout = 600.0
         # clamp 1 分钟 ~ 24 小时，防误配导致抖动或永不回收
-        self.idle_timeout = max(60.0, min(self.idle_timeout, 86400.0))
+        self.idle_timeout = max(IDLE_MIN_SEC, min(self.idle_timeout, IDLE_MAX_SEC))
 
         if isinstance(data.get("env"), dict):
             self.env = {str(k): str(v) for k, v in data["env"].items()}

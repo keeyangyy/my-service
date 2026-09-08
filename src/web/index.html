@@ -31,7 +31,19 @@
     <div id="empty-state" class="empty-state" hidden>
       尚无服务 —— 在 C:\path\to\&lt;名字&gt;\ 放一份 manifest.json 即可注册
     </div>
-    <div id="service-list" class="service-list"></div>
+    <!-- 服务按 mode 分两组：常驻（managed/detached）与即用即走（on_demand）。
+         分组纯展示，由前端按 snapshot 的 mode 推导，注册条无需任何新字段；
+         某组为空时整组（含标题）隐藏。 -->
+    <section id="svc-persistent" class="svc-section" hidden>
+      <h2 class="section-title">🗄 常驻服务 <span class="svc-count" id="cntPd">0</span>
+        <span class="section-sub">managed / detached —— 起来就长期运行</span></h2>
+      <div id="service-list" class="service-list"></div>
+    </section>
+    <section id="svc-ondemand" class="svc-section" hidden>
+      <h2 class="section-title">⚡ 即用即走 <span class="svc-count" id="cntOd">0</span>
+        <span class="section-sub">on_demand —— 点开即启，空闲自动回收</span></h2>
+      <div id="service-list-ondemand" class="service-list"></div>
+    </section>
     <section id="cron-section" class="cron-section" hidden>
       <h2 class="section-title">⏱ 定时任务 <span class="section-sub">reg\cron\*.json —— 到点跑一次脚本，无常驻进程</span></h2>
       <div id="cron-list" class="cron-list"></div>

@@ -406,6 +406,33 @@ html, body {
   font-size: 12px;
 }
 .cron-config[hidden] { display: none; }   /* display:flex 会盖掉 hidden，必须显式压制 */
+/* 配置分区：执行时机 / 异常保护 —— 两个维度分开，避免把超时保护误读成调度方式 */
+.cfg-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cfg-group + .cfg-group { margin-left: 4px; }
+.cfg-group[hidden] { display: none; }   /* display:flex 会盖掉 hidden，必须显式压制 */
+.cfg-group-title {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .5px;
+  white-space: nowrap;
+  padding-right: 2px;
+}
+.cfg-group-title::after { content: "："; }
+/* 分区说明：把超时保护与补跑的语义讲清楚 */
+.cfg-hint {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: .8;
+  padding-top: 2px;
+}
+.chron-row { display: inline-flex; align-items: center; gap: 6px; }
 .cfg-iv { display: inline-flex; align-items: center; gap: 4px; }
 .cfg-iv[hidden] { display: none; }
 /* 模式分段切换：定时执行 / 间隔执行 二选一 */
@@ -461,6 +488,19 @@ html, body {
   gap: 10px;
 }
 .section-sub { font-size: 11px; font-weight: 400; }
+/* 服务分组容器：标题带数量角标；空组由 JS 整组隐藏（含标题） */
+.svc-section[hidden] { display: none; }
+.svc-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #2a3141;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
 .cron-list { display: flex; flex-direction: column; gap: 8px; }
 .cron-card { padding: 10px 16px; }
 .cron-card .card-inner { gap: 12px; }
@@ -509,3 +549,18 @@ html, body {
   .actions { justify-content: flex-end; }
   .host-uptime { display: none; }
 }
+
+/* ---- 服务设置面板：关联的定时任务 ---- */
+.svc-config .cfg-linked { flex-direction: column; align-items: flex-start; gap: 4px; }
+.linked-body { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.linked-body.none { color: var(--muted); font-size: 11px; opacity: .8; }
+.linked-cron {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.linked-name { color: var(--text); }
+.linked-meta { color: var(--muted); font-size: 11px; }
+.cfg-idle-left { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.btn-mini { padding: 1px 7px; font-size: 11px; line-height: 1.5; }

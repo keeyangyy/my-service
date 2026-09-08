@@ -32,6 +32,9 @@
 
   var els = {
     list: document.getElementById("service-list"),
+    listOd: document.getElementById("service-list-ondemand"),
+    secPd: document.getElementById("svc-persistent"),
+    secOd: document.getElementById("svc-ondemand"),
     empty: document.getElementById("empty-state"),
     dot: document.getElementById("conn-dot"),
     text: document.getElementById("conn-text"),
@@ -78,11 +81,25 @@
     return String(s).replace(/(["\\])/g, "\\$1");
   }
 
+  /* 服务分组：mode 为 on_demand 归"即用即走"，其余（managed/detached）归"常驻"。
+     纯前端推导，注册条不加字段；后端 snapshot 已带 mode 字段。 */
+  function isOnDemand(svc) { return svc && svc.mode === "on_demand"; }
+  function listFor(svc) { return isOnDemand(svc) ? els.listOd : els.list; }
+
+  function eachSvcList(fn) {
+    [els.list, els.listOd].forEach(function (l) { if (l) fn(l); });
+  }
+
   function cardByName(name) {
-    return els.list.querySelector('.card[data-name="' + cssEscape(name) + '"]')
-      || (els.cronList
-        ? els.cronList.querySelector('.cron-card[data-name="' + cssEscape(name) + '"]')
-        : null);
+    var sel = '.card[data-name="' + cssEscape(name) + '"]';
+    var hit = null;
+    eachSvcList(function (l) {
+      if (!hit) hit = l.querySelector(sel);
+    });
+    if (hit) return hit;
+    return els.cronList
+      ? els.cronList.querySelector('.cron-card[data-name="' + cssEscape(name) + '"]')
+      : null;
   }
 
   // ===== toast =====
@@ -202,10 +219,11 @@
   }
 
   // ===== 定时任务配置行（行内编辑：时间 / 超时 / 补跑 / 启用）=====
-  function cfgEl(tag, cls, role) {
+  function cfgEl(tag, cls, role, text) {
     var el = document.createElement(tag);
     if (cls) el.className = cls;
     if (role) el.dataset.role = role;
+    if (text !== undefined && text !== null) el.textContent = text;
     return el;
   }
 
@@ -281,6 +299,10 @@
     var bar = cfgEl("div", "cron-config");
     bar.hidden = true;                       // 默认收起，点「⚙ 设置」展开
 
+    // ---- 分区一：执行时机（什么时候跑）----
+    var grp1 = cfgEl("div", "cfg-group");
+    grp1.appendChild(cfgEl("span", "cfg-group-title", null, "执行时机"));
+
     var seg = cfgEl("div", "seg");
     [["daily", "定时执行"], ["interval", "间隔执行"]].forEach(function (p) {
       var b = cfgEl("button", "seg-btn", "mode-" + p[0]);
@@ -293,7 +315,7 @@
       });
       seg.appendChild(b);
     });
-    bar.appendChild(seg);
+    grp1.appendChild(seg);
 
     var t = cfgEl("input", "cfg-time", "at");
     t.type = "time";
@@ -303,7 +325,7 @@
       saveCronConfig(c.name, { schedule: { type: "daily", at: t.value } },
         function () { t.value = cur.at || ""; });
     });
-    bar.appendChild(t);
+    grp1.appendChild(t);
 
     var iv = cfgEl("span", "cfg-iv");
     var n = cfgEl("input", "cfg-num", "every");
@@ -323,26 +345,38 @@
     n.addEventListener("change", push);
     u.addEventListener("change", push);
     iv.appendChild(n); iv.appendChild(u);
-    bar.appendChild(iv);
+    grp1.appendChild(iv);
+    bar.appendChild(grp1);
 
+    // ---- 分区二：异常保护（出意外时怎么办）----
+    // 与「执行时机」是两个维度：这里配置的是跑起来之后的兜底行为，
+    // 不改变多久跑一次。此前两者平铺，超时保护易被误读为第三种调度方式。
+    var grp2 = cfgEl("div", "cfg-group");
+    grp2.appendChild(cfgEl("span", "cfg-group-title", null, "异常保护"));
+
+    var rowTo = cfgEl("div", "cfg-row");
     var lab2 = cfgEl("span", "cfg-label");
     lab2.textContent = "⏲ 超时保护";
-    bar.appendChild(lab2);
+    lab2.title = "脚本卡死时强制结束（下限 5 秒）";
+    rowTo.appendChild(lab2);
     var to = cfgEl("input", "cfg-num", "timeout");
     to.type = "number"; to.min = "5";
-    to.title = "卡死保护，不是执行频率：脚本运行超过此秒数即整树强杀并记失败（下限 5 秒）。"
-             + "执行频率请用左侧「间隔执行」模式";
+    to.title = "脚本运行超过此秒数即整树强杀并记失败。与「多久跑一次」无关，"
+             + "执行频率请用上方「间隔执行」模式";
     to.addEventListener("change", function () {
       var cur = cronData.get(c.name) || c;
       saveCronConfig(c.name, { timeout_sec: parseFloat(to.value) },
         function () { to.value = cur.timeout_sec; });
     });
-    bar.appendChild(to);
-    var unitTxt = cfgEl("span", "cfg-unit-txt");
-    unitTxt.textContent = "秒";
-    bar.appendChild(unitTxt);
+    rowTo.appendChild(to);
+    rowTo.appendChild(cfgEl("span", "cfg-unit-txt", null, "秒"));
+    grp2.appendChild(rowTo);
 
-    bar.appendChild(buildCronSwitch(c.name, "补跑", "catch_up"));
+    grp2.appendChild(buildCronSwitch(c.name, "补跑", "catch_up"));
+    grp2.appendChild(cfgEl("div", "cfg-hint", null,
+      "超时保护＝脚本卡死时强制结束；补跑＝错过计划时刻后是否立即补一次。"
+      + "两者都不改变执行频率。"));
+    bar.appendChild(grp2);
     return bar;
   }
 
@@ -398,6 +432,16 @@
       .map(function (r) { return r.dataset.name; });
   }
 
+  /* 保存服务顺序必须提交**两个组合并后的完整名单**：后端 set_order 会把未提及
+     的服务按字母序追加末尾，只交本组名单会把另一组刚排好的顺序冲回字母序。
+     组间相对位置无意义（渲染按 mode 强制分组），拼接即可。 */
+  function orderNamesFor(kind, listEl) {
+    if (kind === "services" && els.listOd) {
+      return listOrderNames(els.list).concat(listOrderNames(els.listOd));
+    }
+    return listOrderNames(listEl);
+  }
+
   async function saveOrder(kind, names) {
     try {
       var res = await api("POST", "/api/" + kind + "/order", { names: names });
@@ -410,7 +454,9 @@
     poll(true);
   }
 
-  function bindRowDrag(row, listEl, kind) {
+  function bindRowDrag(row, kind) {
+    // 容器在运行时取 row.parentNode：分组后卡片可能落在任一列表里，
+    // 而 dragRow.parentNode !== 目标容器 的判断天然禁止跨组拖动。
     row.addEventListener("dragstart", function (e) {
       dragRow = row;
       sortBusy = true;
@@ -422,6 +468,7 @@
     });
     row.addEventListener("dragover", function (e) {
       e.preventDefault();
+      var listEl = row.parentNode;
       if (!dragRow || dragRow === row || dragRow.parentNode !== listEl) return;
       var rect = row.getBoundingClientRect();
       var before = (e.clientY - rect.top) < rect.height / 2;   // 上半插前，下半插后
@@ -431,11 +478,12 @@
     row.addEventListener("dragend", function () {
       row.classList.remove("dragging");
       row.draggable = false;
+      var listEl = row.parentNode;
       dragRow = null;
       sortBusy = false;
       suppressClick = true;
       setTimeout(function () { suppressClick = false; }, 250);
-      saveOrder(kind, listOrderNames(listEl));
+      if (listEl) saveOrder(kind, orderNamesFor(kind, listEl));
     });
   }
 
@@ -489,14 +537,15 @@
           e.stopPropagation();
           runCron(c.name, runBtn);
         });
+        // 与服务卡片同序：操作按钮在前（启动 / 立即运行），⚙ 设置与事件在后
+        actions.appendChild(runBtn);
         actions.appendChild(cfgBtn);
         actions.appendChild(logBtn);
-        actions.appendChild(runBtn);
         inner.appendChild(info);
         inner.appendChild(actions);
         row.appendChild(inner);
         row.appendChild(buildCronConfig(c));   // 配置面板（默认收起）
-        bindRowDrag(row, els.cronList, "crons");
+        bindRowDrag(row, "crons");
         els.cronList.appendChild(row);
       }
 
@@ -722,6 +771,146 @@
   }
 
   // ===== 卡片骨架（仅首次创建，后续增量更新以保焦点） =====
+  // ===== 服务设置面板（⚙）：回收时长 + 关联的定时任务 =====
+  var svcCfgOpen = new Set();   // 展开态跨轮询保持
+  var svcData = new Map();      // name -> 最新快照（点 ⚙ 时立刻取到真值，不等下轮）
+
+  async function saveSvcConfig(name, patch, rollback) {
+    try {
+      var res = await api("POST", "/api/services/" + encodeURIComponent(name) + "/config", patch);
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || data.message || ("HTTP " + res.status));
+      toast("已保存", "ok");
+    } catch (e) {
+      toast("保存失败：" + (e && e.message ? e.message : "未知错误"), "err");
+      if (rollback) rollback();
+    }
+    poll(true);
+  }
+
+  function buildSvcConfig(card) {
+    var bar = cfgEl("div", "cron-config svc-config");
+    bar.hidden = true;
+
+    // ---- 分区一：空闲回收（仅 on_demand 显示；常驻服务无此项）----
+    var gIdle = cfgEl("div", "cfg-group cfg-idle");
+    gIdle.appendChild(cfgEl("span", "cfg-group-title", null, "空闲回收"));
+    var nIn = cfgEl("input", "cfg-num", "idle_num");
+    nIn.type = "number"; nIn.min = "1";
+    nIn.title = "无业务请求多久后自动回收进程（60 秒 ~ 24 小时）";
+    var uSel = cfgEl("select", "cfg-unit", "idle_unit");
+    [[60, "分钟"], [3600, "小时"]].forEach(function (p) {
+      var o = document.createElement("option");
+      o.value = String(p[0]); o.textContent = p[1];
+      uSel.appendChild(o);
+    });
+    var pushIdle = function () {
+      var mult = parseFloat(uSel.value) || 60;
+      var secs = Math.round((parseFloat(nIn.value) || 0) * mult);
+      var prev = card.dataset.idleSec;
+      saveSvcConfig(card.dataset.name, { idle_timeout_sec: secs }, function () {
+        if (prev) nIn.value = String(Math.round(parseFloat(prev) / mult));
+      });
+    };
+    nIn.addEventListener("change", pushIdle);
+    uSel.addEventListener("change", pushIdle);
+    gIdle.appendChild(nIn); gIdle.appendChild(uSel);
+    gIdle.appendChild(cfgEl("span", "cfg-idle-left", "idle-left"));
+    bar.appendChild(gIdle);
+
+    // ---- 分区二：关联的定时任务（按路径归属，见 core/linkage.py）----
+    var gCron = cfgEl("div", "cfg-group cfg-linked");
+    gCron.appendChild(cfgEl("span", "cfg-group-title", null, "关联的定时任务"));
+    gCron.appendChild(cfgEl("span", "linked-body", null, "—"));
+    bar.appendChild(gCron);
+
+    bar.appendChild(cfgEl("div", "cfg-hint", null,
+      "回收时长＝无操作多久后释放进程（改完立即生效）；关联任务按脚本所在目录自动判定，"
+      + "无需配置。此处不含启停——启停请在主行操作。"));
+    return bar;
+  }
+
+  function syncSvcConfig(bar, svc) {
+    if (!bar) return;
+    bar.hidden = !svcCfgOpen.has(svc.name);
+    var onDemand = isOnDemand(svc);
+    var gIdle = bar.querySelector(".cfg-idle");
+    if (gIdle) gIdle.hidden = !onDemand;
+
+    if (onDemand) {
+      var secs = svc.idle_timeout || 600;
+      var nIn = bar.querySelector('[data-role="idle_num"]');
+      var uSel = bar.querySelector('[data-role="idle_unit"]');
+      // 默认单位：能被 3600 整除用小时，否则分钟
+      var unit = (secs % 3600 === 0) ? 3600 : 60;
+      var setVal = function (el, v) {
+        if (el && document.activeElement !== el && el.value !== String(v)) el.value = String(v);
+      };
+      setVal(uSel, unit);
+      setVal(nIn, Math.round(secs / unit));
+      cardSetIdleSec(bar, secs);
+      // 距离自动回收还剩多久（有 last_active 才有意义）
+      var left = bar.querySelector(".cfg-idle-left");
+      if (left) {
+        if (svc.status === "running" && typeof svc.last_active === "number" && svc.last_active > 0) {
+          var remain = Math.max(0, Math.round(svc.last_active + secs - Date.now() / 1000));
+          left.textContent = "≈ 距回收 " + fmtUptime(remain);
+          left.title = "自上次业务请求起算，空闲满 " + fmtUptime(secs) + " 即回收";
+        } else if (svc.status === "running") {
+          left.textContent = "";
+        } else {
+          left.textContent = "（未运行）";
+        }
+      }
+    }
+    renderLinkedCrons(bar, svc);
+  }
+
+  function cardSetIdleSec(bar, secs) {
+    var card = bar.parentNode;
+    if (card && card.dataset) card.dataset.idleSec = String(secs);
+  }
+
+  function renderLinkedCrons(bar, svc) {
+    var box = bar.querySelector(".linked-body");
+    if (!box) return;
+    var names = svc.cron_names || [];
+    if (!names.length) {
+      box.textContent = "无（脚本不在本服务目录下，或尚无定时任务）";
+      box.classList.add("none");
+      return;
+    }
+    box.classList.remove("none");
+    box.replaceChildren();
+    names.forEach(function (cn) {
+      var c = cronData.get(cn);
+      var row = document.createElement("span");
+      row.className = "linked-cron";
+      var lab = document.createElement("span");
+      lab.className = "linked-name";
+      lab.textContent = c ? (c.display || c.name) : cn;
+      if (c) {
+        lab.title = (c.description || "") + " / " + (c.schedule_desc || "");
+        var meta = document.createElement("span");
+        meta.className = "linked-meta";
+        meta.textContent = c.enabled ? ("下次 " + fmtClock(c.next_run)) : "已停用";
+        row.appendChild(lab); row.appendChild(meta);
+        var run = document.createElement("button");
+        run.className = "btn btn-mini btn-cron-run";
+        run.textContent = "▶";
+        run.title = "立即运行「" + lab.textContent + "」";
+        run.addEventListener("click", function (e) {
+          e.stopPropagation();
+          runCron(cn, run);
+        });
+        row.appendChild(run);
+      } else {
+        row.appendChild(lab);   // 快照里还没有（首轮未到），先占位显示名字
+      }
+      box.appendChild(row);
+    });
+  }
+
   function buildCardSkeleton(card) {
     card.replaceChildren();
 
@@ -772,12 +961,29 @@
       openLog(card.dataset.name, card);
     });
 
+    var cfgBtn = document.createElement("button");
+    cfgBtn.className = "btn btn-cfg";
+    cfgBtn.textContent = "⚙ 设置";
+    cfgBtn.title = "展开/收起设置（空闲回收时长、关联的定时任务）";
+    cfgBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var nm = card.dataset.name;
+      var bar = card.querySelector(".svc-config");
+      if (svcCfgOpen.has(nm)) { svcCfgOpen.delete(nm); if (bar) bar.hidden = true; }
+      else {
+        svcCfgOpen.add(nm);
+        if (bar) syncSvcConfig(bar, svcData.get(nm) || { name: nm });
+      }
+    });
+
     actions.appendChild(toggle);
     actions.appendChild(opGroup);
+    actions.appendChild(cfgBtn);
     actions.appendChild(logBtn);
     inner.appendChild(info);
     inner.appendChild(actions);
     card.appendChild(inner);
+    card.appendChild(buildSvcConfig(card));   // 设置面板（默认收起）
 
     // 整行点击跳转（懒打开：先弹中转页，就绪后跳转）
     card.addEventListener("click", function () {
@@ -794,11 +1000,12 @@
       }
     });
 
-    bindRowDrag(card, els.list, "services");
+    bindRowDrag(card, "services");
     card.dataset.built = "1";
   }
 
   function renderCard(svc, card) {
+    svcData.set(svc.name, svc);            // 供 ⚙ 点击时立刻取到最新值
     var status = svc.status || "stopped";
     var url = safeUrl(svc.url);
     card.dataset.display = svc.display || svc.name;
@@ -929,6 +1136,15 @@
     var isOpen = openLogs.has(svc.name);
     logBtn.classList.toggle("active", isOpen);
     logBtn.textContent = isOpen ? "收起" : "事件";
+
+    // 设置面板：⚙ 激活态 + 每轮同步值（展开态跨轮询保持）
+    var cfgBtn2 = card.querySelector(".btn-cfg");
+    var cfgOpen = svcCfgOpen.has(svc.name);
+    if (cfgBtn2) {
+      cfgBtn2.classList.toggle("active", cfgOpen);
+      cfgBtn2.textContent = cfgOpen ? "收起" : "⚙ 设置";
+    }
+    syncSvcConfig(card.querySelector(".svc-config"), svc);
   }
 
   // ===== 事件面板（登记簿视图；服务的业务日志由服务自管，面板不读）=====
@@ -1060,6 +1276,25 @@
     }
   }
 
+  /* 渲染一个服务分组：卡片移动到本组容器、组与标题一起显隐、标题带数量。
+     appendChild 移动已有节点（不重建，事件与焦点保留）——沿用原实现的抗抖动策略。 */
+  function renderSvcGroup(listEl, items, secEl, cntId) {
+    if (!listEl) return;
+    items.forEach(function (svc) {
+      var card = cardByName(svc.name);
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "card";
+        card.dataset.name = svc.name;
+      }
+      renderCard(svc, card);
+      listEl.appendChild(card);
+    });
+    if (secEl) secEl.hidden = items.length === 0;
+    var cnt = cntId ? document.getElementById(cntId) : null;
+    if (cnt) cnt.textContent = String(items.length);
+  }
+
   // ===== 渲染 + 轮询 =====
   async function render(data, host) {
     if (sortBusy) { poll(false); return; }   // 拖动中冻结重绘，但轮询继续
@@ -1067,7 +1302,6 @@
     var running = data.filter(function (s) { return s.status === "running"; }).length;
 
     els.empty.hidden = data.length > 0;
-    els.list.hidden = data.length === 0;
     els.text.textContent = running + "/" + data.length + " 运行中";
     els.text.classList.remove("off");
 
@@ -1087,28 +1321,24 @@
     els.hostRestart.disabled = pending || !!hostAction;
     els.hostStop.disabled = pending || !!hostAction;
 
-    // 移除已不存在的服务卡片
-    Array.prototype.slice.call(els.list.children).forEach(function (card) {
-      var nm = card.dataset.name;
-      if (nm && names.indexOf(nm) === -1) {
-        if (openLogs.has(nm)) { openLogs.delete(nm); logAtBottom.delete(nm); }
-        stableLayout.delete(nm);
-        card.remove();
-      }
+    // 清理已注销的卡片（两个容器都要查），再按 mode 分派到各自分组
+    eachSvcList(function (l) {
+      Array.prototype.slice.call(l.children).forEach(function (card) {
+        var nm = card.dataset.name;
+        if (nm && names.indexOf(nm) === -1) {
+          if (openLogs.has(nm)) { openLogs.delete(nm); logAtBottom.delete(nm); }
+          stableLayout.delete(nm);
+          svcCfgOpen.delete(nm);
+          svcData.delete(nm);
+          card.remove();
+        }
+      });
     });
 
-    data.forEach(function (svc) {
-      var card = cardByName(svc.name);
-      if (!card) {
-        card = document.createElement("div");
-        card.className = "card";
-        card.dataset.name = svc.name;
-        els.list.appendChild(card);
-      }
-      renderCard(svc, card);
-      // 跟随后端顺序：appendChild 移动已有节点（不重建、事件与焦点保留）
-      els.list.appendChild(card);
-    });
+    var grpPd = [], grpOd = [];
+    data.forEach(function (svc) { (isOnDemand(svc) ? grpOd : grpPd).push(svc); });
+    renderSvcGroup(els.list, grpPd, els.secPd, "cntPd");
+    renderSvcGroup(els.listOd, grpOd, els.secOd, "cntOd");
 
     // 刷新所有已展开的事件面板（跟随轮询频率）
     openLogs.forEach(function (name) {
@@ -1141,8 +1371,13 @@
   function poll(forceFast) {
     if (pollTimer) clearTimeout(pollTimer);
     var fast = !!forceFast;
-    if (!fast && els.list) {
-      fast = els.list.querySelector(".status-badge.starting, .status-badge.stopping") !== null;
+    if (!fast) {
+      // 两组都要查：starting/stopping 可能出现在任一容器里
+      eachSvcList(function (l) {
+        if (!fast && l.querySelector(".status-badge.starting, .status-badge.stopping")) {
+          fast = true;
+        }
+      });
     }
     pollTimer = setTimeout(tick, fast ? POLL_FAST : POLL_SLOW);
   }

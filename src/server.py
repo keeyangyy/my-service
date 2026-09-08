@@ -28,7 +28,7 @@ from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 SERVER_PY = SRC_DIR / "server.py"
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
@@ -125,6 +125,8 @@ def main() -> int:
     cron_dir = (base / cfg["reg_dir"] / "cron").resolve()
     cron_dir.mkdir(parents=True, exist_ok=True)
     scheduler = Scheduler(cron_dir, rdir / "cron_state.json", rdir / "cron_order.json")
+    # 把定时任务按路径归属到服务（面板"关联的定时任务"用）；lambda 保证每轮读最新
+    manager.cron_specs_provider = lambda: scheduler.specs
     controller = HostController(manager, rdir)
 
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),

@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 
 from . import audit, runner
-from .scanner import Scanner, Spec
+from .linkage import link_crons
+from .scanner import IDLE_MAX_SEC, IDLE_MIN_SEC, Scanner, Spec
 
 TICK_SEC = 1.0
 
@@ -28,8 +29,15 @@ def _dur(t0: float) -> int:
 
 
 class Manager:
-    def __init__(self, scanner: Scanner, order_path: Path | None = None):
+    def __init__(self, scanner: Scanner, order_path: Path | None = None,
+                 cron_specs_provider=None):
+        """cron_specs_provider: 可选的可调用对象，返回 {任务名: CronSpec}。
+
+        用于把定时任务按路径归属到服务（见 core/linkage.py）。不传即无关联，
+        面板该区块显示为空——单测与纯服务场景不依赖调度器。
+        """
         self.scanner = scanner
+        self.cron_specs_provider = cron_specs_provider
         self.order_path = Path(order_path) if order_path else None
         self.specs: dict[str, Spec] = {}
         self.handles: dict[str, runner.ProcessHandle] = {}
@@ -162,8 +170,25 @@ class Manager:
                     "uptime_sec": uptime,
                     "autostart": spec.autostart,
                     "error": st.get("error"),
+                    "cron_names": self._linked_crons().get(name, []),
                 })
             return out
+
+    def _linked_crons(self) -> dict[str, list[str]]:
+        """按路径把定时任务归到服务名下（见 core/linkage.py）。
+
+        每次 snapshot 现算：注册条可能被增删改，缓存会失真；数量级很小（几十个），
+        不值得为此维护失效逻辑。
+        """
+        if not self.cron_specs_provider:
+            return {}
+        try:
+            cron_specs = self.cron_specs_provider() or {}
+        except Exception:  # noqa: BLE001 - 调度器异常不该拖垮面板
+            return {}
+        if not cron_specs:
+            return {}
+        return link_crons(self.specs, cron_specs)
 
     def get_spec(self, name: str) -> Spec | None:
         return self.specs.get(name)
@@ -360,6 +385,75 @@ class Manager:
                 return False, f"写注册条失败: {exc}"
             spec.autostart = bool(value)
             return True, "ok"
+
+    def update_config(self, name: str, patch: dict) -> tuple[bool, str, str]:
+        """面板设置：改注册条的可编辑项。当前支持 `idle_timeout_sec`。
+
+        与 Scheduler.update_config 同一套安全网：读原文备份 → 应用补丁 →
+        原子写 → 用 Spec 重解析校验，判无效则**回滚原文本**并报错——绝不留
+        一个坏注册条（否则服务直接变 invalid 不可用）。
+
+        返回 (ok, code, message)；code ∈ ok / not_found / invalid / io。
+        """
+        with self.lock:
+            spec = self.specs.get(name)
+            if spec is None:
+                return False, "not_found", f"未知服务 {name}"
+
+            # 目前仅 on_demand 有可配项；常驻服务传此字段即 misuse
+            if "idle_timeout_sec" in patch and spec.mode != "on_demand":
+                return False, "invalid", ("idle_timeout_sec 仅 on_demand 服务可配；"
+                                          f"{name} 当前为 {spec.mode}")
+            if not patch:
+                return False, "invalid", "没有需要修改的字段"
+
+            try:
+                old_text = spec.reg_path.read_text(encoding="utf-8-sig")
+                raw = json.loads(old_text)
+                if not isinstance(raw, dict):
+                    raise ValueError("注册条根节点不是对象")
+            except Exception as exc:  # noqa: BLE001
+                return False, "io", f"读注册条失败: {exc}"
+
+            # ---- 应用补丁（粗校验；细校验交给写后重解析）----
+            if "idle_timeout_sec" in patch:
+                try:
+                    val = float(patch["idle_timeout_sec"])
+                except (TypeError, ValueError):
+                    return False, "invalid", "idle_timeout_sec 需为数字"
+                # ★ 显式拒绝越界，不能让 Spec 的 clamp 悄悄吞掉：
+                #   否则注册条留下 5、实际生效 60，文件与内存不一致且面板回弹无解释。
+                if val < IDLE_MIN_SEC or val > IDLE_MAX_SEC:
+                    return False, "invalid", (
+                        f"idle_timeout_sec 需在 {int(IDLE_MIN_SEC)} ~ "
+                        f"{int(IDLE_MAX_SEC)} 秒之间")
+                raw["idle_timeout_sec"] = int(val)   # 落盘统一整数，避免 900.0/900 混写
+
+            def _write(payload: dict) -> bool:
+                try:
+                    import os
+                    import tempfile
+
+                    fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
+                                               suffix=".tmp")
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fh.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+                    os.replace(tmp, spec.reg_path)
+                    return True
+                except Exception:  # noqa: BLE001
+                    return False
+
+            if not _write(raw):
+                return False, "io", "写注册条失败"
+
+            # ---- 写后校验：新配置必须自身合法，否则回滚 ----
+            new_spec = Spec(name, spec.reg_path, spec.adapter_dir)
+            if not new_spec.valid:
+                _write(json.loads(old_text))   # 回滚，不留坏注册条
+                return False, "invalid", (new_spec.error
+                                          or "新配置不合法，已回滚")
+            self.specs[name] = new_spec
+            return True, "ok", "已保存"
 
     # ------------------------------------------------------------ 监测循环
     def monitor_loop(self) -> None:

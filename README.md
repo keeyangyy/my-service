@@ -48,7 +48,8 @@ my-service\
     │   ├─ audit.py           # 启停登记簿（host.jsonl 的唯一作者）
     │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查/一次性执行（输出不接管）
     │   ├─ scheduler.py       # 定时任务调度器（reg\cron\ 唯一源，与 monitor 并列线程）
-    │   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛
+    │   ├─ linkage.py         # 服务与定时任务的路径归属判定（面板关联展示用）
+│   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛 + 注册条配置行内编辑
     │   └─ api.py             # REST API + web 静态托管
     ├─ web\                   # Dashboard + 启动中转页（原生 JS 零依赖）
     │   ├─ index.html / app.js / style.css  # 管理面板
@@ -208,6 +209,44 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 （按需服务由点击拉起，不随宿主运行）。`/health` 不带 `last_active` 字段时
 自动回收失效，退化为"仅点开即启"。实现样例见 `reg\your-service.json`
 与其 `server.py` 的 `last_active` 处理。
+- **回收时长可在面板改**：服务行 `⚙ 设置` 里直接调 `idle_timeout_sec`
+  （默认 10 分钟，范围 60 秒 ~ 24 小时），无需手编注册条。越界值会被**显式拒绝**
+  而不是静默 clamp——否则注册条存 5、实际生效 60，文件与运行不一致且回弹无解释。
+  面板同时显示"≈ 距回收 还剩多久"，让抽象秒数有实感
+
+## 面板分组与服务设置
+
+服务列表按注册条的 `mode` 分两组显示，**纯展示层推导，注册条不新增任何字段**：
+
+- **常驻服务**（`managed` / `detached`）——起来就长期运行
+- **即用即走**（`on_demand`）——点开即启、空闲回收
+
+空组整组隐藏（含标题）；两组各自支持拖拽排序，**跨组拖动被拒**（拖不动即为正常，
+因为分组由 `mode` 决定，拖拽不应改变运行语义）。想换组请改注册条的 `mode`。
+
+⚠ 保存顺序提交的是**两组合并后的完整名单**：后端 `set_order` 会把未提及的服务按
+字母序追加末尾，若只交本组名单，另一组刚排好的顺序会被冲回字母序。
+
+每个服务行都有 `⚙ 设置`：
+
+| 模式 | 面板内容 |
+|:--|:--|
+| 常驻（managed/detached） | 仅「关联的定时任务」 |
+| 即用即走（on_demand） | 「空闲回收时长」+「关联的定时任务」 |
+
+`自启`开关留在主行（常驻才显示），不进设置面板。
+
+### 服务与定时任务的关联（按路径，不按名字）
+
+cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相等），该任务就归属那个
+服务，显示在它的设置面板里，并可直接点 ▶ 运行。实现在 `core/linkage.py`。
+
+- **为什么用路径而不是名字前缀**：路径是物理事实（脚本真的躺在这个目录里），
+  名字前缀只是巧合；用路径则改名不破坏关联
+- 服务目录互相嵌套时取**最长匹配**（归属更具体的那个服务）
+- 按路径**分量**比较：`D:\svc\ab` 不算在 `D:\svc\a` 之下（Windows 大小写不敏感）
+- 匹配不到任何已注册服务 → **无关联**，任务继续在「⏱ 定时任务」区独立显示，
+  不受影响
 
 ## 定时任务（reg\cron\）——第二物种：到点跑一次脚本
 
@@ -251,10 +290,12 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
   均为框架侧记账，不污染注册条）；新注册的服务/任务自动排在末尾，不打乱你排好的顺序；
   注销条目的顺序自动清理；重启宿主后顺序保持。想恢复默认字母序：把行拖回字母序即可
   （只删账本文件不会重置内存里的顺序，需配合重启宿主）
-- **面板行内编辑**：任务行默认**一行**（概览 + `启用`开关 + `⚙ 设置` + `事件` +
-  `▶ 立即运行`）；点 `⚙ 设置` 展开配置面板——**模式用分段按钮二选一**
-  （定时执行 / 间隔执行）、时刻选择器或间隔数值+单位、`⏲ 超时保护`秒数（卡死强杀阈值，
-  非执行频率）、`补跑`开关；改完即原子写回注册条并即时生效（无需重启宿主）
+- **面板行内编辑**：任务行默认**一行**，按钮与服务卡片同序（概览 + `启用`开关 +
+  `▶ 立即运行` + `⚙ 设置` + `事件`）；点 `⚙ 设置` 展开配置面板，内部分**两个带标题的分区**——
+  **执行时机**（模式分段按钮二选一：定时执行 / 间隔执行 + 时刻选择器或间隔数值+单位）
+  与**异常保护**（`⏲ 超时保护`秒数＝卡死强杀阈值、`补跑`开关），并附一行说明点明
+  "两者都不改变执行频率"；改完即原子写回注册条并即时生效（无需重启宿主）
+  - 为什么分区：超时保护与"多久跑一次"是两个维度，平铺摆放曾被误读成第三种调度方式
   - 改调度时间会**立即重算下次执行时刻**（否则面板显示新时间、实际仍按旧时间触发）
   - 写回前用注册条规则重解析校验，不合法则**拒绝并回滚**，绝不留坏注册条
   - 模式切换保留两种模式各自的最后已知值（本会话内），误点不会把原时间冲掉
@@ -358,10 +399,10 @@ JS，带 JSON 的请求还会先发 `OPTIONS` 预检、没被应答就根本不�
 ## 用户操作接口
 | 层 | 入口 |
 |:--|:--|
-| Web Dashboard | http://127.0.0.1:1236 （一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关，行首 `⠿` 可拖动排序；下方「⏱ 定时任务」区块：主行显示下次执行/上次结果 + 事件窗/▶ 立即运行，`⚙ 设置` 展开可行内改调度模式与时间/超时保护/补跑/启用，同样支持拖拽排序；header 右上含宿主运行时长 + 版本号 + `▤ 登记簿` + 重启/停止按钮） |
+| Web Dashboard | http://127.0.0.1:1236 （服务按 `mode` 分**常驻服务**与**即用即走**两组，各自一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关/`⚙ 设置`（回收时长 + 关联的定时任务），行首 `⠿` 可组内拖动排序、跨组拖不动；下方「⏱ 定时任务」区块：主行显示下次执行/上次结果 + 事件窗/▶ 立即运行，`⚙ 设置` 展开可行内改调度模式与时间/超时保护/补跑/启用，同样支持拖拽排序；header 右上含宿主运行时长 + 版本号 + `▤ 登记簿` + 重启/停止按钮） |
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
-| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/order`(`{"names":[...]}` 拖拽排序)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/order`(`{"names":[...]}` 拖拽排序)、`POST /api/crons/{name}/config`(补丁：`enabled`/`catch_up`/`timeout_sec`/`schedule` 任意组合，面板行内编辑用)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
+| REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/order`(`{"names":[...]}` 拖拽排序)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/services/{svc}/config`(补丁：`idle_timeout_sec`，仅 on_demand，面板 `⚙ 设置` 用)、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/order`(`{"names":[...]}` 拖拽排序)、`POST /api/crons/{name}/config`(补丁：`enabled`/`catch_up`/`timeout_sec`/`schedule` 任意组合，面板行内编辑用)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条或 `"enabled": false` |
 
 ## 快速上手
