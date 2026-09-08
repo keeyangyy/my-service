@@ -2,6 +2,27 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.9.0（2026-09-08）
+
+控制面对本机网页开放：**判据只有"来源是否本机"，端口不限**。
+
+- 本机任意网页（`localhost` / `127.0.0.1` / `::1`，任意端口）可调用全部接口并
+  **读到返回**；响应回显 `Access-Control-Allow-Origin` + `Vary: Origin`
+- 新增 `do_OPTIONS`：本机来源 `204` 并给出允许的方法与头；外站 `403` 且无 CORS 头
+- 外站写接口门禁：`/api/services/*`、`/api/crons/*`、`/api/audit/clear`、
+  `/api/config/*`、`/api/host/*` 一律 `403`（统一挂在 `do_POST` 入口，避免漏挂）。
+  依据：浏览器跨源 POST 必定带 `Origin`，而 curl/脚本不带 → 本机程序不受影响
+- 无 `Origin` 的请求（面板同源 / curl / 脚本）行为与历史**完全一致**，零回归
+- 新增 `config.json` 开关 `cors_local_only`（默认 true），置 false 即退回历史语义
+- `src\core\api.py` 新增 `LOCAL_HOSTS` / `WRITE_PREFIXES` 与 `_origin_of` /
+  `_origin_host` / `_is_local_origin` / `_is_write_path`；`make_handler` / `serve`
+  新增 `cors_local_only` 参数
+- 新增 `tests/test_cors.py` 19 例（判据、响应头、预检、外站门禁、开关关闭回旧行为）
+- **为什么值得做**：被管服务（如 your-service）被空闲回收后，其页面自身就是
+  死掉的进程、无法自救；现在可由页面调宿主 start 原地复活，还能读到宿主的失败原因
+  （"注册条无效"/"端口被占用"），不用再干等超时
+- 已知边界：`file://` 页面的 `Origin` 为 `null`，按外站拒绝
+
 ## v0.8.0（2026-09-08）
 
 面板支持拖拽排序：**服务列表与定时任务列表**都可手动调整顺序。
