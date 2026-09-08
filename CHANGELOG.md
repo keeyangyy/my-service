@@ -2,6 +2,15 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.10.1（2026-09-08）
+
+修 v0.10.0 自己带进去的一处小 bug。
+
+- 服务设置面板里「关联的定时任务」的悬停提示取错字段名（用了 `schedule_desc`，
+  快照里的字段其实叫 `schedule`）-> 提示会显示"描述 / undefined"；已改用 `schedule`
+- 顺带修正 `reg\cron\your-service-snapshot.json` 的 description 里过时的
+  "每天 23:00"（实际时刻是 23:30）
+
 ## v0.10.0（2026-09-08）
 
 面板按 `mode` 分两组，服务也能行内改配置；定时任务设置面板重新分区。
