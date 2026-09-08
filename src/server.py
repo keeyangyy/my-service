@@ -28,7 +28,7 @@ from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 SERVER_PY = SRC_DIR / "server.py"
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
@@ -76,6 +76,7 @@ def load_config() -> dict:
         "port": 1236,
         "reg_dir": "reg",
         "audit_retention_days": 7,   # 登记簿事件保留天数（0 = 永不自动清理）
+        "cors_local_only": True,     # 仅本机来源的网页可获得跨源许可（关掉=回到无 CORS 的历史行为）
     }
     if CONFIG_PATH.is_file():
         try:
@@ -127,7 +128,8 @@ def main() -> int:
     controller = HostController(manager, rdir)
 
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
-                      controller=controller, scheduler=scheduler)
+                      controller=controller, scheduler=scheduler,
+                        cors_local_only=bool(cfg.get("cors_local_only", True)))
     controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]

@@ -14,6 +14,45 @@ from . import audit
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
+# ---------------------------------------------------------------- CORS / 外站门禁
+# 背景：控制面绑定 127.0.0.1，本机任何程序（curl/脚本/服务）本来就能直接调用，
+# 从来不需要额外开放。唯一受限的是"浏览器里的网页"——跨源时浏览器默认不把响应
+# 交给页面 JS，带 JSON 的请求还会先发 OPTIONS 预检、没被应答就根本不发。
+# 方案 S：判据只有一条"来源是否本机"——本机网页（任意端口）全放行且能读回结果；
+# 外站网页一律拒绝（浏览器跨源 POST 必定带 Origin，故可可靠识别；不带 Origin 的
+# 请求即 curl/脚本/同源面板，按本机程序处理，行为与历史完全一致）。
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+# 会改变宿主或服务状态的接口（外站门禁只拦这些；读接口无需拦，读也读不到）
+WRITE_PREFIXES = (
+    "/api/services/", "/api/crons/", "/api/audit/clear", "/api/config/", "/api/host/",
+)
+
+
+def _origin_of(headers) -> str | None:
+    """取出请求的 Origin；不存在返回 None（同源请求 / curl / 非浏览器客户端）。"""
+    origin = (headers.get("Origin") or "").strip()
+    return origin or None
+
+
+def _origin_host(origin: str) -> str:
+    """由 Origin 解析主机名（小写，去端口）。解析不出来返回空串。"""
+    try:
+        host = (urlparse(origin).hostname or "").lower()
+    except ValueError:
+        return ""
+    return host
+
+
+def _is_local_origin(origin: str) -> bool:
+    """来源是否为本机。端口不限——本机任何端口起的页面都算自己人。"""
+    return _origin_host(origin) in LOCAL_HOSTS
+
+
+def _is_write_path(path: str) -> bool:
+    return path.startswith(WRITE_PREFIXES)
+
+
 MIME = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -23,16 +62,46 @@ MIME = {
 }
 
 
-def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None, scheduler: core.scheduler.Scheduler|None
+def make_handler(manager, host=None, scheduler=None,
+                 cors_local_only: bool = True):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None, scheduler: core.scheduler.Scheduler|None
     class Handler(BaseHTTPRequestHandler):
         server_version = "my-service"
         protocol_version = "HTTP/1.1"
 
         # ---------------------------------------------------------- 工具
+        def _acao(self) -> tuple[str, bool]:
+            """本请求的 CORS 处置：(回显的 Origin 或 '', 是否本地来源)。
+
+            未带 Origin（同源 / curl / 非浏览器）→ 不加头，行为与历史完全一致。
+            开关关闭 → 一律不加头，整体退回无 CORS 的历史语义。
+            """
+            if not cors_local_only:
+                return "", True
+            origin = _origin_of(self.headers)
+            if origin is None:
+                return "", True
+            return (origin, True) if _is_local_origin(origin) else ("", False)
+
+        def _denied(self, path: str) -> bool:
+            """外站是否应被拒绝：仅拦写接口，且仅在开关开启时。"""
+            if not cors_local_only:
+                return False
+            origin = _origin_of(self.headers)
+            if origin is None or _is_local_origin(origin):
+                return False
+            return _is_write_path(path)
+
         def _json(self, code: int, payload: dict) -> None:
+            origin, local = self._acao()
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            elif not local:
+                # 外站：明确不加 ACAO，浏览器自会拦下响应
+                pass
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -52,6 +121,27 @@ def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager:
 
         def log_message(self, fmt, *args):  # noqa: A003 - 静默访问日志
             pass
+
+        # ---------------------------------------------------------- 预检
+        def do_OPTIONS(self):  # noqa: N802
+            """CORS 预检：只有本机来源的页面才拿到跨源许可，其余明确拒绝。
+
+            外站拿到 403 且无 ACAO 头 → 浏览器不会发主请求，写操作无从触发。
+            """
+            origin, local = self._acao()
+            if not local:
+                return self._json(403, {"ok": False, "error": "cross-origin denied"})
+            self.send_response(204)
+            self.send_header("Allow", "GET, POST, OPTIONS")
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header(
+                    "Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
+                self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         # ---------------------------------------------------------- GET
         def do_GET(self):  # noqa: N802
@@ -125,6 +215,10 @@ def make_handler(manager, host=None, scheduler=None):  # noqa: ANN001 - manager:
 
             parsed = urlparse(self.path)
             parts = [p for p in unquote(parsed.path).split("/") if p]
+
+            # 外站门禁：写接口统一在此拦截，避免逐条路由漏挂
+            if self._denied(unquote(parsed.path)):
+                return self._json(403, {"ok": False, "error": "cross-origin denied"})
 
             # POST /api/services/order  {"names": [...]}  —— 面板拖拽排序
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "services" \
@@ -260,14 +354,18 @@ def _tail_file(path: Path, name: str, n: int) -> dict:
     return {"name": name, "lines": lines}
 
 
-def serve(manager, bind_host: str, port: int, controller=None, scheduler=None):  # noqa: ANN001
+def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,
+          cors_local_only: bool = True):  # noqa: ANN001
     """绑定监听。controller 为 HostController（提供 meta/schedule），
     scheduler 为定时任务调度器（提供 snapshot/run_now）。
+
+    cors_local_only：仅本机来源的网页可获得跨源许可（默认开）。关掉即回到
+    「不回 CORS 头、不答预检」的历史行为，用于应急而不必回滚代码。
 
     端口重试：restart 时新宿主会在旧进程释放 1236 前反复重试 bind，实现无竞态交接。
     """
     import time
-    handler = make_handler(manager, controller, scheduler)
+    handler = make_handler(manager, controller, scheduler, cors_local_only)
     last_err: OSError | None = None
     for _ in range(40):
         try:
