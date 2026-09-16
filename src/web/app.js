@@ -227,12 +227,13 @@
     return el;
   }
 
-  async function saveCronConfig(name, patch, rollback) {
+  async function saveCronConfig(name, patch, rollback, onok) {
     try {
       var res = await api("POST", "/api/crons/" + encodeURIComponent(name) + "/config", patch);
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) throw new Error(data.error || data.message || ("HTTP " + res.status));
       toast("已保存 " + Object.keys(patch).join("、"), "ok");
+      if (onok) onok();
     } catch (e) {
       toast("保存失败：" + (e && e.message ? e.message : "未知错误"), "err");
       if (rollback) rollback();
@@ -294,7 +295,33 @@
     init.forEach(function (v) { cronAtBuild(listEl, saveFn, v); });
   }
 
-  function buildCronSwitch(name, label, field) {
+  // ---- 设置面板草稿：面板打开后默认与服务端同步；一旦有编辑即建立草稿，
+  //      进入本地编辑模式（轮询不再覆盖控件值），只有按「保存」才提交。
+  //      保存 / 取消 / 收起后草稿清除，回到同步态。----
+  function cronDraft(bar, cur) {
+    if (!bar._draft) {
+      var memo = cronModeMemo.get(cur.name || "") || {};
+      bar._draft = {
+        schedule_type: cur.schedule_type || "daily",
+        at: (cur.schedule_type === "daily" && cur.at && cur.at.length)
+          ? cur.at.slice() : (memo.at && memo.at.length ? memo.at.slice() : ["09:30"]),
+        every_sec: (cur.schedule_type === "interval" && cur.every_sec)
+          ? cur.every_sec : (memo.every_sec || 3600),
+        timeout_sec: cur.timeout_sec != null ? cur.timeout_sec : 300,
+        catch_up: !!cur.catch_up,
+      };
+    }
+    return bar._draft;
+  }
+
+  function markDirty(bar, dirty) {
+    var dot = bar.querySelector(".cfg-dirty");
+    if (!dot) return;
+    dot.hidden = !dirty;
+    dot.textContent = dirty ? "● 有未保存的修改" : "";
+  }
+
+  function buildCronSwitch(name, label, field, bar) {
     var toggle = cfgEl("label", "toggle cron-switch");
     var cb = cfgEl("input", "toggle-input", field);
     cb.type = "checkbox";
@@ -308,9 +335,10 @@
       : "是否参与调度（停用只暂停下一次触发，不打断正在跑的一轮）";
     toggle.addEventListener("click", function (e) { e.stopPropagation(); });
     cb.addEventListener("change", function () {
-      var patch = {};
-      patch[field] = cb.checked;
-      saveCronConfig(name, patch, function () { cb.checked = !cb.checked; });
+      if (!bar) return;
+      var cur = cronData.get(name) || {};
+      cronDraft(bar, cur)[field] = cb.checked;   // 本地草稿，保存按钮统一提交
+      syncCronConfig(bar, cur);                  // 刷新未保存指示
     });
     return toggle;
   }
@@ -324,22 +352,16 @@
     if (cronCfgOpen.has(name)) cronCfgOpen.delete(name);
     else cronCfgOpen.add(name);
     var bar = row.querySelector(".cron-config");
-    if (bar) bar.hidden = !cronCfgOpen.has(name);
+    if (bar) {
+      bar.hidden = !cronCfgOpen.has(name);
+      if (bar.hidden) bar._draft = null;   // 收起即丢弃未保存草稿（保存按钮是唯一提交途径）
+    }
     var btn = row.querySelector(".btn-cfg");
     if (btn) btn.classList.toggle("active", cronCfgOpen.has(name));
   }
 
-  // 定时/间隔是二选一的两种模式，用分段按钮切换；参数优先取本会话记忆，
-  // 避免「误点一下模式就把原时间冲掉」
-  function switchMode(name, type) {
-    var cur = cronData.get(name) || {};
-    var memo = cronModeMemo.get(name) || {};
-    var sched = (type === "daily")
-      ? { type: "daily", at: memo.at || cur.at || ["09:30"] }
-      : { type: "interval", every_sec: memo.every_sec || cur.every_sec || 3600 };
-    saveCronConfig(name, { schedule: sched });
-  }
-
+  // 定时/间隔二选一：本地切换（草稿），保存时一并生效；
+  // 另一模式的参数由 cronModeMemo 记忆，切回不丢
   function buildCronConfig(c) {
     var bar = cfgEl("div", "cron-config");
     bar.hidden = true;                       // 默认收起，点「⚙ 设置」展开
@@ -356,29 +378,35 @@
       b.addEventListener("click", function (e) {
         e.stopPropagation();
         var cur = cronData.get(c.name) || c;
-        if (cur.schedule_type !== p[0]) switchMode(c.name, p[0]);
+        var d = cronDraft(bar, cur);
+        if (d.schedule_type !== p[0]) {
+          d.schedule_type = p[0];     // 本地切换模式，保存时才生效
+          syncCronConfig(bar, cur);   // 立即刷新控件显隐 / 高亮 / 未保存指示
+        }
       });
       seg.appendChild(b);
     });
     grp1.appendChild(seg);
 
     var atList = cfgEl("div", "cfg-atlist", "at");
-    var saveAt = function () {
+    // 时间列表变更只进草稿（保存按钮统一提交），避免编辑中被轮询/自动保存撤销
+    var touchAt = function () {
       var cur = cronData.get(c.name) || c;
-      var vals = cronAtValues(atList);
-      if (!vals.length) return;
-      saveCronConfig(c.name, { schedule: { type: "daily", at: vals } },
-        function () { syncCronConfig(bar, cur); });
+      var d = cronDraft(bar, cur);
+      d.schedule_type = "daily";
+      d.at = cronAtValues(atList);
+      syncCronConfig(bar, cur);
     };
-    atList._saveAt = saveAt;   // sync 重建时复用同一保存回调
-    cronAtRebuild(atList, saveAt, (c.at && c.at.length) ? c.at : ["09:30"]);
+    atList._touch = touchAt;   // sync 重建列表时复用（新 input 绑同一回调）
+    cronAtRebuild(atList, touchAt, (c.at && c.at.length) ? c.at : ["09:30"]);
     var addAt = cfgEl("button", "cfg-add-at");
     addAt.type = "button";
     addAt.textContent = "＋ 添加时间";
     addAt.title = "新增一个每日执行时刻（默认 09:30）";
     addAt.addEventListener("click", function (e) {
       e.stopPropagation();
-      cronAtBuild(atList, saveAt, "09:30");
+      cronAtBuild(atList, touchAt, "09:30");
+      touchAt();   // 立即建立草稿：否则轮询 sync 会因数量不一致重建列表而撤销本次添加
     });
     grp1.appendChild(atList);
     grp1.appendChild(addAt);
@@ -393,10 +421,11 @@
       u.appendChild(o);
     });
     var push = function () {
-      var mult = parseFloat(u.value) || 60;
-      var secs = Math.round((parseFloat(n.value) || 0) * mult);
-      saveCronConfig(c.name, { schedule: { type: "interval", every_sec: secs } },
-        function () { syncCronConfig(bar, cronData.get(c.name) || c); });
+      var cur = cronData.get(c.name) || c;
+      var d = cronDraft(bar, cur);
+      d.schedule_type = "interval";
+      d.every_sec = Math.round((parseFloat(n.value) || 0) * (parseFloat(u.value) || 60));
+      syncCronConfig(bar, cur);
     };
     n.addEventListener("change", push);
     u.addEventListener("change", push);
@@ -421,18 +450,62 @@
              + "执行频率请用上方「间隔执行」模式";
     to.addEventListener("change", function () {
       var cur = cronData.get(c.name) || c;
-      saveCronConfig(c.name, { timeout_sec: parseFloat(to.value) },
-        function () { to.value = cur.timeout_sec; });
+      cronDraft(bar, cur).timeout_sec = parseFloat(to.value);
+      syncCronConfig(bar, cur);
     });
     rowTo.appendChild(to);
     rowTo.appendChild(cfgEl("span", "cfg-unit-txt", null, "秒"));
     grp2.appendChild(rowTo);
 
-    grp2.appendChild(buildCronSwitch(c.name, "补跑", "catch_up"));
+    grp2.appendChild(buildCronSwitch(c.name, "补跑", "catch_up", bar));
     grp2.appendChild(cfgEl("div", "cfg-hint", null,
       "超时保护＝脚本卡死时强制结束；补跑＝错过计划时刻后是否立即补一次。"
       + "两者都不改变执行频率。"));
     bar.appendChild(grp2);
+
+    // ---- 保存 / 取消：手动保存（草稿统一提交，杜绝自动保存竞态撤销输入）----
+    var foot = cfgEl("div", "cfg-foot");
+    foot.appendChild(cfgEl("span", "cfg-dirty", null, ""));
+    var cancelBtn = cfgEl("button", "cfg-cancel", null);
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "取消";
+    var saveBtn = cfgEl("button", "cfg-save", null);
+    saveBtn.type = "button";
+    saveBtn.textContent = "保存设置";
+    saveBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var cur = cronData.get(c.name) || c;
+      var d = cronDraft(bar, cur);
+      var patch = { schedule: { type: d.schedule_type } };
+      if (d.schedule_type === "daily") {
+        var vals = cronAtValues(atList);
+        if (!vals.length) { toast("定时执行至少保留一个时刻", "warn"); return; }
+        patch.schedule.at = vals;
+      } else {
+        patch.schedule.every_sec = d.every_sec;
+      }
+      patch.timeout_sec = d.timeout_sec;
+      patch.catch_up = d.catch_up;
+      saveCronConfig(c.name, patch,
+        function () { syncCronConfig(bar, cur); },   // 失败：保留草稿供重试，仅刷新指示
+        function () {                                 // 成功：清草稿回同步态 + 记忆模式参数
+          var m = cronModeMemo.get(c.name) || {};
+          if (d.schedule_type === "daily") m.at = cronAtValues(atList);
+          else m.every_sec = d.every_sec;
+          cronModeMemo.set(c.name, m);
+          bar._draft = null;
+          syncCronConfig(bar, cronData.get(c.name) || c);
+        });
+    });
+    cancelBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var cur = cronData.get(c.name) || c;
+      bar._draft = null;
+      syncCronConfig(bar, cur);   // 控件回填服务端值
+    });
+    foot.appendChild(cancelBtn);
+    foot.appendChild(saveBtn);
+    bar.appendChild(foot);
     return bar;
   }
 
@@ -440,22 +513,32 @@
   function syncCronConfig(bar, c) {
     if (!bar) return;
     bar.hidden = !cronCfgOpen.has(c.name);
+    Array.prototype.slice.call(bar.querySelectorAll("input,select,button.seg-btn")).forEach(function (el) {
+      el.disabled = !c.valid;   // 坏注册条不可面板编辑
+    });
     var setVal = function (el, v) {
       if (el && document.activeElement !== el && el.value !== String(v)) el.value = String(v);
     };
+    var mode = (bar._draft && bar._draft.schedule_type) ? bar._draft.schedule_type : c.schedule_type;
     var dBtn = bar.querySelector('[data-role="mode-daily"]');
     var iBtn = bar.querySelector('[data-role="mode-interval"]');
-    if (dBtn) dBtn.classList.toggle("active", c.schedule_type === "daily");
-    if (iBtn) iBtn.classList.toggle("active", c.schedule_type === "interval");
+    if (dBtn) dBtn.classList.toggle("active", mode === "daily");
+    if (iBtn) iBtn.classList.toggle("active", mode === "interval");
     var atList = bar.querySelector('[data-role="at"]');
     var ivEl = bar.querySelector('[data-role="every"]');
-    if (atList) atList.hidden = (c.schedule_type !== "daily");
-    if (ivEl && ivEl.parentNode) ivEl.parentNode.hidden = (c.schedule_type !== "interval");
-    if (atList && c.schedule_type === "daily" && Array.isArray(c.at)) {
+    if (atList) atList.hidden = (mode !== "daily");
+    if (ivEl && ivEl.parentNode) ivEl.parentNode.hidden = (mode !== "interval");
+    if (bar._draft) {
+      // 编辑态：值由草稿驱动，轮询绝不覆盖（防止自动保存/回填竞态撤销输入）
+      markDirty(bar, true);
+      return;
+    }
+    markDirty(bar, false);
+    if (atList && mode === "daily" && Array.isArray(c.at)) {
       var rows = atList.querySelectorAll(".cfg-at-row");
       if (rows.length !== c.at.length) {
-        // 外部改了数量 → 重建列表（服务端是权威；正在输入的未保存修改放弃）
-        cronAtRebuild(atList, atList._saveAt || null, c.at);
+        // 服务端数量变了 → 重建列表（未编辑状态，无输入可打断）
+        cronAtRebuild(atList, atList._touch || null, c.at);
       } else {
         Array.prototype.slice.call(rows).forEach(function (row, i) {
           var inp = row.querySelector("input");

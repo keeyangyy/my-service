@@ -468,6 +468,40 @@ html, body {
   transition: color .15s, border-color .15s;
 }
 .cfg-add-at:hover { color: var(--blue); border-color: var(--blue); }
+/* 设置面板底部：手动保存（草稿统一提交，避免自动保存竞态撤销输入） */
+.cfg-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.cfg-dirty { color: var(--warn, #e3b341); font-size: 11px; margin-right: auto; }
+.cfg-save {
+  background: rgba(88, 166, 255, .16);
+  color: var(--blue);
+  border: 1px solid var(--blue);
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: filter .15s;
+}
+.cfg-save:hover { filter: brightness(1.15); }
+.cfg-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  font-size: 12px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.cfg-cancel:hover { color: var(--text); border-color: var(--muted); }
 /* 模式分段切换：定时执行 / 间隔执行 二选一 */
 .seg {
   display: inline-flex;
