@@ -266,7 +266,8 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
   "entry": "run_all.py",                    // 相对 path；支持 .py/.ps1/.cmd/.bat/.exe
   "args": ["--site", "example"],
   "cwd": ".",
-  "schedule": {"type": "daily", "at": "08:30"},   // 或 {"type": "interval", "every_sec": 3600}
+  "schedule": {"type": "daily", "at": ["09:30", "14:30"]}, // daily：每日可多个时刻（数组；旧字符串自动兼容）
+  // 或 {"type": "interval", "every_sec": 3600}
   "timeout_sec": 300,                       // 挂死保护（默认 300，下限 5s），超时 taskkill /T 树杀记失败
   "catch_up": false,                        // 错过是否补跑（默认 false）
   "env": {}                                 // 附加环境变量

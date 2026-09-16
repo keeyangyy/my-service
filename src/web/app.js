@@ -249,6 +249,51 @@
     return { mult: 1, val: sec };
   }
 
+  // ---- 定时执行时间列表：构建 / 收集 / 重建（buildCronConfig 与 syncCronConfig 共用）----
+  // 新时刻默认 09:30；删除到最后一项时回填 09:30（列表不允许为空）
+  function cronAtBuild(listEl, saveFn, value) {
+    var row = cfgEl("div", "cfg-at-row");
+    var inp = cfgEl("input", "cfg-time");
+    inp.type = "time";
+    inp.value = value || "09:30";
+    inp.title = "每日执行时刻（本地时间）";
+    var del = cfgEl("button", "cfg-at-del");
+    del.type = "button";
+    del.textContent = "✕";
+    del.title = "删除该时刻（仅剩一项时回填 09:30）";
+    row.appendChild(inp);
+    row.appendChild(del);
+    listEl.appendChild(row);
+    if (saveFn) {
+      inp.addEventListener("change", saveFn);
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (listEl.querySelectorAll(".cfg-at-row").length <= 1) {
+          inp.value = "09:30";   // 最后一项不允许删，回填默认再保存
+          saveFn();
+          return;
+        }
+        row.remove();
+        saveFn();
+      });
+    }
+    return row;
+  }
+
+  function cronAtValues(listEl) {
+    var out = [];
+    Array.prototype.slice.call(listEl.querySelectorAll("input")).forEach(function (i) {
+      if (i.value) out.push(i.value);
+    });
+    return out.filter(function (v, i) { return out.indexOf(v) === i; }).sort();
+  }
+
+  function cronAtRebuild(listEl, saveFn, values) {
+    listEl.innerHTML = "";
+    var init = (values && values.length) ? values : ["09:30"];
+    init.forEach(function (v) { cronAtBuild(listEl, saveFn, v); });
+  }
+
   function buildCronSwitch(name, label, field) {
     var toggle = cfgEl("label", "toggle cron-switch");
     var cb = cfgEl("input", "toggle-input", field);
@@ -290,7 +335,7 @@
     var cur = cronData.get(name) || {};
     var memo = cronModeMemo.get(name) || {};
     var sched = (type === "daily")
-      ? { type: "daily", at: memo.at || cur.at || "08:00" }
+      ? { type: "daily", at: memo.at || cur.at || ["09:30"] }
       : { type: "interval", every_sec: memo.every_sec || cur.every_sec || 3600 };
     saveCronConfig(name, { schedule: sched });
   }
@@ -317,15 +362,26 @@
     });
     grp1.appendChild(seg);
 
-    var t = cfgEl("input", "cfg-time", "at");
-    t.type = "time";
-    t.title = "每日执行时刻（本地时间）";
-    t.addEventListener("change", function () {
+    var atList = cfgEl("div", "cfg-atlist", "at");
+    var saveAt = function () {
       var cur = cronData.get(c.name) || c;
-      saveCronConfig(c.name, { schedule: { type: "daily", at: t.value } },
-        function () { t.value = cur.at || ""; });
+      var vals = cronAtValues(atList);
+      if (!vals.length) return;
+      saveCronConfig(c.name, { schedule: { type: "daily", at: vals } },
+        function () { syncCronConfig(bar, cur); });
+    };
+    atList._saveAt = saveAt;   // sync 重建时复用同一保存回调
+    cronAtRebuild(atList, saveAt, (c.at && c.at.length) ? c.at : ["09:30"]);
+    var addAt = cfgEl("button", "cfg-add-at");
+    addAt.type = "button";
+    addAt.textContent = "＋ 添加时间";
+    addAt.title = "新增一个每日执行时刻（默认 09:30）";
+    addAt.addEventListener("click", function (e) {
+      e.stopPropagation();
+      cronAtBuild(atList, saveAt, "09:30");
     });
-    grp1.appendChild(t);
+    grp1.appendChild(atList);
+    grp1.appendChild(addAt);
 
     var iv = cfgEl("span", "cfg-iv");
     var n = cfgEl("input", "cfg-num", "every");
@@ -391,11 +447,22 @@
     var iBtn = bar.querySelector('[data-role="mode-interval"]');
     if (dBtn) dBtn.classList.toggle("active", c.schedule_type === "daily");
     if (iBtn) iBtn.classList.toggle("active", c.schedule_type === "interval");
-    var atEl = bar.querySelector('[data-role="at"]');
+    var atList = bar.querySelector('[data-role="at"]');
     var ivEl = bar.querySelector('[data-role="every"]');
-    if (atEl) atEl.hidden = (c.schedule_type !== "daily");
+    if (atList) atList.hidden = (c.schedule_type !== "daily");
     if (ivEl && ivEl.parentNode) ivEl.parentNode.hidden = (c.schedule_type !== "interval");
-    setVal(atEl, c.at || "");
+    if (atList && c.schedule_type === "daily" && Array.isArray(c.at)) {
+      var rows = atList.querySelectorAll(".cfg-at-row");
+      if (rows.length !== c.at.length) {
+        // 外部改了数量 → 重建列表（服务端是权威；正在输入的未保存修改放弃）
+        cronAtRebuild(atList, atList._saveAt || null, c.at);
+      } else {
+        Array.prototype.slice.call(rows).forEach(function (row, i) {
+          var inp = row.querySelector("input");
+          if (inp && document.activeElement !== inp && inp.value !== c.at[i]) inp.value = c.at[i];
+        });
+      }
+    }
     var every = bar.querySelector('[data-role="every"]');
     var unit = bar.querySelector('[data-role="unit"]');
     if (every && unit && typeof c.every_sec === "number" && c.every_sec) {

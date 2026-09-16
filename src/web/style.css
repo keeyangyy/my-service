@@ -435,6 +435,39 @@ html, body {
 .chron-row { display: inline-flex; align-items: center; gap: 6px; }
 .cfg-iv { display: inline-flex; align-items: center; gap: 4px; }
 .cfg-iv[hidden] { display: none; }
+/* 定时执行：每日时刻列表（多时刻，可添加/删除；新项默认 09:30） */
+.cfg-atlist {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.cfg-atlist[hidden] { display: none; }
+.cfg-at-row { display: inline-flex; align-items: center; gap: 6px; }
+.cfg-at-del {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.cfg-at-del:hover { color: var(--err, #e5534b); border-color: currentColor; }
+.cfg-add-at {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 10px;
+  margin-top: 4px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.cfg-add-at:hover { color: var(--blue); border-color: var(--blue); }
 /* 模式分段切换：定时执行 / 间隔执行 二选一 */
 .seg {
   display: inline-flex;

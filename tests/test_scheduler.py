@@ -83,8 +83,22 @@ class TestCronSpec(unittest.TestCase):
         p = self.box.put("t2", schedule={"type": "daily", "at": "08:30"})
         s = CronSpec("t2", p)
         self.assertTrue(s.valid, s.error)
-        self.assertEqual(s.schedule_at, (8, 30))
+        self.assertEqual(s.schedule_times, [(8, 30)])
         self.assertEqual(s.schedule_desc, "每天 08:30")
+
+    def test_daily_multi_at_parsed_and_deduped(self):
+        p = self.box.put("t2m", schedule={"type": "daily",
+                                          "at": ["23:30", "09:30", "09:30"]})
+        s = CronSpec("t2m", p)
+        self.assertTrue(s.valid, s.error)
+        self.assertEqual(s.schedule_times, [(9, 30), (23, 30)])
+        self.assertEqual(s.schedule_desc, "每天 09:30, 23:30")
+
+    def test_daily_empty_at_rejected(self):
+        p = self.box.put("t2e", schedule={"type": "daily", "at": []})
+        s = CronSpec("t2e", p)
+        self.assertFalse(s.valid)
+        self.assertIn("at", s.error)
 
     def test_invalid_missing_schedule(self):
         p = self.box.put("t3")
@@ -259,7 +273,7 @@ class TestDailyMath(unittest.TestCase):
     def test_next_daily_today_future(self):
         now = datetime.now()
         target = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        nxt = _next_daily((23, 59), target.timestamp())
+        nxt = _next_daily([(23, 59)], target.timestamp())
         dt = datetime.fromtimestamp(nxt)
         self.assertEqual((dt.hour, dt.minute), (23, 59))
         self.assertGreater(nxt, target.timestamp())
@@ -267,10 +281,21 @@ class TestDailyMath(unittest.TestCase):
     def test_next_daily_rolls_to_tomorrow(self):
         now = datetime.now()
         target = now.replace(hour=23, minute=59, second=0, microsecond=0)
-        nxt = _next_daily((0, 0), target.timestamp())
+        nxt = _next_daily([(0, 0)], target.timestamp())
         dt = datetime.fromtimestamp(nxt)
         self.assertEqual((dt.hour, dt.minute), (0, 0))
         self.assertEqual(dt.date(), (target + timedelta(days=1)).date())
+
+    def test_next_daily_multiple_times(self):
+        # now=10:00 → 今天下一个 12:00；全过 → 明天最早 08:00
+        target = datetime(2026, 1, 1, 10, 0, 0)
+        nxt = _next_daily([(8, 0), (12, 0), (23, 0)], target.timestamp())
+        self.assertEqual(datetime.fromtimestamp(nxt),
+                         datetime(2026, 1, 1, 12, 0, 0))
+        nxt2 = _next_daily([(8, 0), (12, 0)],
+                           datetime(2026, 1, 1, 23, 30, 0).timestamp())
+        self.assertEqual(datetime.fromtimestamp(nxt2),
+                         datetime(2026, 1, 2, 8, 0, 0))
 
 
 class TestUpdateConfig(unittest.TestCase):
@@ -300,11 +325,20 @@ class TestUpdateConfig(unittest.TestCase):
         self.assertTrue(ok, code)
         self.assertEqual(self._raw("d")["schedule"]["at"], "07:15")
         snap = self._snap("d")
-        self.assertEqual(snap["at"], "07:15")
+        self.assertEqual(snap["at"], ["07:15"])
         self.assertEqual(snap["schedule"], "每天 07:15")
         # next_run 必须按新时刻重算（否则面板显示新时间、实际旧时间触发）
         self.assertEqual(datetime.fromtimestamp(snap["next_run"]).hour, 7)
         self.assertEqual(datetime.fromtimestamp(snap["next_run"]).minute, 15)
+
+    def test_change_daily_multi_at(self):
+        ok, code, _ = self.sched.update_config(
+            "d", {"schedule": {"type": "daily", "at": ["09:30", "21:00"]}})
+        self.assertTrue(ok, code)
+        self.assertEqual(self._raw("d")["schedule"]["at"], ["09:30", "21:00"])
+        snap = self._snap("d")
+        self.assertEqual(snap["at"], ["09:30", "21:00"])
+        self.assertEqual(snap["schedule"], "每天 09:30, 21:00")
 
     def test_change_interval_every_sec(self):
         ok, code, _ = self.sched.update_config("i", {"schedule":
@@ -335,7 +369,7 @@ class TestUpdateConfig(unittest.TestCase):
         self.assertEqual(self._raw("d")["schedule"], before["schedule"])
         snap = self._snap("d")
         self.assertTrue(snap["valid"], snap["error"])
-        self.assertEqual(snap["at"], "23:00")
+        self.assertEqual(snap["at"], ["23:00"])
 
     def test_interval_below_floor_rolls_back(self):
         ok, code, _ = self.sched.update_config(

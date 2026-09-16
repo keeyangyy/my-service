@@ -55,7 +55,7 @@ class CronSpec:
         self.cwd: str = "."
         self.env: dict[str, str] = {}
         self.schedule_type: str = ""              # daily | interval
-        self.schedule_at: tuple[int, int] | None = None   # daily 的 (h, m)
+        self.schedule_times: list[tuple[int, int]] = []   # daily 的时刻列表（解析时排序去重）
         self.every_sec: float = 0.0               # interval 的周期
         self.timeout_sec: float = 300.0
         self.catch_up: bool = False
@@ -110,15 +110,29 @@ class CronSpec:
             stype = str(sched.get("type", "")).lower()
             if stype == "daily":
                 self.schedule_type = "daily"
-                at = str(sched.get("at", "")).strip()
-                try:
-                    hh, mm = at.split(":")
-                    self.schedule_at = (int(hh), int(mm))
-                    if not (0 <= self.schedule_at[0] <= 23
-                            and 0 <= self.schedule_at[1] <= 59):
-                        raise ValueError
-                except (ValueError, TypeError):
-                    problems.append(f"daily 的 at 非法（需 HH:MM）: {at!r}")
+                raw_at = sched.get("at")
+                raw_at = [raw_at] if isinstance(raw_at, str) else raw_at
+                if not isinstance(raw_at, list) or not raw_at:
+                    problems.append('daily 的 at 需为 "HH:MM" 或 ["HH:MM", ...]（至少一个时刻）')
+                else:
+                    times: list[tuple[int, int]] = []
+                    bad: list[str] = []
+                    for item in raw_at:
+                        s = str(item).strip()
+                        try:
+                            hh, mm = s.split(":")
+                            t = (int(hh), int(mm))
+                            if not (0 <= t[0] <= 23 and 0 <= t[1] <= 59):
+                                raise ValueError
+                            times.append(t)
+                        except (ValueError, TypeError):
+                            bad.append(s)
+                    if bad:
+                        problems.append(f"daily 的 at 含非法时刻（需 HH:MM）: {bad}")
+                    else:
+                        self.schedule_times = sorted(set(times))
+                        if not self.schedule_times:
+                            problems.append("daily 的 at 不能为空")
             elif stype == "interval":
                 self.schedule_type = "interval"
                 try:
@@ -158,8 +172,12 @@ class CronSpec:
     @property
     def schedule_desc(self) -> str:
         """一句话摘要（面板/登记簿用）。"""
-        if self.schedule_type == "daily" and self.schedule_at:
-            return f"每天 {self.schedule_at[0]:02d}:{self.schedule_at[1]:02d}"
+        if self.schedule_type == "daily" and self.schedule_times:
+            if len(self.schedule_times) == 1:
+                h, m = self.schedule_times[0]
+                return f"每天 {h:02d}:{m:02d}"
+            return "每天 " + ", ".join(f"{h:02d}:{m:02d}"
+                                       for h, m in self.schedule_times)
         if self.schedule_type == "interval" and self.every_sec >= 5:
             if self.every_sec % 3600 == 0:
                 return f"每 {int(self.every_sec // 3600)} 小时"
@@ -169,13 +187,16 @@ class CronSpec:
         return "未知"
 
 
-def _next_daily(at: tuple[int, int], after: float) -> float:
-    """after 之后的下一个每日 HH:MM 时刻（本地时间）。"""
+def _next_daily(times: list[tuple[int, int]], after: float) -> float:
+    """after 之后的下一时刻：取 times（升序）中未来的最近一个；全过则明天最早。"""
     dt = datetime.fromtimestamp(after)
-    cand = dt.replace(hour=at[0], minute=at[1], second=0, microsecond=0)
-    if cand.timestamp() <= after:
-        cand += timedelta(days=1)
-    return cand.timestamp()
+    for h, m in sorted(times):
+        cand = dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        if cand.timestamp() > after:
+            return cand.timestamp()
+    h, m = min(times)
+    return (dt + timedelta(days=1)).replace(
+        hour=h, minute=m, second=0, microsecond=0).timestamp()
 
 
 class Scheduler:
@@ -298,8 +319,8 @@ class Scheduler:
                     "schedule": spec.schedule_desc,
                     # 编辑控件用的原始参数（schedule_desc 仅供展示）
                     "schedule_type": spec.schedule_type,
-                    "at": (f"{spec.schedule_at[0]:02d}:{spec.schedule_at[1]:02d}"
-                           if spec.schedule_at else None),
+                    "at": ([f"{h:02d}:{m:02d}" for h, m in spec.schedule_times]
+                           if spec.schedule_times else None),
                     "every_sec": spec.every_sec if spec.every_sec >= 5 else None,
                     "timeout_sec": spec.timeout_sec,
                     "catch_up": spec.catch_up,
@@ -324,20 +345,20 @@ class Scheduler:
 
     def _init_next_run(self, spec: CronSpec, now: float) -> float:
         """新任务的首次计划：daily 排到下一个时刻；interval 起算一个周期。"""
-        if spec.schedule_type == "daily" and spec.schedule_at:
-            return _next_daily(spec.schedule_at, now)
+        if spec.schedule_type == "daily" and spec.schedule_times:
+            return _next_daily(spec.schedule_times, now)
         return now + spec.every_sec
 
     def _defer_after_miss(self, spec: CronSpec, now: float) -> float:
         """错过且不补跑时的顺延目标：绝不回头补，只往前排。"""
-        if spec.schedule_type == "daily" and spec.schedule_at:
-            return _next_daily(spec.schedule_at, now)
+        if spec.schedule_type == "daily" and spec.schedule_times:
+            return _next_daily(spec.schedule_times, now)
         return now + spec.every_sec
 
     def _defer_after_run(self, spec: CronSpec, last_run: float, now: float) -> float:
         """执行完毕后的下一次计划：interval 按上次起算（已过期则从现在重新起算）。"""
-        if spec.schedule_type == "daily" and spec.schedule_at:
-            return _next_daily(spec.schedule_at, now)
+        if spec.schedule_type == "daily" and spec.schedule_times:
+            return _next_daily(spec.schedule_times, now)
         cand = last_run + spec.every_sec
         if cand <= now + 1:
             cand = now + spec.every_sec
@@ -448,6 +469,12 @@ class Scheduler:
                 stype = str(sched.get("type", "")).lower()
                 if stype not in ("daily", "interval"):
                     return False, "invalid", "schedule.type 仅支持 daily/interval"
+                if stype == "daily":
+                    at = sched.get("at")
+                    ok_at = (isinstance(at, str) or
+                             (isinstance(at, list) and len(at) > 0))
+                    if not ok_at:
+                        return False, "invalid", 'daily 的 at 需为 "HH:MM" 或非空时刻数组'
                 raw["schedule"] = sched
 
             def _write(payload: dict) -> bool:
