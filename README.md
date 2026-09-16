@@ -259,12 +259,12 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
 
 ```jsonc
 {
-  "path": "C:/path/to/your-service",       // ★ 脚本所在真实家（与服务注册条同语义）
+  "path": "C:/path/to/your-service",      // ★ 脚本所在真实家（与服务注册条同语义）
   "enabled": true,                          // false = 暂停调度（面板显示已停用）
-  "display": "每日签到",
-  "description": "工作日早上自动签到",
-  "entry": "checkin.ps1",                   // 相对 path；支持 .py/.ps1/.cmd/.bat/.exe
-  "args": [],
+  "display": "your-service 签到",
+  "description": "your-service 每日签到",
+  "entry": "run_all.py",                    // 相对 path；支持 .py/.ps1/.cmd/.bat/.exe
+  "args": ["--site", "example"],
   "cwd": ".",
   "schedule": {"type": "daily", "at": "08:30"},   // 或 {"type": "interval", "every_sec": 3600}
   "timeout_sec": 300,                       // 挂死保护（默认 300，下限 5s），超时 taskkill /T 树杀记失败
