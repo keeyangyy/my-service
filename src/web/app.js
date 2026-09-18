@@ -1400,7 +1400,7 @@
           row.className = "ev" + (fail ? " fail" : "");
           var ts = document.createElement("span");
           ts.className = "ev-ts";
-          ts.textContent = String(ev.ts || "").slice(11, 19);   // 只留时分秒
+          ts.textContent = String(ev.ts || "").slice(5, 19);   // MM-DD HH:MM:SS（跨天可区分）
           var svc = document.createElement("span");
           svc.className = "ev-svc";
           svc.textContent = ev.svc || "(host)";
