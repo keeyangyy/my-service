@@ -2,56 +2,56 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
-## 未发布
+## v0.11.0（2026-09-24）
 
-注册条瘦身：**声明与运行态分离**——面板怎么点，git 工作区都不脏。
+目录结构对齐 `C:\path\to\README.md` 三档模型，并把「声明 / 数据 / 记录」彻底分层：
+**升完整档**（run/src/data/logs）+ 注册条瘦身（声明与运行态分离）。
 
-### 背景
+### 组织模式（entry → run）
 
-面板/宿主对注册条的写入是「读原文 → 改一个字段 → 全量 dump」，于是点一下自启开关
-就会产生注册条 diff（本次工作区里那几处未提交改动就是这类噪音），与「注册条是配置、
-该进版本控制」的定位冲突。
+- `entry\` → **`run\`**（人的操作入口）。顺带解掉与注册条字段 `entry`（启动脚本）的撞名；
+  代码/脚本/README/启动文件夹 cmd 的引用一并更新（**自启需重装一次**以刷新启动 cmd）
+- `logs\` 与 `data\` 分离（判据：**删掉它，下次运行行为会变吗？** 会 → `data\`，不会 → `logs\`）
+  - `logs\` 保留记录：`host.jsonl`（登记簿）、`host.err.log`
+  - `data\` 承载数据：`host.pid`、`pids\`、`cron_state.json`、`cron_order.json`、
+    `service_order.json`、`service_runtime.json`、`cron_runtime.json`
+- `src\server.py`：`_setup_host_logging` 改为返回 `(logs_dir, data_dir)` 并分别注入
+  audit（logs）/ runner·Manager·Scheduler（data）；`HostController` 同步改持两目录
+- `src\core\runner.py`：`_RUNTIME_DIR` 语义改指 `data\`；`pidfile_path` 默认落 `data\pids\`
+- `src\ctl.ps1`：建 `data\`、`host.pid` 读写改指 `data\`
 
-### 变更
+### 注册条瘦身（声明 / 运行态分离）
+
+背景：面板/宿主对注册条的写入是「读原文 → 改一个字段 → 全量 dump」，点一下自启开关
+就会产生注册条 diff，与「注册条是配置、该进版本控制」的定位冲突。
 
 - `reg\*.json` 只保留**声明**（path/entry/args/cwd/env/mode/health/url/display/
   description/stop_script/pidfile）；`enabled`/`autostart`/`idle_timeout_sec` 三个
-  **运行态**字段迁到 `logs\service_runtime.json`（不入库）
+  **运行态**字段迁到 `data\service_runtime.json`（不入库）
 - 定时任务同构：`reg\cron\*.json` 只保留声明 + `schedule`（作「账本缺失时的默认计划」）；
-  `enabled`/`timeout_sec`/`catch_up` 迁到 `logs\cron_runtime.json`
-- 读取时合并（`Spec.RUNTIME_KEYS` / `CronSpec.RUNTIME_KEYS`）：**账本优先**，注册条里
-  的同名键只作**未迁移旧数据**的回落
+  `enabled`/`timeout_sec`/`catch_up` 迁到 `data\cron_runtime.json`
+- 读取时合并（`Spec.RUNTIME_KEYS` / `CronSpec.RUNTIME_KEYS`）：**账本优先**，注册条里的
+  同名键只作**未迁移旧数据**的回落
 - 面板四类写入（服务自启开关、空闲回收时长、任务时刻/开关/超时/补跑）只写账本；
   参数校验与「写后重解析 + 失败回滚」安全网保留，回滚对象改为账本
 - 注销注册条时同步清理账本条目；注册条被删/停用的语义不变
-- `.gitignore` 补 `*.tmp`（原子写中断残留可能被误跟踪）
-- 测试：旧用例由「断言注册条被写回」改为「注册条字节不变 + 账本更新」，新增分离语义
-  用例 10 个（账本优先 / 回落 / 重启保持 / 旧数据兼容 / 注销清账本），共 106 个用例全绿
+- 面板操作实测：`reg\` 6 个注册条字节零改动（改造前那些 diff 噪音不复存在）
+
+### 其他
+
+- `.gitignore`：新增 `data/`、补 `*.tmp`（原子写中断残留可能被误跟踪）
+- `README`：结构图重写（run/data/logs 分列）+ 全部路径引用同步
+- `reg\your-service.json`：`entry` 由 `server.py` 改 `src/server.py`（随被签服务结构改造）
+- 测试：旧用例由「断言注册条被写回」改为「注册条字节不变 + 账本更新」，新增分离语义用例
+  10 个（账本优先 / 回落 / 重启保持 / 旧数据兼容 / 注销清账本），共 **106 个用例全绿**
 
 ### 注意
 
-- 运行态不入库带来的取舍：清 `logs\` 或换机器后回落默认值——服务侧 `enabled=true`、
+- **升级动作**：需**重启宿主一次**（改动在内存中生效），并**重装一次自启**
+  （`run\install_autostart.ps1`，刷新启动文件夹 cmd 里写死的 `entry\` 路径）
+- 运行态不入库的取舍：清 `data\` 或换机器后回落默认值——服务侧 `enabled=true`、
   `autostart=false`、`idle_timeout_sec=600`；任务侧回落到注册条里保留的 `schedule` 默认计划
   （这正是 cron 注册条不把 `schedule` 一并迁走的原因：清了账本也不至于让任务哑掉）
-- 已部署实例需**重启宿主一次**（改动在内存中生效）
-
-## 未发布
-
-目录结构对齐 `C:\path\to\README.md` 三档模型：**升完整档**（run/src/data/logs），
-日志与数据彻底分开。
-
-### 变更
-
-- `entry\` → **`run\`**（人的操作入口）。顺带解掉与注册条字段 `entry`（启动脚本）的撞名；
-  代码/脚本/README/启动文件夹 cmd 的引用一并更新（自启需重装一次以刷新启动 cmd）
-- **新增 `data\`**：`logs\` 里属于**数据**的文件全部迁出——`host.pid`、`pids\`、
-  `cron_state.json`、`cron_order.json`、`service_order.json`、`service_runtime.json`、
-  `cron_runtime.json`；`logs\` 此后只剩记录（`host.jsonl` + `host.err.log`）
-- 分界判据：**删掉它，下次运行行为会变吗？** 会 → `data\`，不会 → `logs\`
-  （记录只丢历史；数据丢了会回落默认值、判不出进程状态、丢失面板改动）
-- `server.py`：`_setup_host_logging` 改为返回 `(logs_dir, data_dir)` 并分别注入
-  audit（logs）/ runner·Manager·Scheduler（data）；`HostController` 同改
-- `.gitignore`：新增 `data/`；`README` 结构图与全部路径引用同步
 
 ## v0.10.1（2026-09-08）
 
