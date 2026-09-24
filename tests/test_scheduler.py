@@ -49,6 +49,19 @@ class _Sandbox:
         return Scheduler(self.reg, self.root / "state.json",
                          self.root / "order.json")
 
+    def runtime(self, name: str | None = None) -> dict:
+        """读运行态账本（logs\\cron_runtime.json 的沙箱等价物）；给 name 则返回该条。"""
+        try:
+            data = json.loads((self.root / "cron_runtime.json")
+                              .read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - 账本缺失即空
+            data = {}
+        return data.get(name, {}) if name else data
+
+    def reg_bytes(self, name: str) -> bytes:
+        """注册条原始字节：断言"运行态写入一个字节都不动"用。"""
+        return (self.reg / f"{name}.json").read_bytes()
+
     @staticmethod
     def wait_running(sched: Scheduler, name: str, timeout: float = 5.0) -> bool:
         """轮询等待异步执行线程进入 running（tick 发射是异步的，有窗口）。"""
@@ -243,12 +256,13 @@ class TestRunNowAndPersist(unittest.TestCase):
         self.sched.scan()                               # 注册条已删 → 账目清零
         self.assertNotIn("t", self.sched.persist)
 
-    def test_toggle_enabled_writes_back_and_takes_effect(self):
+    def test_toggle_enabled_writes_ledger_and_takes_effect(self):
+        before = self.box.reg_bytes("t")
         ok, _ = self.sched.toggle_enabled("t", False)
         self.assertTrue(ok)
-        # 权威值回写注册条
-        raw = json.loads((self.box.reg / "t.json").read_text(encoding="utf-8"))
-        self.assertIs(raw["enabled"], False)
+        # 权威值只进运行态账本；注册条一个字节不动
+        self.assertIs(self.box.runtime("t")["enabled"], False)
+        self.assertEqual(self.box.reg_bytes("t"), before)
         # 内存态同步 → tick 不再调度
         snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
         self.assertIs(snap["enabled"], False)
@@ -262,6 +276,7 @@ class TestRunNowAndPersist(unittest.TestCase):
         self.sched.tick()
         snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
         self.assertTrue(snap["enabled"] and snap["next_run"])
+        self.assertEqual(self.box.reg_bytes("t"), before, "开关不该改注册条")
 
     def test_toggle_enabled_unknown_task(self):
         ok, msg = self.sched.toggle_enabled("ghost", False)
@@ -320,10 +335,13 @@ class TestUpdateConfig(unittest.TestCase):
         return {x["name"]: x for x in self.sched.snapshot()}[name]
 
     def test_change_daily_at_rewrites_and_reschedules(self):
+        before = self.box.reg_bytes("d")
         ok, code, _ = self.sched.update_config("d", {"schedule":
                                 {"type": "daily", "at": "07:15"}})
         self.assertTrue(ok, code)
-        self.assertEqual(self._raw("d")["schedule"]["at"], "07:15")
+        # 新时刻只进运行态账本；注册条里留的是"默认计划"，一个字节不动
+        self.assertEqual(self.box.runtime("d")["schedule"]["at"], "07:15")
+        self.assertEqual(self.box.reg_bytes("d"), before)
         snap = self._snap("d")
         self.assertEqual(snap["at"], ["07:15"])
         self.assertEqual(snap["schedule"], "每天 07:15")
@@ -332,28 +350,35 @@ class TestUpdateConfig(unittest.TestCase):
         self.assertEqual(datetime.fromtimestamp(snap["next_run"]).minute, 15)
 
     def test_change_daily_multi_at(self):
+        before = self.box.reg_bytes("d")
         ok, code, _ = self.sched.update_config(
             "d", {"schedule": {"type": "daily", "at": ["09:30", "21:00"]}})
         self.assertTrue(ok, code)
-        self.assertEqual(self._raw("d")["schedule"]["at"], ["09:30", "21:00"])
+        self.assertEqual(self.box.runtime("d")["schedule"]["at"],
+                         ["09:30", "21:00"])
+        self.assertEqual(self.box.reg_bytes("d"), before)
         snap = self._snap("d")
         self.assertEqual(snap["at"], ["09:30", "21:00"])
         self.assertEqual(snap["schedule"], "每天 09:30, 21:00")
 
     def test_change_interval_every_sec(self):
+        before = self.box.reg_bytes("i")
         ok, code, _ = self.sched.update_config("i", {"schedule":
                                 {"type": "interval", "every_sec": 1800}})
         self.assertTrue(ok, code)
-        self.assertEqual(self._raw("i")["schedule"]["every_sec"], 1800)
+        self.assertEqual(self.box.runtime("i")["schedule"]["every_sec"], 1800)
+        self.assertEqual(self.box.reg_bytes("i"), before)
         self.assertEqual(self._snap("i")["schedule"], "每 30 分钟")
 
     def test_change_timeout_and_catch_up(self):
+        before = self.box.reg_bytes("d")
         ok, _, _ = self.sched.update_config(
             "d", {"timeout_sec": 60, "catch_up": True})
         self.assertTrue(ok)
-        raw = self._raw("d")
-        self.assertEqual(raw["timeout_sec"], 60.0)
-        self.assertIs(raw["catch_up"], True)
+        rt = self.box.runtime("d")
+        self.assertEqual(rt["timeout_sec"], 60.0)
+        self.assertIs(rt["catch_up"], True)
+        self.assertEqual(self.box.reg_bytes("d"), before)
         snap = self._snap("d")
         self.assertEqual(snap["timeout_sec"], 60.0)
         self.assertIs(snap["catch_up"], True)
@@ -365,7 +390,8 @@ class TestUpdateConfig(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(code, "invalid")
         self.assertIn("回滚", msg)
-        # 注册条必须原样恢复，且内存 spec 仍是旧的合法状态
+        # 注册条一个字节不动；账本里的 schedule 必须回滚（不留半截配置）
+        self.assertNotIn("schedule", self.box.runtime("d"))
         self.assertEqual(self._raw("d")["schedule"], before["schedule"])
         snap = self._snap("d")
         self.assertTrue(snap["valid"], snap["error"])
@@ -375,12 +401,14 @@ class TestUpdateConfig(unittest.TestCase):
         ok, code, _ = self.sched.update_config(
             "i", {"schedule": {"type": "interval", "every_sec": 2}})
         self.assertFalse(ok and code == "invalid")
+        self.assertNotIn("schedule", self.box.runtime("i"))
         self.assertEqual(self._raw("i")["schedule"]["every_sec"], 600)
 
     def test_unknown_type_and_task(self):
         ok, code, _ = self.sched.update_config(
             "d", {"schedule": {"type": "weekly", "at": "08:00"}})
         self.assertFalse(ok and code == "invalid")
+        self.assertEqual(self.box.runtime("d"), {}, "粗校验失败不该写账本")
         self.assertEqual(self._raw("d")["schedule"]["type"], "daily")
         self.assertEqual(self.sched.update_config("ghost", {"catch_up": True})[1],
                          "not_found")
@@ -388,15 +416,89 @@ class TestUpdateConfig(unittest.TestCase):
     def test_enabled_patch_still_works_via_toggle(self):
         ok, msg = self.sched.toggle_enabled("d", False)
         self.assertTrue(ok, msg)
-        self.assertIs(self._raw("d")["enabled"], False)
+        self.assertIs(self.box.runtime("d")["enabled"], False)
         self.assertIs(self._snap("d")["enabled"], False)
 
     def test_other_fields_preserved_on_write(self):
-        """写回不得丢失未编辑的字段（display/entry/path 等）。"""
+        """运行态写入不得碰注册条任何字段（display/entry/path/schedule 默认计划都在）。"""
+        before = self.box.reg_bytes("d")
         self.sched.update_config("d", {"timeout_sec": 45})
         raw = self._raw("d")
         for key in ("path", "entry", "schedule", "display"):
             self.assertIn(key, raw)
+        self.assertEqual(self.box.reg_bytes("d"), before)
+
+
+class TestRuntimeLedger(unittest.TestCase):
+    """声明与运行态分离：账本优先、注册条回落、重启保持、旧数据兼容。"""
+
+    def setUp(self):
+        self.box = _Sandbox()
+        self.box.put("t", schedule={"type": "daily", "at": "23:00"})
+        self.sched = self.box.sched()
+        self.sched.scan()
+
+    def tearDown(self):
+        self.box.cleanup()
+
+    def test_ledger_overrides_reg_default(self):
+        """账本里有计划就用账本；注册条里的"默认计划"让位，且自身不被改写。"""
+        before = self.box.reg_bytes("t")
+        self.sched.update_config("t", {"schedule": {"type": "daily", "at": "06:30"}})
+        self.assertEqual(self.box.reg_bytes("t"), before)
+        s2 = self.box.sched()            # 重启（新实例重读账本）
+        s2.scan()
+        self.assertEqual(s2.snapshot()[0]["at"], ["06:30"])
+
+    def test_falls_back_to_reg_default_without_ledger(self):
+        """账本被清空 → 回落注册条里的默认计划，任务不至于哑掉。"""
+        self.sched.update_config("t", {"schedule": {"type": "daily", "at": "06:30"}})
+        (self.box.root / "cron_runtime.json").unlink()
+        s2 = self.box.sched()
+        s2.scan()
+        self.assertTrue(s2.specs["t"].valid, s2.specs["t"].error)
+        self.assertEqual(s2.snapshot()[0]["at"], ["23:00"])
+
+    def test_old_reg_fields_still_honored(self):
+        """未迁移旧数据：注册条里的 enabled/timeout_sec 仍读得到（账本无该键）。"""
+        self.box.put("legacy", schedule={"type": "interval", "every_sec": 600},
+                     enabled=False, timeout_sec=45)
+        s = self.box.sched()
+        s.scan()
+        spec = s.specs["legacy"]
+        self.assertIs(spec.enabled, False)
+        self.assertEqual(spec.timeout_sec, 45.0)
+
+    def test_ledger_wins_over_legacy_reg_field(self):
+        """账本与注册条同时有该键 → 账本胜。"""
+        self.box.put("legacy", schedule={"type": "interval", "every_sec": 600},
+                     enabled=False)
+        (self.box.root / "cron_runtime.json").write_text(
+            json.dumps({"legacy": {"enabled": True}}), encoding="utf-8")
+        s = self.box.sched()
+        s.scan()
+        self.assertIs(s.specs["legacy"].enabled, True)
+
+    def test_migrated_shape_reads_from_ledger(self):
+        """迁移后形态：注册条只剩声明（+默认计划），其余全部从账本读。"""
+        (self.box.root / "cron_runtime.json").write_text(json.dumps({
+            "t": {"enabled": False, "timeout_sec": 120.0, "catch_up": True,
+                  "schedule": {"type": "daily", "at": ["08:00"]}},
+        }), encoding="utf-8")
+        s = self.box.sched()
+        s.scan()
+        snap = {x["name"]: x for x in s.snapshot()}["t"]
+        self.assertIs(snap["enabled"], False)
+        self.assertEqual(snap["timeout_sec"], 120.0)
+        self.assertIs(snap["catch_up"], True)
+        self.assertEqual(snap["at"], ["08:00"])
+
+    def test_registration_removed_clears_runtime_ledger(self):
+        """注册条被删 → 运行态账本条目一并清（不留孤儿）。"""
+        self.sched.update_config("t", {"timeout_sec": 90})
+        (self.box.reg / "t.json").unlink()
+        self.sched.scan()
+        self.assertNotIn("t", self.box.runtime())
 
 
 class TestOrdering(unittest.TestCase):

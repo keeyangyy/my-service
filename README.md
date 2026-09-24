@@ -152,8 +152,11 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 
 ```jsonc
 {
+  // ★ 只放声明：enabled / autostart / idle_timeout_sec 属运行态，实际存
+  //   logs\service_runtime.json（不入库，面板改它们不动本文件）；
+  //   此处列出的值是默认值——账本缺该键时回落到这里
   "path": "C:/path/to/your-service",              // ★ 服务真实家（绝对路径或相对 reg\ 目录）
-  "enabled": true,                 // false = 暂时停用（不参与编排）
+  "enabled": true,                 // 运行态：false = 暂时停用（不参与编排）
   "display": "SomeService",
   "description": "AI agent 通信网关",
   "entry": "start.ps1",            // 相对 path；支持 .py/.ps1/.cmd/.bat/.exe
@@ -162,14 +165,14 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
   "mode": "managed",               // managed=托管进程树 | detached=点火器型(官方启停脚本)
                                    // on_demand=按需（点开即启、空闲自动回收，需 health.type=http）
                                    // detached 需 stop_script 或 pidfile 之一；health 禁 process
-  "idle_timeout_sec": 600,         // 可选，仅 on_demand：最后业务请求起、认为"用完"的空闲秒数
+  "idle_timeout_sec": 600,         // 运行态，仅 on_demand：最后业务请求起、认为"用完"的空闲秒数
   "health": { "type": "http", "url": "http://localhost:8090/health", "timeout_sec": 60 },
                                    // type: port|http|process|none
   "url": "http://localhost:8090/", // 可选：服务自带网页，Dashboard 一键 ↗
   "env": {"SOME-SERVICE_NO_WAIT": "1"}, // 附加环境变量
   "stop_script": "stop.ps1",       // 可选：停止时先执行的灭火脚本（相对 path）
   "pidfile": "run/app.pid",        // 可选：pid 文件(相对 path)——process 型防双开判据
-  "autostart": true                // 权威值存此，前端开关回写这里
+  "autostart": true                // 运行态：权威值存 logs\service_runtime.json（面板开关写它）
 }
 ```
 
@@ -259,8 +262,10 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
 
 ```jsonc
 {
+  // ★ 只放声明：enabled / timeout_sec / catch_up 属运行态（存 logs\cron_runtime.json）；
+  //   schedule 是"账本缺失时的默认计划"——面板改的时刻只进账本，不写这里
   "path": "C:/path/to/your-service",      // ★ 脚本所在真实家（与服务注册条同语义）
-  "enabled": true,                          // false = 暂停调度（面板显示已停用）
+  "enabled": true,                          // 运行态：false = 暂停调度（面板显示已停用）
   "display": "your-service 签到",
   "description": "your-service 每日签到",
   "entry": "run_all.py",                    // 相对 path；支持 .py/.ps1/.cmd/.bat/.exe
@@ -283,9 +288,9 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
 - **错过**（宿主关闭/睡眠/执行超长导致，宽限阈 60 秒）：`catch_up: true` 立即
   补跑一次（签到类建议开）；默认 `false` 只登记 `cron_skip` 并顺延到下一合法
   时刻，开机绝不齐跑
-- **开关**：面板滑块（同服务自启滑块）控制是否参与调度，权威值回写注册条
-  `enabled` 字段；只影响下一次触发，正在跑的一轮自然跑完；停用期间不排新计划，
-  重新启用即恢复
+- **开关**：面板滑块（同服务自启滑块）控制是否参与调度，权威值只写运行态账本
+  （`logs\cron_runtime.json`）；只影响下一次触发，正在跑的一轮自然跑完；停用期间
+  不排新计划，重新启用即恢复
 - **拖拽排序**：**服务列表与定时任务列表都支持**——行首把手 `⠿`，按住即可上下拖动，
   松手自动保存（服务存 `logs\service_order.json`、任务存 `logs\cron_order.json`，
   均为框架侧记账，不污染注册条）；新注册的服务/任务自动排在末尾，不打乱你排好的顺序；
@@ -295,10 +300,10 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
   `▶ 立即运行` + `⚙ 设置` + `事件`）；点 `⚙ 设置` 展开配置面板，内部分**两个带标题的分区**——
   **执行时机**（模式分段按钮二选一：定时执行 / 间隔执行 + 时刻选择器或间隔数值+单位）
   与**异常保护**（`⏲ 超时保护`秒数＝卡死强杀阈值、`补跑`开关），并附一行说明点明
-  "两者都不改变执行频率"；改完即原子写回注册条并即时生效（无需重启宿主）
+  "两者都不改变执行频率"；改完即原子写运行态账本并即时生效（无需重启宿主）
   - 为什么分区：超时保护与"多久跑一次"是两个维度，平铺摆放曾被误读成第三种调度方式
   - 改调度时间会**立即重算下次执行时刻**（否则面板显示新时间、实际仍按旧时间触发）
-  - 写回前用注册条规则重解析校验，不合法则**拒绝并回滚**，绝不留坏注册条
+  - 写账本前用注册条规则重解析校验，不合法则**拒绝并回滚**，绝不留坏配置
   - 模式切换保留两种模式各自的最后已知值（本会话内），误点不会把原时间冲掉
   - 展开态跨轮询保持；正在输入的框不被轮询打断
   - 坏注册条（invalid）的配置面板控件与 `⚙ 设置` 按钮一律禁用（面板改不了根因）
@@ -404,7 +409,7 @@ JS，带 JSON 的请求还会先发 `OPTIONS` 预检、没被应答就根本不�
 | 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
 | REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/order`(`{"names":[...]}` 拖拽排序)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/services/{svc}/config`(补丁：`idle_timeout_sec`，仅 on_demand，面板 `⚙ 设置` 用)、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/order`(`{"names":[...]}` 拖拽排序)、`POST /api/crons/{name}/config`(补丁：`enabled`/`catch_up`/`timeout_sec`/`schedule` 任意组合，面板行内编辑用)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
-| 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条或 `"enabled": false` |
+| 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条（**停用**走面板开关，记运行态账本） |
 
 ## 快速上手
 

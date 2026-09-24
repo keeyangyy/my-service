@@ -1,5 +1,9 @@
+# 运行时产物
 logs/
 tmp/
 context/
 __pycache__/
 *.pyc
+
+# 原子写残留（注册条/账本写入中断留下的 *.json.tmp）
+*.tmp

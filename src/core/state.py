@@ -30,25 +30,38 @@ def _dur(t0: float) -> int:
 
 class Manager:
     def __init__(self, scanner: Scanner, order_path: Path | None = None,
-                 cron_specs_provider=None):
+                 cron_specs_provider=None, runtime_path: Path | None = None):
         """cron_specs_provider: 可选的可调用对象，返回 {任务名: CronSpec}。
 
         用于把定时任务按路径归属到服务（见 core/linkage.py）。不传即无关联，
         面板该区块显示为空——单测与纯服务场景不依赖调度器。
+
+        runtime_path: 运行态账本（logs\\service_runtime.json 的家）；缺省取
+        order_path 同目录的 service_runtime.json；都没有即纯内存不落盘。
         """
         self.scanner = scanner
         self.cron_specs_provider = cron_specs_provider
         self.order_path = Path(order_path) if order_path else None
+        if runtime_path is not None:
+            self.runtime_path: Path | None = Path(runtime_path)
+        elif self.order_path is not None:
+            self.runtime_path = self.order_path.parent / "service_runtime.json"
+        else:
+            self.runtime_path = None
         self.specs: dict[str, Spec] = {}
         self.handles: dict[str, runner.ProcessHandle] = {}
         # svc -> 状态字典：status/started_at/error/fail_at
         self.state: dict[str, dict] = {}
         self._order: list[str] = []          # 面板拖拽顺序（持久化在 order_path）
+        self._runtime: dict[str, dict] = {}  # 服务名 → 运行态账面值（持久化在 runtime_path）
         self._user_stopping: set[str] = set()   # 区分"用户主动停"与"崩溃"
         self._pending_stop: dict[str, float] = {}  # stop 发起时刻，stopping 超时兜底
         self._idle_reaping: set[str] = set()    # on_demand 空闲回收进行中（防重复触发）
         self.lock = threading.RLock()
         self._load_order()
+        self._load_runtime()
+        # Scanner 每轮扫描向 Manager 取运行态：声明（注册条）与运行态的合并点
+        self.scanner.runtime_provider = self.runtime_snapshot
         self.refresh()
 
     # ------------------------------------------------------------ 顺序账本
@@ -74,6 +87,48 @@ class Manager:
             os.replace(tmp, self.order_path)
         except OSError:
             pass
+
+    # ------------------------------------------------------------ 运行态账本
+    def _load_runtime(self) -> None:
+        """读 logs\\service_runtime.json；缺失/损坏都从零开始（回落注册条或字段缺省）。"""
+        if not self.runtime_path:
+            return
+        try:
+            data = json.loads(self.runtime_path.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                self._runtime = {str(k): v for k, v in data.items()
+                                 if isinstance(v, dict)}
+        except Exception:  # noqa: BLE001
+            self._runtime = {}
+
+    def _save_runtime(self) -> bool:
+        """原子写运行态账本（临时文件 + os.replace）。无 runtime_path 即纯内存，视为成功。"""
+        if not self.runtime_path:
+            return True
+        try:
+            import tempfile
+
+            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(self.runtime_path.parent), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._runtime, ensure_ascii=False, indent=1) + "\n")
+            os.replace(tmp, self.runtime_path)
+            return True
+        except OSError:
+            return False
+
+    def runtime_snapshot(self) -> dict[str, dict]:
+        """运行态账面值快照（Scanner 每轮扫描时取用）。"""
+        with self.lock:
+            return {k: dict(v) for k, v in self._runtime.items()}
+
+    def _set_runtime(self, name: str, patch: dict) -> bool:
+        """只写运行态账本（白名单过滤，绝不碰注册条）。返回是否落盘成功。"""
+        with self.lock:
+            cur = dict(self._runtime.get(name) or {})
+            cur.update({k: v for k, v in patch.items() if k in Spec.RUNTIME_KEYS})
+            self._runtime[name] = cur
+            return self._save_runtime()
 
     def _ordered_names(self) -> list[str]:
         """按拖拽顺序返回服务名；未入册的新服务按字母序追加末尾（不打乱已有顺序）。"""
@@ -359,39 +414,25 @@ class Manager:
                 self._idle_reaping.discard(name)
 
     def toggle_autostart(self, name: str, value: bool) -> tuple[bool, str]:
+        """面板自启开关：只改运行态账本（logs\\service_runtime.json），注册条一个字节不动。"""
         with self.lock:
             spec = self.specs.get(name)
             if spec is None:
                 return False, f"未知服务 {name}"
             if spec.mode == "on_demand":
                 return False, "on_demand 模式按需启动，不支持设置自启"
-            try:
-                raw = json.loads(spec.reg_path.read_text(encoding="utf-8-sig"))
-            except Exception as exc:  # noqa: BLE001
-                return False, f"读注册条失败: {exc}"
-            raw["autostart"] = bool(value)
-            try:
-                import os
-                import tempfile
-
-                text = json.dumps(raw, ensure_ascii=False, indent=2)
-                # 先写临时文件再原子替换，避免中途崩溃损坏注册条
-                fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
-                                           suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(text + "\n")
-                os.replace(tmp, spec.reg_path)
-            except Exception as exc:  # noqa: BLE001
-                return False, f"写注册条失败: {exc}"
-            spec.autostart = bool(value)
+            value = bool(value)
+            if not self._set_runtime(name, {"autostart": value}):
+                return False, "写运行态账本失败"
+            spec.autostart = value
             return True, "ok"
 
     def update_config(self, name: str, patch: dict) -> tuple[bool, str, str]:
-        """面板设置：改注册条的可编辑项。当前支持 `idle_timeout_sec`。
+        """面板设置：改服务的可编辑项。当前支持 `idle_timeout_sec`（运行态）。
 
-        与 Scheduler.update_config 同一套安全网：读原文备份 → 应用补丁 →
-        原子写 → 用 Spec 重解析校验，判无效则**回滚原文本**并报错——绝不留
-        一个坏注册条（否则服务直接变 invalid 不可用）。
+        只写 logs\\service_runtime.json，注册条一个字节不动。安全网保留：范围校验
+        → 记账本 → 用新运行态重解析 Spec 校验，判无效则**回滚账本**并报错——绝不
+        留一个坏配置（否则服务直接变 invalid 不可用）。
 
         返回 (ok, code, message)；code ∈ ok / not_found / invalid / io。
         """
@@ -404,52 +445,33 @@ class Manager:
             if "idle_timeout_sec" in patch and spec.mode != "on_demand":
                 return False, "invalid", ("idle_timeout_sec 仅 on_demand 服务可配；"
                                           f"{name} 当前为 {spec.mode}")
+            patch = {k: v for k, v in patch.items() if k in Spec.RUNTIME_KEYS}
             if not patch:
                 return False, "invalid", "没有需要修改的字段"
 
-            try:
-                old_text = spec.reg_path.read_text(encoding="utf-8-sig")
-                raw = json.loads(old_text)
-                if not isinstance(raw, dict):
-                    raise ValueError("注册条根节点不是对象")
-            except Exception as exc:  # noqa: BLE001
-                return False, "io", f"读注册条失败: {exc}"
-
-            # ---- 应用补丁（粗校验；细校验交给写后重解析）----
             if "idle_timeout_sec" in patch:
                 try:
                     val = float(patch["idle_timeout_sec"])
                 except (TypeError, ValueError):
                     return False, "invalid", "idle_timeout_sec 需为数字"
                 # ★ 显式拒绝越界，不能让 Spec 的 clamp 悄悄吞掉：
-                #   否则注册条留下 5、实际生效 60，文件与内存不一致且面板回弹无解释。
+                #   否则账本留下 5、实际生效 60，账本与内存不一致且面板回弹无解释。
                 if val < IDLE_MIN_SEC or val > IDLE_MAX_SEC:
                     return False, "invalid", (
                         f"idle_timeout_sec 需在 {int(IDLE_MIN_SEC)} ~ "
                         f"{int(IDLE_MAX_SEC)} 秒之间")
-                raw["idle_timeout_sec"] = int(val)   # 落盘统一整数，避免 900.0/900 混写
+                patch["idle_timeout_sec"] = int(val)   # 落盘统一整数，避免 900.0/900 混写
 
-            def _write(payload: dict) -> bool:
-                try:
-                    import os
-                    import tempfile
+            old_runtime = dict(self._runtime.get(name) or {})
+            if not self._set_runtime(name, patch):
+                return False, "io", "写运行态账本失败"
 
-                    fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
-                                               suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        fh.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-                    os.replace(tmp, spec.reg_path)
-                    return True
-                except Exception:  # noqa: BLE001
-                    return False
-
-            if not _write(raw):
-                return False, "io", "写注册条失败"
-
-            # ---- 写后校验：新配置必须自身合法，否则回滚 ----
-            new_spec = Spec(name, spec.reg_path, spec.adapter_dir)
+            # ---- 写后校验：新运行态必须让注册条仍然合法，否则回滚账本 ----
+            new_spec = Spec(name, spec.reg_path, spec.adapter_dir,
+                            runtime=self._runtime.get(name))
             if not new_spec.valid:
-                _write(json.loads(old_text))   # 回滚，不留坏注册条
+                self._runtime[name] = old_runtime   # 回滚，不留坏配置
+                self._save_runtime()
                 return False, "invalid", (new_spec.error
                                           or "新配置不合法，已回滚")
             self.specs[name] = new_spec

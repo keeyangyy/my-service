@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""my-service · core/scanner.py — 注册中心（reg 唯一源）
+r"""my-service · core/scanner.py — 注册中心（reg 唯一源）
 
 发现机制：只扫 my-service\\reg\\*.json —— 框架的"花名册"。
 每个注册条声明服务的真实家（path）；entry/cwd/stop_script 等相对 path 解析。
@@ -7,8 +7,16 @@
 
 铁律重申：
 - 注册 = 在 reg\\ 放一个 <服务名>.json
-- 注销 = 删除该文件或 "enabled": false
+- 注销 = 删除该文件（**停用**走面板开关：enabled/autostart 属运行态，见下）
 - 不改动第三方软件目录一个字节（some-service 便携目录零侵入）
+
+声明与运行态分离（2026-09 起）：
+- reg\*.json 只放**声明**：path/entry/args/cwd/env/mode/health/url/display/description 等，
+  写一次就长期不变，进版本控制（换机器/给别人都有意义）。
+- **运行态**：enabled（启停）、autostart（自启）、idle_timeout_sec（空闲回收时长），
+  面板/宿主随时可改，落 logs\service_runtime.json，不入库。
+- 读取时由 runtime_provider 合并：账本优先，注册条里的同名键只作**未迁移旧数据**的回落。
+- 目的：面板怎么点，git 工作区都不脏。
 """
 from __future__ import annotations
 
@@ -27,16 +35,22 @@ class Spec:
     valid=False 时 error 携带原因，前端以 invalid 展示，不参与编排。
     """
 
-    def __init__(self, name: str, reg_path: Path, adapter_dir: Path | None = None):
+    # 运行态字段：面板/宿主随时改，不入库。生效值取自 logs\service_runtime.json；
+    # 注册条里的同名键只作**未迁移旧数据**的回落（见 README「声明与运行态分离」）。
+    RUNTIME_KEYS = ("enabled", "autostart", "idle_timeout_sec")
+
+    def __init__(self, name: str, reg_path: Path, adapter_dir: Path | None = None,
+                 runtime: dict | None = None):
         self.folder = name                       # 服务名 = 注册文件名（去 .json）
-        self.reg_path = reg_path                 # reg\\<name>.json（开关回写此处）
-        self.raw: dict = {}
+        self.reg_path = reg_path                 # reg\\<name>.json（只读声明；开关等运行态见 logs\\service_runtime.json）
+        self.raw: dict = {}                      # 注册条原文（声明部分）
+        self.runtime: dict = {}                  # 本条运行态账面值（生效值来源）
         self.valid: bool = True
         self.error: str | None = None
         self.path: Path = Path('.')              # 服务真实家（注册条 path 字段）
         self.adapter_dir = adapter_dir           # my-service\adapters（可选转接层根）
 
-        # ---- 声明字段 ----
+        # ---- 声明字段（含运行态字段的缺省值）----
         self.enabled: bool = True
         self.display: str = name
         self.description: str = ""
@@ -66,8 +80,13 @@ class Spec:
             self.error = f"注册条解析失败: {exc}"
             return
 
+        # ---- 声明 + 运行态合并：账本值覆盖注册条同名键（后者只作旧数据回落）----
+        self.runtime = {k: runtime[k] for k in self.RUNTIME_KEYS
+                        if isinstance(runtime, dict) and k in runtime}
+        view = {**data, **self.runtime}
+
         def _get(key, default):
-            return data.get(key, default)
+            return view.get(key, default)
 
         raw_path = _get("path", None)
         if not isinstance(raw_path, str) or not raw_path.strip():
@@ -178,15 +197,27 @@ class Spec:
 class Scanner:
     """定期重扫 reg\\*.json——注册中心是唯一发现源。"""
 
-    def __init__(self, reg_dir: Path):
+    def __init__(self, reg_dir: Path, runtime_provider=None):
+        """runtime_provider: 可选可调用对象，返回 {服务名: {运行态键: 值}}。
+
+        由 Manager 提供（logs\\service_runtime.json 的内存态）；不传即纯声明解读，
+        运行态回落注册条同名键（未迁移旧数据、单测与脚本直调都走这条路）。
+        """
         self.reg_dir = reg_dir.resolve()
         self.adapter_dir = reg_dir.parent / "adapters"
+        self.runtime_provider = runtime_provider
 
     def scan(self) -> dict[str, Spec]:
         specs: dict[str, Spec] = {}
         if not self.reg_dir.is_dir():
             return specs
+        runtime: dict = {}
+        if self.runtime_provider is not None:
+            try:
+                runtime = self.runtime_provider() or {}
+            except Exception:  # noqa: BLE001 - 运行态账本异常不该让整轮扫描失败
+                runtime = {}
         for f in sorted(self.reg_dir.glob("*.json")):
-            spec = Spec(f.stem, f, self.adapter_dir)
+            spec = Spec(f.stem, f, self.adapter_dir, runtime=runtime.get(f.stem))
             specs[spec.folder] = spec
         return specs

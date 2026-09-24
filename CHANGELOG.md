@@ -2,6 +2,39 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## 未发布
+
+注册条瘦身：**声明与运行态分离**——面板怎么点，git 工作区都不脏。
+
+### 背景
+
+面板/宿主对注册条的写入是「读原文 → 改一个字段 → 全量 dump」，于是点一下自启开关
+就会产生注册条 diff（本次工作区里那几处未提交改动就是这类噪音），与「注册条是配置、
+该进版本控制」的定位冲突。
+
+### 变更
+
+- `reg\*.json` 只保留**声明**（path/entry/args/cwd/env/mode/health/url/display/
+  description/stop_script/pidfile）；`enabled`/`autostart`/`idle_timeout_sec` 三个
+  **运行态**字段迁到 `logs\service_runtime.json`（不入库）
+- 定时任务同构：`reg\cron\*.json` 只保留声明 + `schedule`（作「账本缺失时的默认计划」）；
+  `enabled`/`timeout_sec`/`catch_up` 迁到 `logs\cron_runtime.json`
+- 读取时合并（`Spec.RUNTIME_KEYS` / `CronSpec.RUNTIME_KEYS`）：**账本优先**，注册条里
+  的同名键只作**未迁移旧数据**的回落
+- 面板四类写入（服务自启开关、空闲回收时长、任务时刻/开关/超时/补跑）只写账本；
+  参数校验与「写后重解析 + 失败回滚」安全网保留，回滚对象改为账本
+- 注销注册条时同步清理账本条目；注册条被删/停用的语义不变
+- `.gitignore` 补 `*.tmp`（原子写中断残留可能被误跟踪）
+- 测试：旧用例由「断言注册条被写回」改为「注册条字节不变 + 账本更新」，新增分离语义
+  用例 10 个（账本优先 / 回落 / 重启保持 / 旧数据兼容 / 注销清账本），共 106 个用例全绿
+
+### 注意
+
+- 运行态不入库带来的取舍：清 `logs\` 或换机器后回落默认值——服务侧 `enabled=true`、
+  `autostart=false`、`idle_timeout_sec=600`；任务侧回落到注册条里保留的 `schedule` 默认计划
+  （这正是 cron 注册条不把 `schedule` 一并迁走的原因：清了账本也不至于让任务哑掉）
+- 已部署实例需**重启宿主一次**（改动在内存中生效）
+
 ## v0.10.1（2026-09-08）
 
 修 v0.10.0 自己带进去的一处小 bug。

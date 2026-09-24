@@ -151,6 +151,18 @@ class TestServiceUpdateConfig(unittest.TestCase):
     def _raw(self, name):
         return json.loads((self.reg / f"{name}.json").read_text(encoding="utf-8"))
 
+    def _rt(self, name):
+        """运行态账本条目（logs\\service_runtime.json 的沙箱等价物）；无记录即空。"""
+        try:
+            data = json.loads((self.root / "service_runtime.json")
+                              .read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {}
+        return data.get(name, {})
+
+    def _reg_bytes(self, name):
+        return (self.reg / f"{name}.json").read_bytes()
+
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -159,10 +171,13 @@ class TestServiceUpdateConfig(unittest.TestCase):
 
     # ---- 成功路径 ----
     def test_save_idle(self):
+        """改空闲回收时长：只写运行态账本，注册条一个字节不动。"""
+        before = self._reg_bytes("svc-od")
         ok, code, msg = self.mgr.update_config("svc-od", {"idle_timeout_sec": 900})
         self.assertTrue(ok, msg)
-        self.assertEqual(self._raw("svc-od")["idle_timeout_sec"], 900)
+        self.assertEqual(self._rt("svc-od")["idle_timeout_sec"], 900)
         self.assertEqual(self._snap("svc-od")["idle_timeout"], 900.0)
+        self.assertEqual(self._reg_bytes("svc-od"), before, "注册条不该被改写")
 
     def test_bounds_accepted(self):
         for v in (60, 86400):
@@ -175,13 +190,13 @@ class TestServiceUpdateConfig(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(code, "invalid")
         self.assertIn("60", msg)
-        self.assertEqual(self._raw("svc-od")["idle_timeout_sec"], 600, "越界值不得落盘")
+        self.assertNotIn("idle_timeout_sec", self._rt("svc-od"), "越界值不得落账本")
 
     def test_above_max_rejected(self):
         ok, code, _ = self.mgr.update_config("svc-od", {"idle_timeout_sec": 999999})
         self.assertFalse(ok)
         self.assertEqual(code, "invalid")
-        self.assertEqual(self._raw("svc-od")["idle_timeout_sec"], 600)
+        self.assertNotIn("idle_timeout_sec", self._rt("svc-od"))
 
     def test_non_numeric_rejected(self):
         ok, code, _ = self.mgr.update_config("svc-od", {"idle_timeout_sec": "abc"})
@@ -208,23 +223,56 @@ class TestServiceUpdateConfig(unittest.TestCase):
     def test_float_saved_as_int(self):
         """落盘统一整数，避免 900.0 与 900 混写。"""
         self.mgr.update_config("svc-od", {"idle_timeout_sec": 900.0})
-        v = self._raw("svc-od")["idle_timeout_sec"]
+        v = self._rt("svc-od")["idle_timeout_sec"]
         self.assertEqual(v, 900)
         self.assertIsInstance(v, int)   # 必须是整数，不能是 900.0
 
     def test_other_fields_preserved(self):
-        """改一个字段不能把注册条其他内容弄丢（含 mode/health/path）。"""
+        """运行态写入不得碰注册条任何内容（含 mode/health/path、autostart 默认值）。"""
         before = self._raw("svc-od")
+        before_bytes = self._reg_bytes("svc-od")
         self.mgr.update_config("svc-od", {"idle_timeout_sec": 1800})
         after = self._raw("svc-od")
         for k in ("path", "mode", "health", "entry", "autostart"):
             self.assertEqual(before[k], after[k], f"字段 {k} 被改坏了")
-        self.assertEqual(after["idle_timeout_sec"], 1800)
+        self.assertEqual(self._reg_bytes("svc-od"), before_bytes, "注册条不该被改写")
+        self.assertEqual(self._rt("svc-od")["idle_timeout_sec"], 1800)
 
     def test_spec_reloaded_into_memory(self):
         """保存后内存 Spec 同步更新，无需等下一轮 refresh。"""
         self.mgr.update_config("svc-od", {"idle_timeout_sec": 7200})
         self.assertEqual(self.mgr.get_spec("svc-od").idle_timeout, 7200.0)
+
+    def test_runtime_survives_restart(self):
+        """重启（新 Manager 实例）后运行态仍在，注册条字节不变。"""
+        before = self._reg_bytes("svc-od")
+        self.mgr.update_config("svc-od", {"idle_timeout_sec": 1200})
+        m2 = Manager(Scanner(self.reg), self.root / "order.json")
+        self.assertEqual(m2.get_spec("svc-od").idle_timeout, 1200.0)
+        self.assertEqual(self._reg_bytes("svc-od"), before)
+
+    def test_ledger_overrides_reg_field(self):
+        """账本与注册条同时有 idle_timeout_sec：账本胜，注册条里的旧值不动。"""
+        self.assertEqual(self._snap("svc-od")["idle_timeout"], 600.0)   # 夹具旧值
+        self.mgr.update_config("svc-od", {"idle_timeout_sec": 1800})
+        self.assertEqual(self._snap("svc-od")["idle_timeout"], 1800.0)
+        self.assertEqual(self._raw("svc-od")["idle_timeout_sec"], 600)
+
+    def test_toggle_autostart_writes_ledger_only(self):
+        """自启开关只写账本：注册条（含其中的 autostart 旧值）一个字节不动。"""
+        before = self._reg_bytes("svc-det")
+        ok, msg = self.mgr.toggle_autostart("svc-det", True)
+        self.assertTrue(ok, msg)
+        self.assertIs(self._snap("svc-det")["autostart"], True)
+        self.assertEqual(self._reg_bytes("svc-det"), before, "注册条不该被改写")
+        self.assertIs(self._rt("svc-det")["autostart"], True)
+
+    def test_on_demand_autostart_still_rejected(self):
+        """on_demand 仍不许自启（校验不受分离影响），且不写账本。"""
+        ok, msg = self.mgr.toggle_autostart("svc-od", True)
+        self.assertFalse(ok)
+        self.assertIn("on_demand", msg)
+        self.assertEqual(self._rt("svc-od"), {})
 
 
 class TestCronSpecStillUsable(unittest.TestCase):

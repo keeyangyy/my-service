@@ -40,10 +40,16 @@ def _dur(t0: float) -> int:
 class CronSpec:
     """单条定时任务注册的解析结果。valid=False 时 error 携带原因。"""
 
-    def __init__(self, name: str, reg_path: Path):
+    # 运行态字段：生效值取自 logs\cron_runtime.json，注册条里的同名键只作回落——
+    # enabled/timeout_sec/catch_up 回落未迁移旧数据；schedule 回落注册条里留的
+    # "默认计划"（账本被清时不至于让任务哑掉）。
+    RUNTIME_KEYS = ("enabled", "timeout_sec", "catch_up", "schedule")
+
+    def __init__(self, name: str, reg_path: Path, runtime: dict | None = None):
         self.folder = name                        # 任务名 = 注册文件名（去 .json）
-        self.reg_path = reg_path
-        self.raw: dict = {}
+        self.reg_path = reg_path                  # reg\cron\<name>.json（只读声明）
+        self.raw: dict = {}                       # 注册条原文（声明 + 默认计划）
+        self.runtime: dict = {}                   # 本条运行态账面值（生效值来源）
         self.valid: bool = True
         self.error: str | None = None
         self.path: Path = Path('.')
@@ -71,10 +77,15 @@ class CronSpec:
             self.error = f"注册条解析失败: {exc}"
             return
 
+        # ---- 声明 + 运行态合并：账本值覆盖注册条同名键（后者只作回落）----
+        self.runtime = {k: runtime[k] for k in self.RUNTIME_KEYS
+                        if isinstance(runtime, dict) and k in runtime}
+        view = {**data, **self.runtime}
+
         problems: list[str] = []
 
         # ---- path（与服务注册条同语义：任务脚本的真实家）----
-        raw_path = data.get("path")
+        raw_path = view.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             problems.append("缺少 path 字段（脚本所在目录）")
         else:
@@ -85,24 +96,24 @@ class CronSpec:
             if not self.path.is_dir():
                 problems.append(f"path 不是存在的目录: {self.path}")
 
-        self.enabled = bool(data.get("enabled", True))
-        self.display = str(data.get("display", name))
-        self.description = str(data.get("description", ""))
-        self.entry = str(data.get("entry", "")).strip()
-        args = data.get("args", [])
+        self.enabled = bool(view.get("enabled", True))
+        self.display = str(view.get("display", name))
+        self.description = str(view.get("description", ""))
+        self.entry = str(view.get("entry", "")).strip()
+        args = view.get("args", [])
         self.args = [str(a) for a in args] if isinstance(args, list) else []
-        self.cwd = str(data.get("cwd", "."))
-        self.catch_up = bool(data.get("catch_up", False))
+        self.cwd = str(view.get("cwd", "."))
+        self.catch_up = bool(view.get("catch_up", False))
         try:
-            self.timeout_sec = float(data.get("timeout_sec", 300.0))
+            self.timeout_sec = float(view.get("timeout_sec", 300.0))
         except (TypeError, ValueError):
             problems.append("timeout_sec 不是数字")
         self.timeout_sec = max(5.0, min(self.timeout_sec, 86400.0))
-        if isinstance(data.get("env"), dict):
-            self.env = {str(k): str(v) for k, v in data["env"].items()}
+        if isinstance(view.get("env"), dict):
+            self.env = {str(k): str(v) for k, v in view["env"].items()}
 
         # ---- schedule（必需，物种核心字段）----
-        sched = data.get("schedule")
+        sched = view.get("schedule")
         if not isinstance(sched, dict):
             problems.append('缺少 schedule 字段（{"type":"daily","at":"HH:MM"} '
                             '或 {"type":"interval","every_sec":N}）')
@@ -202,17 +213,25 @@ def _next_daily(times: list[tuple[int, int]], after: float) -> float:
 class Scheduler:
     """定时任务编排器：扫描 reg\\cron\\ + 每秒调度 tick + 到点开线程执行。"""
 
-    def __init__(self, cron_dir: Path, state_path: Path, order_path: Path | None = None):
+    def __init__(self, cron_dir: Path, state_path: Path, order_path: Path | None = None,
+                 runtime_path: Path | None = None):
+        """runtime_path: 运行态账本（logs\\cron_runtime.json 的家）；缺省取
+        state_path 同目录的 cron_runtime.json。
+        """
         self.cron_dir = Path(cron_dir)
         self.state_path = Path(state_path)
         self.order_path = Path(order_path) if order_path else None
+        self.runtime_path = (Path(runtime_path) if runtime_path is not None
+                             else self.state_path.parent / "cron_runtime.json")
         self.specs: dict[str, CronSpec] = {}
         self.persist: dict[str, dict] = {}   # name -> last_run/last_ok/.../next_run
         self._order: list[str] = []          # 面板拖拽顺序（持久化在 order_path）
+        self._runtime: dict[str, dict] = {}  # 运行态账面值（持久化在 runtime_path）
         self.running: set[str] = set()
         self.lock = threading.RLock()
         self._load_state()
         self._load_order()
+        self._load_runtime()
 
     # ------------------------------------------------------------ 顺序账本
     def _load_order(self) -> None:
@@ -281,12 +300,52 @@ class Scheduler:
         except OSError:
             pass
 
+    # ------------------------------------------------------------ 运行态账本
+    def _load_runtime(self) -> None:
+        """读 logs\\cron_runtime.json；缺失/损坏都从零开始（回落注册条或字段缺省）。"""
+        try:
+            data = json.loads(self.runtime_path.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                self._runtime = {str(k): v for k, v in data.items()
+                                 if isinstance(v, dict)}
+        except Exception:  # noqa: BLE001
+            self._runtime = {}
+
+    def _save_runtime(self) -> bool:
+        """原子写运行态账本（临时文件 + os.replace）。失败静默——调度不该被它拖垮。"""
+        try:
+            import tempfile
+
+            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(self.runtime_path.parent),
+                                       suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._runtime, ensure_ascii=False, indent=1) + "\n")
+            os.replace(tmp, self.runtime_path)
+            return True
+        except OSError:
+            return False
+
+    def runtime_snapshot(self) -> dict[str, dict]:
+        """运行态账面值快照（每轮 scan 取用）。"""
+        with self.lock:
+            return {k: dict(v) for k, v in self._runtime.items()}
+
+    def _set_runtime(self, name: str, patch: dict) -> bool:
+        """只写运行态账本（白名单过滤，绝不碰注册条）。返回是否落盘成功。"""
+        with self.lock:
+            cur = dict(self._runtime.get(name) or {})
+            cur.update({k: v for k, v in patch.items() if k in CronSpec.RUNTIME_KEYS})
+            self._runtime[name] = cur
+            return self._save_runtime()
+
     # ------------------------------------------------------------ 发现
     def scan(self) -> None:
         specs: dict[str, CronSpec] = {}
+        runtime = self.runtime_snapshot()
         if self.cron_dir.is_dir():
             for f in sorted(self.cron_dir.glob("*.json")):
-                spec = CronSpec(f.stem, f)
+                spec = CronSpec(f.stem, f, runtime=runtime.get(f.stem))
                 specs[spec.folder] = spec
         with self.lock:
             gone = [n for n in self.specs if n not in specs]
@@ -294,8 +353,10 @@ class Scheduler:
             stale = [n for n in self._order if n not in specs]
             for name in gone:
                 self.persist.pop(name, None)   # 注册条已删：账本条目一并清
+                self._runtime.pop(name, None)  # 运行态账本条目一并清
                 self.running.discard(name)
                 self._save_state()
+                self._save_runtime()
             if stale:
                 self._order = [n for n in self._order if n in specs]
                 self._save_order()             # 同步清掉已注销任务的顺序条目
@@ -432,10 +493,11 @@ class Scheduler:
                 self.running.discard(name)
 
     def update_config(self, name: str, patch: dict) -> tuple[bool, str, str]:
-        """面板行内编辑：改注册条的 schedule / timeout_sec / catch_up / enabled。
+        """面板行内编辑：改 schedule / timeout_sec / catch_up / enabled（全是运行态）。
 
-        安全网：写回后立即用 CronSpec 重解析校验，判无效则回滚原内容并报错
-        ——绝不留一个坏注册条（否则任务直接变 invalid 不可用）。
+        只写 logs\\cron_runtime.json，注册条一个字节不动。安全网保留：语法校验 →
+        记账本 → 用新运行态重解析 CronSpec 校验，判无效则**回滚账本**并报错——
+        绝不留一个坏配置（否则任务直接变 invalid 不可用）。
         schedule 变更时重算 next_run（否则面板显示新时间、实际仍按旧时间触发）。
 
         返回 (ok, code, message)；code 同 run_now 的映射约定。
@@ -444,22 +506,16 @@ class Scheduler:
             spec = self.specs.get(name)
             if spec is None:
                 return False, "not_found", f"未知定时任务 {name}"
-            try:
-                old_text = spec.reg_path.read_text(encoding="utf-8-sig")
-                raw = json.loads(old_text)
-                if not isinstance(raw, dict):
-                    raise ValueError("注册条根节点不是对象")
-            except Exception as exc:  # noqa: BLE001
-                return False, "io", f"读注册条失败: {exc}"
 
             # ---- 应用补丁（粗校验，细校验交给写后重解析）----
+            values: dict = {}
             if "enabled" in patch:
-                raw["enabled"] = bool(patch["enabled"])
+                values["enabled"] = bool(patch["enabled"])
             if "catch_up" in patch:
-                raw["catch_up"] = bool(patch["catch_up"])
+                values["catch_up"] = bool(patch["catch_up"])
             if "timeout_sec" in patch:
                 try:
-                    raw["timeout_sec"] = float(patch["timeout_sec"])
+                    values["timeout_sec"] = float(patch["timeout_sec"])
                 except (TypeError, ValueError):
                     return False, "invalid", "timeout_sec 需为数字"
             if "schedule" in patch:
@@ -475,44 +531,33 @@ class Scheduler:
                              (isinstance(at, list) and len(at) > 0))
                     if not ok_at:
                         return False, "invalid", 'daily 的 at 需为 "HH:MM" 或非空时刻数组'
-                raw["schedule"] = sched
+                values["schedule"] = sched
+            if not values:
+                return False, "invalid", "没有需要修改的字段"
 
-            def _write(payload: dict) -> bool:
-                try:
-                    import tempfile
-                    fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent),
-                                               suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        fh.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-                    os.replace(tmp, spec.reg_path)
-                    return True
-                except Exception:  # noqa: BLE001
-                    return False
+            old_runtime = dict(self._runtime.get(name) or {})
+            if not self._set_runtime(name, values):
+                return False, "io", "写运行态账本失败"
 
-            if not _write(raw):
-                return False, "io", "写注册条失败"
-
-            # ---- 写后校验：新配置必须自身合法，否则回滚 ----
-            new_spec = CronSpec(name, spec.reg_path)
+            # ---- 写后校验：新运行态必须让注册条仍然合法，否则回滚账本 ----
+            new_spec = CronSpec(name, spec.reg_path, runtime=self._runtime.get(name))
             if not new_spec.valid:
-                try:
-                    _write(json.loads(old_text))
-                except Exception:  # noqa: BLE001
-                    pass
+                self._runtime[name] = old_runtime
+                self._save_runtime()
                 self.scan()
                 return False, "invalid", f"新配置无效，已回滚：{new_spec.error}"
 
             self.specs[name] = new_spec
-            if "schedule" in patch:
+            if "schedule" in values:
                 p = self.persist.setdefault(name, {})
                 p["next_run"] = self._init_next_run(new_spec, time.time())
             self._save_state()
             return True, "ok", "已更新"
 
     def toggle_enabled(self, name: str, value: bool) -> tuple[bool, str]:
-        """开关任务调度（面板滑块）：权威值回写注册条 enabled 字段。
+        """开关任务调度（面板滑块）：权威值只写运行态账本（logs\\cron_runtime.json）。
 
-        转调 update_config（同一原子写回 + 写后校验路径）。
+        转调 update_config（同一账本写入 + 写后校验路径）。
         只影响下一次触发；正在跑的一轮让它自然跑完，不打断。
         """
         ok, _code, msg = self.update_config(name, {"enabled": value})
