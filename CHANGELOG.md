@@ -35,6 +35,24 @@
   （这正是 cron 注册条不把 `schedule` 一并迁走的原因：清了账本也不至于让任务哑掉）
 - 已部署实例需**重启宿主一次**（改动在内存中生效）
 
+## 未发布
+
+目录结构对齐 `C:\path\to\README.md` 三档模型：**升完整档**（run/src/data/logs），
+日志与数据彻底分开。
+
+### 变更
+
+- `entry\` → **`run\`**（人的操作入口）。顺带解掉与注册条字段 `entry`（启动脚本）的撞名；
+  代码/脚本/README/启动文件夹 cmd 的引用一并更新（自启需重装一次以刷新启动 cmd）
+- **新增 `data\`**：`logs\` 里属于**数据**的文件全部迁出——`host.pid`、`pids\`、
+  `cron_state.json`、`cron_order.json`、`service_order.json`、`service_runtime.json`、
+  `cron_runtime.json`；`logs\` 此后只剩记录（`host.jsonl` + `host.err.log`）
+- 分界判据：**删掉它，下次运行行为会变吗？** 会 → `data\`，不会 → `logs\`
+  （记录只丢历史；数据丢了会回落默认值、判不出进程状态、丢失面板改动）
+- `server.py`：`_setup_host_logging` 改为返回 `(logs_dir, data_dir)` 并分别注入
+  audit（logs）/ runner·Manager·Scheduler（data）；`HostController` 同改
+- `.gitignore`：新增 `data/`；`README` 结构图与全部路径引用同步
+
 ## v0.10.1（2026-09-08）
 
 修 v0.10.0 自己带进去的一处小 bug。

@@ -36,7 +36,7 @@ class Manager:
         用于把定时任务按路径归属到服务（见 core/linkage.py）。不传即无关联，
         面板该区块显示为空——单测与纯服务场景不依赖调度器。
 
-        runtime_path: 运行态账本（logs\\service_runtime.json 的家）；缺省取
+        runtime_path: 运行态账本（data\\service_runtime.json 的家）；缺省取
         order_path 同目录的 service_runtime.json；都没有即纯内存不落盘。
         """
         self.scanner = scanner
@@ -90,7 +90,7 @@ class Manager:
 
     # ------------------------------------------------------------ 运行态账本
     def _load_runtime(self) -> None:
-        """读 logs\\service_runtime.json；缺失/损坏都从零开始（回落注册条或字段缺省）。"""
+        """读 data\\service_runtime.json；缺失/损坏都从零开始（回落注册条或字段缺省）。"""
         if not self.runtime_path:
             return
         try:
@@ -414,7 +414,7 @@ class Manager:
                 self._idle_reaping.discard(name)
 
     def toggle_autostart(self, name: str, value: bool) -> tuple[bool, str]:
-        """面板自启开关：只改运行态账本（logs\\service_runtime.json），注册条一个字节不动。"""
+        """面板自启开关：只改运行态账本（data\\service_runtime.json），注册条一个字节不动。"""
         with self.lock:
             spec = self.specs.get(name)
             if spec is None:
@@ -430,7 +430,7 @@ class Manager:
     def update_config(self, name: str, patch: dict) -> tuple[bool, str, str]:
         """面板设置：改服务的可编辑项。当前支持 `idle_timeout_sec`（运行态）。
 
-        只写 logs\\service_runtime.json，注册条一个字节不动。安全网保留：范围校验
+        只写 data\\service_runtime.json，注册条一个字节不动。安全网保留：范围校验
         → 记账本 → 用新运行态重解析 Spec 校验，判无效则**回滚账本**并报错——绝不
         留一个坏配置（否则服务直接变 invalid 不可用）。
 

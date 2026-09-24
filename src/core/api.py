@@ -347,10 +347,10 @@ def _num(qs: dict, key: str, default: int) -> int:
 
 
 def _host_logs_dir(manager, host) -> Path:  # noqa: ANN001
-    """宿主运行时产物目录：<my-service>/logs —— 框架侧文件的唯一落点。"""
-    rdir = getattr(host, "rdir", None)
-    if rdir:
-        return Path(rdir)
+    """宿主记录目录：<my-service>/logs —— 登记簿 host.jsonl / 异常栈 host.err.log 的落点。"""
+    logs_dir = getattr(host, "logs_dir", None)
+    if logs_dir:
+        return Path(logs_dir)
     return Path(manager.scanner.reg_dir).parent / "logs"
 
 

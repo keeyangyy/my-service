@@ -12,7 +12,7 @@
   走统一的"错过"处理，绝不堆积连发
 - 错过（宿主关闭/睡眠/执行超长导致，判定阈 GRACE=60s）：
   catch_up=true → 立即补跑一次；否则登记 cron_skip 并顺延到下一个合法时刻
-- 状态持久化 logs\\cron_state.json（原子写）：last_run/last_ok/last_rc/
+- 状态持久化 data\\cron_state.json（原子写）：last_run/last_ok/last_rc/
   last_dur_ms/next_run，宿主重启后按此恢复计划
 
 日志边界（与服务同一条铁律）：脚本输出一律 DEVNULL，任务日志由任务自己写；
@@ -40,7 +40,7 @@ def _dur(t0: float) -> int:
 class CronSpec:
     """单条定时任务注册的解析结果。valid=False 时 error 携带原因。"""
 
-    # 运行态字段：生效值取自 logs\cron_runtime.json，注册条里的同名键只作回落——
+    # 运行态字段：生效值取自 data\cron_runtime.json，注册条里的同名键只作回落——
     # enabled/timeout_sec/catch_up 回落未迁移旧数据；schedule 回落注册条里留的
     # "默认计划"（账本被清时不至于让任务哑掉）。
     RUNTIME_KEYS = ("enabled", "timeout_sec", "catch_up", "schedule")
@@ -215,7 +215,7 @@ class Scheduler:
 
     def __init__(self, cron_dir: Path, state_path: Path, order_path: Path | None = None,
                  runtime_path: Path | None = None):
-        """runtime_path: 运行态账本（logs\\cron_runtime.json 的家）；缺省取
+        """runtime_path: 运行态账本（data\\cron_runtime.json 的家）；缺省取
         state_path 同目录的 cron_runtime.json。
         """
         self.cron_dir = Path(cron_dir)
@@ -302,7 +302,7 @@ class Scheduler:
 
     # ------------------------------------------------------------ 运行态账本
     def _load_runtime(self) -> None:
-        """读 logs\\cron_runtime.json；缺失/损坏都从零开始（回落注册条或字段缺省）。"""
+        """读 data\\cron_runtime.json；缺失/损坏都从零开始（回落注册条或字段缺省）。"""
         try:
             data = json.loads(self.runtime_path.read_text(encoding="utf-8-sig"))
             if isinstance(data, dict):
@@ -495,7 +495,7 @@ class Scheduler:
     def update_config(self, name: str, patch: dict) -> tuple[bool, str, str]:
         """面板行内编辑：改 schedule / timeout_sec / catch_up / enabled（全是运行态）。
 
-        只写 logs\\cron_runtime.json，注册条一个字节不动。安全网保留：语法校验 →
+        只写 data\\cron_runtime.json，注册条一个字节不动。安全网保留：语法校验 →
         记账本 → 用新运行态重解析 CronSpec 校验，判无效则**回滚账本**并报错——
         绝不留一个坏配置（否则任务直接变 invalid 不可用）。
         schedule 变更时重算 next_run（否则面板显示新时间、实际仍按旧时间触发）。
@@ -555,7 +555,7 @@ class Scheduler:
             return True, "ok", "已更新"
 
     def toggle_enabled(self, name: str, value: bool) -> tuple[bool, str]:
-        """开关任务调度（面板滑块）：权威值只写运行态账本（logs\\cron_runtime.json）。
+        """开关任务调度（面板滑块）：权威值只写运行态账本（data\\cron_runtime.json）。
 
         转调 update_config（同一账本写入 + 写后校验路径）。
         只影响下一次触发；正在跑的一轮让它自然跑完，不打断。

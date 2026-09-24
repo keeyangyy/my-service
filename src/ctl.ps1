@@ -8,10 +8,11 @@ $ErrorActionPreference = "Stop"
 $base = Split-Path $PSScriptRoot -Parent
 $py = (Get-Command python.exe).Source
 New-Item -ItemType Directory -Force -Path (Join-Path $base "logs") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $base "data") | Out-Null
 
 function Get-HostPid {
-    # 首选 logs\host.pid（宿主自写）；强杀可能残留，故必须校验进程存活
-    $pidFile = Join-Path $base "logs\host.pid"
+    # 首选 data\host.pid（宿主自写）；强杀可能残留，故必须校验进程存活
+    $pidFile = Join-Path $base "data\host.pid"
     if (Test-Path -LiteralPath $pidFile) {
         try {
             $p = [int](Get-Content -LiteralPath $pidFile -Raw).Trim()
@@ -39,7 +40,7 @@ switch ($Action.ToLower()) {
         if ($p = Get-HostPid) {
             # 只杀宿主自身（不带 /T）：被管服务生命周期独立，宿主停止/重启时不收割
             & taskkill "/PID" "$p" "/F" | Out-Null
-            Remove-Item -LiteralPath (Join-Path $base "logs\host.pid") -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath (Join-Path $base "data\host.pid") -Force -ErrorAction SilentlyContinue
             Write-Host "stopped pid=$p"
         } else { Write-Host "未在运行" }
     }

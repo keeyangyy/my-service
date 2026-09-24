@@ -68,7 +68,7 @@ class ProcessHandle:
                  pidfile: Path):
         self.popen = popen
         self.started_at = started_at
-        self.pidfile = pidfile        # my-service\logs\pids\<svc>.pid（框架产物）
+        self.pidfile = pidfile        # my-service\data\pids\<svc>.pid（框架产物）
 
     @property
     def pid(self) -> int | None:
@@ -76,11 +76,11 @@ class ProcessHandle:
 
 
 # ---------------------------------------------------------------- 启动/停止
-_RUNTIME_DIR: Path | None = None    # my-service\logs —— 框架自家运行时产物
+_RUNTIME_DIR: Path | None = None    # my-service\data —— 框架自家运行态产物（pid 等）
 
 
 def set_runtime_dir(p: Path) -> Path:
-    """宿主启动时注入运行时目录；被管服务的 pid 文件归置在其下 pids\\。"""
+    """宿主启动时注入运行态目录（data\\）；被管服务的 pid 文件归置在其下 pids\\。"""
     global _RUNTIME_DIR
     _RUNTIME_DIR = Path(p)
     (_RUNTIME_DIR / "pids").mkdir(parents=True, exist_ok=True)
@@ -88,13 +88,13 @@ def set_runtime_dir(p: Path) -> Path:
 
 
 def pidfile_path(spec: Spec) -> Path:
-    """pid 是框架自己需要的记账，故写框架家，不在服务目录里留痕。"""
-    base = _RUNTIME_DIR or Path(__file__).resolve().parents[2] / "logs"
+    """pid 是框架自己需要的记账，故写框架家 data\\，不在服务目录里留痕。"""
+    base = _RUNTIME_DIR or Path(__file__).resolve().parents[2] / "data"
     return base / "pids" / f"{spec.folder}.pid"
 
 
 def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
-    """拉起进程：stdout/stderr 一律丢弃（DEVNULL），pid 写 my-service\\logs\\pids\\。
+    """拉起进程：stdout/stderr 一律丢弃（DEVNULL），pid 写 my-service\\data\\pids\\。
 
     服务日志由服务自己写（它家 logs\\），框架零接管——纳管与否不改变服务的日志形态。
     代价：服务自己 print 的启动报错不留档，故失败原因由审计流 note 字段兜住。

@@ -11,13 +11,13 @@
 3. **宿主不进服务列表，但有专属自操作通道**：my-service 自身不写注册条
    （避免"编排者杀自己/自启套娃"的自举悖论），因此服务列表里永远看不到它。
    但 header 右上角提供 `⟳重启宿主 / ■停止宿主` 专用按钮（走 `/api/host/*` 独立
-   端点，非服务通道）；命令行与开机则由 `entry\start|stop|restart.ps1` 和计划任务
+   端点，非服务通道）；命令行与开机则由 `run\start|stop|restart.ps1` 和计划任务
    `StartMyService` 负责。二者都不会把 my-service 变成"自己的一个服务"。
 
 ## 目录结构
 
 ```
-my-service\
+my-service\                    # 完整档（见 C:\path\to\README.md）
 ├─ README.md                  # 本文档
 ├─ config.json                # host/port/reg_dir 等
 ├─ reg\                       # ★ 注册中心（唯一发现源）：被管服务的"花名册"
@@ -25,23 +25,26 @@ my-service\
 │   └─ cron\                  # ★ 定时任务注册（第二物种，见「定时任务」章节）
 │       └─ <任务名>.json      # 到点跑一次脚本，无常驻进程
 ├─ adapters\                  # ★ 可选转接层：<服务名>\ 下放薄适配脚本(自动优先命中)
-├─ entry\                     # ★ 人的操作入口：无参/有默认值，可直接运行
+├─ run\                       # ★ 人的操作入口：无参/有默认值，可直接运行
 │   ├─ start.ps1              # PowerShell 运行 → 启动宿主（幂等）
 │   ├─ stop.ps1               # → 停止宿主（被管服务不受影响，继续运行）
 │   ├─ restart.ps1            # → 重启宿主
 │   ├─ install_autostart.ps1 / uninstall_autostart.ps1  # 自启安装/卸载（默认 Startup 启动文件夹方案）
 │   └─ Dashboard.url          # 双击 → 直接打开管理面板
-├─ logs\                      # ★ 框架侧运行时产物（唯一作者 = my-service）
+├─ logs\                      # ★ 记录（唯一作者 = my-service）：只追加、删了不影响运行
 │   ├─ host.jsonl             # 启停登记簿：一行一事件（详见「日志边界」）
-│   ├─ host.err.log           # 宿主自身异常栈（sys.stderr）
+│   └─ host.err.log           # 宿主自身异常栈（sys.stderr）
+├─ data\                      # ★ 数据：运行态/状态/账本，删了行为会变（不入库）
 │   ├─ host.pid               # 宿主 pid（ctl.ps1 优先读它）
 │   ├─ cron_state.json        # 定时任务账本：last_run/next_run 等（scheduler 独写）
 │   ├─ cron_order.json        # 定时任务面板顺序（拖拽排序结果，注销任务自动清理）
 │   ├─ service_order.json     # 服务列表面板顺序（同上，注销服务自动清理）
+│   ├─ service_runtime.json   # 服务运行态：enabled/autostart/idle_timeout_sec（见注册条协议）
+│   ├─ cron_runtime.json      # 任务运行态：enabled/timeout_sec/catch_up/schedule
 │   └─ pids\<服务名>.pid       # 被管服务 pid——框架记账留在框架家
 └─ src\                       # 实现细节 + 程序化接口
     ├─ server.py              # 组装入口（含 HostController 自管理）
-    ├─ ctl.ps1                # 内部引擎（entry\ 入口的底层，勿直接调用）
+    ├─ ctl.ps1                # 内部引擎（run\ 入口的底层，勿直接调用）
     ├─ svc.ps1                # 服务管理 CLI（带参数：终端/AI 会话/脚本用，非双击入口）
     ├─ core\
     │   ├─ scanner.py         # 扫描 reg\*.json（注册中心唯一源）
@@ -49,7 +52,7 @@ my-service\
     │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查/一次性执行（输出不接管）
     │   ├─ scheduler.py       # 定时任务调度器（reg\cron\ 唯一源，与 monitor 并列线程）
     │   ├─ linkage.py         # 服务与定时任务的路径归属判定（面板关联展示用）
-│   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛 + 注册条配置行内编辑
+    │   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛 + 注册条配置行内编辑
     │   └─ api.py             # REST API + web 静态托管
     ├─ web\                   # Dashboard + 启动中转页（原生 JS 零依赖）
     │   ├─ index.html / app.js / style.css  # 管理面板
@@ -105,7 +108,8 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 被管进程的 stdout/stderr **一律 DEVNULL**（不接管 = 不成为第二个作者）。
 代价与补偿：服务自己 `print` 的启动报错不再留档，所以**框架能观测到的失败原因全部
 落进登记簿的 `note`**（健康超时 / 端口占用 / 拒绝双开 / 退出码 / 入口不存在）。
-接入前提因此更硬一条：常驻服务必须自己写文件日志（见 `C:\path\to\README.md`「日志合规」）。
+接入前提因此更硬一条：常驻服务必须自己写文件日志
+（服务侧的形态、命名与轮转通则见 `C:\path\to\README.md`「日志合规」）。
 
 ### 登记簿事件字典（`host.jsonl`）
 
@@ -153,7 +157,7 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 ```jsonc
 {
   // ★ 只放声明：enabled / autostart / idle_timeout_sec 属运行态，实际存
-  //   logs\service_runtime.json（不入库，面板改它们不动本文件）；
+  //   data\service_runtime.json（不入库，面板改它们不动本文件）；
   //   此处列出的值是默认值——账本缺该键时回落到这里
   "path": "C:/path/to/your-service",              // ★ 服务真实家（绝对路径或相对 reg\ 目录）
   "enabled": true,                 // 运行态：false = 暂时停用（不参与编排）
@@ -172,7 +176,7 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
   "env": {"SOME-SERVICE_NO_WAIT": "1"}, // 附加环境变量
   "stop_script": "stop.ps1",       // 可选：停止时先执行的灭火脚本（相对 path）
   "pidfile": "run/app.pid",        // 可选：pid 文件(相对 path)——process 型防双开判据
-  "autostart": true                // 运行态：权威值存 logs\service_runtime.json（面板开关写它）
+  "autostart": true                // 运行态：权威值存 data\service_runtime.json（面板开关写它）
 }
 ```
 
@@ -189,7 +193,7 @@ my-service 只在自己家记一本"谁、何时、启停了什么、成没成"�
 **路径语义**：注册条里除 `path` 外的一切路径（entry/cwd/stop_script）都**相对 `path`** 解析。
 框架**不向服务目录写任何东西**：进程 stdout/stderr 一律 DEVNULL，服务日志由服务自管
 （约定见 `C:\path\to\README.md`「日志合规」）；被管进程的 pid 记账写
-`my-service\logs\pids\<服务名>.pid`，停止时由框架清理。
+`my-service\data\pids\<服务名>.pid`，停止时由框架清理。
 
 **停止方式**：`managed` 默认 `taskkill /T /F` 整树收割，可另配 `stop_script` 先执行再收树；
 `detached`（点火器型：启动脚本点完火即退场算正常，死活只信健康探测，停止执行官方
@@ -262,7 +266,7 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
 
 ```jsonc
 {
-  // ★ 只放声明：enabled / timeout_sec / catch_up 属运行态（存 logs\cron_runtime.json）；
+  // ★ 只放声明：enabled / timeout_sec / catch_up 属运行态（存 data\cron_runtime.json）；
   //   schedule 是"账本缺失时的默认计划"——面板改的时刻只进账本，不写这里
   "path": "C:/path/to/your-service",      // ★ 脚本所在真实家（与服务注册条同语义）
   "enabled": true,                          // 运行态：false = 暂停调度（面板显示已停用）
@@ -289,10 +293,10 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
   补跑一次（签到类建议开）；默认 `false` 只登记 `cron_skip` 并顺延到下一合法
   时刻，开机绝不齐跑
 - **开关**：面板滑块（同服务自启滑块）控制是否参与调度，权威值只写运行态账本
-  （`logs\cron_runtime.json`）；只影响下一次触发，正在跑的一轮自然跑完；停用期间
+  （`data\cron_runtime.json`）；只影响下一次触发，正在跑的一轮自然跑完；停用期间
   不排新计划，重新启用即恢复
 - **拖拽排序**：**服务列表与定时任务列表都支持**——行首把手 `⠿`，按住即可上下拖动，
-  松手自动保存（服务存 `logs\service_order.json`、任务存 `logs\cron_order.json`，
+  松手自动保存（服务存 `data\service_order.json`、任务存 `data\cron_order.json`，
   均为框架侧记账，不污染注册条）；新注册的服务/任务自动排在末尾，不打乱你排好的顺序；
   注销条目的顺序自动清理；重启宿主后顺序保持。想恢复默认字母序：把行拖回字母序即可
   （只删账本文件不会重置内存里的顺序，需配合重启宿主）
@@ -308,7 +312,7 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
   - 展开态跨轮询保持；正在输入的框不被轮询打断
   - 坏注册条（invalid）的配置面板控件与 `⚙ 设置` 按钮一律禁用（面板改不了根因）
 - **状态恢复**：`last_run/last_ok/last_rc/next_run` 持久化在
-  `logs\cron_state.json`（scheduler 独写，运行期以内存为准），宿主重启后照单恢复
+  `data\cron_state.json`（scheduler 独写，运行期以内存为准），宿主重启后照单恢复
 - **触发记录**：卡片「事件」窗展开该任务的 `cron_run/cron_skip` 时间线
   （登记簿按任务名过滤）；note 只记结果与非常规来源（定时触发无前缀，
   手动触发/错过补跑以中文前缀区分），脚本自身输出仍由任务自己记录
@@ -323,6 +327,9 @@ cron 注册条的 `path` 落在哪个已注册服务的 `path` 之下（或相�
 无效注册条在面板标 invalid 并附原因（缺 schedule、入口不存在等）。
 
 ## 注册服务：最小要求与步骤
+
+> **服务侧通则**（目录形态 / 核心字段 / 入库边界 / 日志命名与轮转 / README 模板）
+> 见 `C:\path\to\README.md`——那是所有服务共用的规范；**本节只讲"注册"这件事本身**。
 
 **最小要求（不满足则拒收，注册条标 invalid 并给原因）**：
 - 启动入口：`start.ps1` 或等价脚本（无参数、可直接运行拉起常驻进程）
@@ -406,7 +413,7 @@ JS，带 JSON 的请求还会先发 `OPTIONS` 预检、没被应答就根本不�
 | 层 | 入口 |
 |:--|:--|
 | Web Dashboard | http://127.0.0.1:1236 （服务按 `mode` 分**常驻服务**与**即用即走**两组，各自一行一服务：状态灯/启停/↗跳转（未运行自动拉起）/**事件窗**/自启开关/`⚙ 设置`（回收时长 + 关联的定时任务），行首 `⠿` 可组内拖动排序、跨组拖不动；下方「⏱ 定时任务」区块：主行显示下次执行/上次结果 + 事件窗/▶ 立即运行，`⚙ 设置` 展开可行内改调度模式与时间/超时保护/补跑/启用，同样支持拖拽排序；header 右上含宿主运行时长 + 版本号 + `▤ 登记簿` + 重启/停止按钮） |
-| 用户操作入口 | `entry\start.ps1`、`entry\stop.ps1`、`entry\restart.ps1`（PowerShell 运行；幂等）、`entry\Dashboard.url`（双击开面板） |
+| 用户操作入口 | `run\start.ps1`、`run\stop.ps1`、`run\restart.ps1`（PowerShell 运行；幂等）、`run\Dashboard.url`（双击开面板） |
 | 服务 CLI | `.\src\svc.ps1 ls\|crons\|cron-run <名>\|events [name] [n]\|host-err [n]\|start\|stop\|restart <name>`（终端/AI 会话用；`events` 读的是启停登记簿，服务业务日志请去服务家 `logs\`） |
 | REST API | `GET /api/services`、`GET /api/host`(宿主 pid/uptime)、`GET /api/audit?n=&svc=&fail=1`(启停登记簿)、`POST /api/audit/clear`(`{"svc":"名"}` 清该名事件 / `{}` 清全部)、`GET /api/host-err?n=`(宿主异常栈)、`GET /api/crons`(定时任务列表)、`POST /api/services/order`(`{"names":[...]}` 拖拽排序)、`POST /api/services/{svc}/start\|stop\|restart[?via=cli]`、`POST /api/services/{svc}/config`(补丁：`idle_timeout_sec`，仅 on_demand，面板 `⚙ 设置` 用)、`POST /api/crons/{name}/run[?via=cli]`(手动触发)、`POST /api/crons/order`(`{"names":[...]}` 拖拽排序)、`POST /api/crons/{name}/config`(补丁：`enabled`/`catch_up`/`timeout_sec`/`schedule` 任意组合，面板行内编辑用)、`POST /api/config/{svc}`、`POST /api/host/stop\|restart` |
 | 注册服务 | 在 `my-service\reg\` 放 `<服务名>.json`；注册定时任务在 `my-service\reg\cron\` 放 `<任务名>.json`；注销 = 删除注册条（**停用**走面板开关，记运行态账本） |
@@ -415,10 +422,10 @@ JS，带 JSON 的请求还会先发 `OPTIONS` 预检、没被应答就根本不�
 
 ```powershell
 cd C:\path\to\my-service
-# 图形入口：直接打开 entry\ 文件夹，运行 start.ps1，或双击 Dashboard.url
-pwsh -File .\entry\start.ps1             # 命令行起宿主
+# 图形入口：直接打开 run\ 文件夹，运行 start.ps1，或双击 Dashboard.url
+pwsh -File .\run\start.ps1               # 命令行起宿主
 start http://127.0.0.1:1236              # 打开面板
-.\entry\install_autostart.ps1          # 安装自启（默认 Startup 模式：启动文件夹；可 -Mode Logon/Boot 换计划任务方案）
+.\run\install_autostart.ps1            # 安装自启（默认 Startup 模式：启动文件夹；可 -Mode Logon/Boot 换计划任务方案）
 ```
 ## 排坑记录
 
@@ -450,7 +457,7 @@ start http://127.0.0.1:1236              # 打开面板
 2. wscript + vbs 包装（SW_HIDE）——能根治，但引入新文件类型、链路变复杂，已弃用并撤销
 
 **最终方案——S4U 后台任务**：把任务主体改成「不管用户是否登录都要运行」的 **S4U** 登录类型
-（后台房间：逻辑上无窗可弹，物理根治）。改动仅在 `entry\install_autostart.ps1` Logon 分支：
+（后台房间：逻辑上无窗可弹，物理根治）。改动仅在 `run\install_autostart.ps1` Logon 分支：
 
 ```powershell
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
@@ -460,7 +467,7 @@ Register-ScheduledTask ... -Principal $principal ...
 要点：
 - 触发器仍 `AtLogOn`：登录才触发，时机不变；只把运行场所从"交互桌面"换到"后台房间"
 - S4U 不存密码 → 无网络凭据（SMB/域资源不可达），本机场景零影响；RunLevel 必须 Limited
-- 手动运行 `entry\start.ps1` / 面板 / `svc.ps1` 不经任务计划程序，行为一字不变
+- 手动运行 `run\start.ps1` / 面板 / `svc.ps1` 不经任务计划程序，行为一字不变
 - 全链窗口语义已审计：python 子进程 `-WindowStyle Hidden`、托管服务与 stop 脚本 `CREATE_NO_WINDOW`、
   宿主重建 `DETACHED_PROCESS`——除任务外层之外全部本就无窗
 
@@ -471,7 +478,7 @@ Register-ScheduledTask ... -Principal $principal ...
 ```
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start-my-service.cmd   （GBK）
 @echo off
-start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\my-service\entry\start.ps1" start
+start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\my-service\run\start.ps1" start
 ```
 
 - 登录时由启动体验执行，进程跑在**当前用户交互会话** → `svc.ps1`/`ctl.ps1`/面板直接可操作，无凭据限制、无 session 0 概念
@@ -482,7 +489,7 @@ start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File 
 ### AI/自动化会话改代码后如何重载宿主（实测 2026-09-08）
 
 **现象**：AI 会话里启动的宿主，会随该会话结束而消失（面板打不开、定时任务停摆），
-而用户自己双击 `entry\start.ps1` 起的宿主能稳定跑一整天（实测 09:29→20:09 无中断）。
+而用户自己双击 `run\start.ps1` 起的宿主能稳定跑一整天（实测 09:29→20:09 无中断）。
 
 **根因**：agent 的 shell 工具把命令包在 Windows **Job Object** 里，命令/会话结束时
 连带清理 Job 内全部进程。`Start-Process` 的分离、`DETACHED_PROCESS`、
@@ -491,7 +498,7 @@ start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File 
 
 **正确工作流（关键：第一代必须由用户起）**：
 
-1. 用户起第一代：双击/运行 `entry\start.ps1`，或靠开机自启（启动文件夹）
+1. 用户起第一代：双击/运行 `run\start.ps1`，或靠开机自启（启动文件夹）
    - 判据：`Get-CimInstance Win32_Process -Filter "ProcessId=<pid>"` 的命令行是
      **绝对路径** `C:/path/to/my-service/src/server.py`（`ctl.ps1` 的 `Start-Process` 写法）；
      agent 直跑的是相对路径 `src/server.py`，一看便知是谁起的

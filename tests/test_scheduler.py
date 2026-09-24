@@ -2,7 +2,7 @@
 """my-service · tests/test_scheduler.py — 定时任务调度核心回归
 
 纯标准库 unittest（项目零第三方依赖）。全部用 tempfile 隔离，
-不触碰 reg\\ 与 logs\\；audit 未 init → 事件只构造不落盘。
+不触碰 reg/ 与 data/、logs/；audit 未 init → 事件只构造不落盘。
 
 运行：python -m unittest tests.test_scheduler -v   （在 my-service 根目录）
 """
@@ -50,7 +50,7 @@ class _Sandbox:
                          self.root / "order.json")
 
     def runtime(self, name: str | None = None) -> dict:
-        """读运行态账本（logs\\cron_runtime.json 的沙箱等价物）；给 name 则返回该条。"""
+        """读运行态账本（data\\cron_runtime.json 的沙箱等价物）；给 name 则返回该条。"""
         try:
             data = json.loads((self.root / "cron_runtime.json")
                               .read_text(encoding="utf-8"))

@@ -1,13 +1,13 @@
-# my-service 开机自启安装脚本（位于 entry\）
+# my-service 开机自启安装脚本（位于 run\）
 # 用法:
-#   .\entry\install_autostart.ps1                # 默认 Startup 模式：启动文件夹 cmd（当前方案，无需提权）
-#   .\entry\install_autostart.ps1 -Mode Logon    # 计划任务 S4U 登录触发（后台房间无窗，需 gsudo 提权）
-#   .\entry\install_autostart.ps1 -Mode Boot     # SYSTEM 开机任务（Session 0，需提权；注意无法脚本关停）
-#   .\entry\install_autostart.ps1 -Mode Nssm     # 注册为 Windows 服务(需 nssm.exe)
+#   .\run\install_autostart.ps1                # 默认 Startup 模式：启动文件夹 cmd（当前方案，无需提权）
+#   .\run\install_autostart.ps1 -Mode Logon    # 计划任务 S4U 登录触发（后台房间无窗，需 gsudo 提权）
+#   .\run\install_autostart.ps1 -Mode Boot     # SYSTEM 开机任务（Session 0，需提权；注意无法脚本关停）
+#   .\run\install_autostart.ps1 -Mode Nssm     # 注册为 Windows 服务(需 nssm.exe)
 param([string]$Mode = "Startup")
 
 $ErrorActionPreference = "Stop"
-$entry = $PSScriptRoot                     # = my-service\entry
+$entry = $PSScriptRoot                     # = my-service\run
 $base = Split-Path $entry -Parent          # = my-service
 $TaskName = "StartMyService"
 $runPs = Join-Path $entry "start.ps1"

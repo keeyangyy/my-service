@@ -152,7 +152,7 @@ class TestServiceUpdateConfig(unittest.TestCase):
         return json.loads((self.reg / f"{name}.json").read_text(encoding="utf-8"))
 
     def _rt(self, name):
-        """运行态账本条目（logs\\service_runtime.json 的沙箱等价物）；无记录即空。"""
+        """运行态账本条目（data\\service_runtime.json 的沙箱等价物）；无记录即空。"""
         try:
             data = json.loads((self.root / "service_runtime.json")
                               .read_text(encoding="utf-8"))

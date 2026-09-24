@@ -14,7 +14,7 @@ r"""my-service · core/scanner.py — 注册中心（reg 唯一源）
 - reg\*.json 只放**声明**：path/entry/args/cwd/env/mode/health/url/display/description 等，
   写一次就长期不变，进版本控制（换机器/给别人都有意义）。
 - **运行态**：enabled（启停）、autostart（自启）、idle_timeout_sec（空闲回收时长），
-  面板/宿主随时可改，落 logs\service_runtime.json，不入库。
+  面板/宿主随时可改，落 data\service_runtime.json，不入库。
 - 读取时由 runtime_provider 合并：账本优先，注册条里的同名键只作**未迁移旧数据**的回落。
 - 目的：面板怎么点，git 工作区都不脏。
 """
@@ -35,14 +35,14 @@ class Spec:
     valid=False 时 error 携带原因，前端以 invalid 展示，不参与编排。
     """
 
-    # 运行态字段：面板/宿主随时改，不入库。生效值取自 logs\service_runtime.json；
+    # 运行态字段：面板/宿主随时改，不入库。生效值取自 data\service_runtime.json；
     # 注册条里的同名键只作**未迁移旧数据**的回落（见 README「声明与运行态分离」）。
     RUNTIME_KEYS = ("enabled", "autostart", "idle_timeout_sec")
 
     def __init__(self, name: str, reg_path: Path, adapter_dir: Path | None = None,
                  runtime: dict | None = None):
         self.folder = name                       # 服务名 = 注册文件名（去 .json）
-        self.reg_path = reg_path                 # reg\\<name>.json（只读声明；开关等运行态见 logs\\service_runtime.json）
+        self.reg_path = reg_path                 # reg\\<name>.json（只读声明；开关等运行态见 data\\service_runtime.json）
         self.raw: dict = {}                      # 注册条原文（声明部分）
         self.runtime: dict = {}                  # 本条运行态账面值（生效值来源）
         self.valid: bool = True
@@ -200,7 +200,7 @@ class Scanner:
     def __init__(self, reg_dir: Path, runtime_provider=None):
         """runtime_provider: 可选可调用对象，返回 {服务名: {运行态键: 值}}。
 
-        由 Manager 提供（logs\\service_runtime.json 的内存态）；不传即纯声明解读，
+        由 Manager 提供（data\\service_runtime.json 的内存态）；不传即纯声明解读，
         运行态回落注册条同名键（未迁移旧数据、单测与脚本直调都走这条路）。
         """
         self.reg_dir = reg_dir.resolve()

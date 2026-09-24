@@ -2,7 +2,7 @@
 """my-service 宿主入口。
 
     python src/server.py            # 前台运行
-    entry\\start.ps1               # 后台托管（推荐）
+    run\\start.ps1                 # 后台托管（推荐）
 
 装配顺序：config.json → Scanner → Manager(含 monitor 线程) → HTTP API。
 自启动：autostart=true 且 enabled 的服务在宿主起来后自动 start。
@@ -36,9 +36,10 @@ _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROU
 class HostController:
     """宿主自身生命周期控制器——独立于服务列表的专属通道（规避自举悖论）。"""
 
-    def __init__(self, manager: Manager, rdir: Path):
+    def __init__(self, manager: Manager, logs_dir: Path, data_dir: Path):
         self.manager = manager
-        self.rdir = rdir
+        self.logs_dir = logs_dir    # 记录：登记簿 host.jsonl / 异常栈 host.err.log
+        self.data_dir = data_dir    # 数据：host.pid 等运行态
         self.started = time.time()
         self.httpd = None   # serve_forever 前由 main 注入
 
@@ -88,16 +89,22 @@ def load_config() -> dict:
     return defaults
 
 
-def _setup_host_logging(base: Path) -> Path:
+def _setup_host_logging(base: Path) -> tuple[Path, Path]:
     """宿主自身的日志边界（被管服务的输出零接管，见 core/audit.py 顶部说明）。
+
+    返回 (logs_dir, data_dir)——**记录与数据分开**（见 C:/path/to\\README.md 核心字段）：
+    - logs\\  记录类：只追加、可随时删，删了不影响下次运行
+    - data\\  数据类：运行态/状态/账本，删了行为会变
 
     - sys.stderr → logs\\host.err.log：异常栈留档，兼作无控制台场景的兜底。
     - sys.stdout：终端直跑时保留可见；后台/计划任务（S4U 无控制台）时丢到 devnull。
       不再重定向到文件——启停事件属于登记簿 host.jsonl，stdout 不冒充日志。
     """
-    rdir = base / "logs"
-    rdir.mkdir(parents=True, exist_ok=True)
-    sys.stderr = open(rdir / "host.err.log", "a", buffering=1,
+    logs_dir = base / "logs"
+    data_dir = base / "data"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    sys.stderr = open(logs_dir / "host.err.log", "a", buffering=1,
                       encoding="utf-8", errors="replace")
     try:
         on_console = bool(sys.stdout) and sys.stdout.isatty()
@@ -105,29 +112,31 @@ def _setup_host_logging(base: Path) -> Path:
         on_console = False
     if not on_console:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
-    return rdir
+    return logs_dir, data_dir
 
 
 def main() -> int:
     cfg = load_config()
-    # base = my-service 根（src/ 的上一级）；框架侧运行时产物全部收在 base\logs 内
+    # base = my-service 根（src/ 的上一级）
+    # 记录（logs\）与数据（data\）分开：登记簿/异常栈进 logs\，运行态账本/pid 进 data\
     base = Path(__file__).resolve().parents[1]
-    rdir = _setup_host_logging(base)
-    audit_path = audit.init(rdir)
-    runner.set_runtime_dir(rdir)
+    logs_dir, data_dir = _setup_host_logging(base)
+    audit_path = audit.init(logs_dir)
+    runner.set_runtime_dir(data_dir)
     try:
-        (rdir / "host.pid").write_text(str(os.getpid()), encoding="ascii")
+        (data_dir / "host.pid").write_text(str(os.getpid()), encoding="ascii")
     except OSError:
         pass
     scanner = Scanner((base / cfg["reg_dir"]).resolve())
-    manager = Manager(scanner, rdir / "service_order.json")
+    manager = Manager(scanner, data_dir / "service_order.json")
     # 定时任务注册目录（reg\cron\）：不存在则建空目录，用户一眼可见往哪放注册条
     cron_dir = (base / cfg["reg_dir"] / "cron").resolve()
     cron_dir.mkdir(parents=True, exist_ok=True)
-    scheduler = Scheduler(cron_dir, rdir / "cron_state.json", rdir / "cron_order.json")
+    scheduler = Scheduler(cron_dir, data_dir / "cron_state.json",
+                          data_dir / "cron_order.json")
     # 把定时任务按路径归属到服务（面板"关联的定时任务"用）；lambda 保证每轮读最新
     manager.cron_specs_provider = lambda: scheduler.specs
-    controller = HostController(manager, rdir)
+    controller = HostController(manager, logs_dir, data_dir)
 
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
                       controller=controller, scheduler=scheduler,
