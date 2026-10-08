@@ -2,6 +2,73 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.12.0（2026-10-08）
+
+框架学会回答"**这个端口上跑的是不是我的服务**"。此前它只会问"端口有人应答吗"，
+由此派生一类误判——把别人的应用认成自家服务（面板显示运行中、点开跳进陌生页面），
+以及认不出宿主重启后的自家孤儿（既停不掉也回收不了）。
+
+### 实例身份判定（新增 `identify()`）
+
+- 四态判定：`mine`（确认是本服务，可接管/回收/停止）/ `foreign`（确认是别人的程序）/
+  `unknown`（有应答但认不出，保守不冒充）/ `absent`（端口无监听）
+- 判据按**信息产生时机**分层回退，全部零额外进程：
+  `own-handle`（本进程拉起的句柄）→ `own-pidfile`（框架 pid 凭证）→
+  `health-service`（服务 `/health` 自报的 `service` 字段）→
+  `declared-pidfile`（注册条声明的 pidfile，商业软件兜底）
+- **凭证类判据必须与"端口在监听"交叉验证**：pid 会被系统回收，残留凭证里的 pid
+  可能已被判给别的进程，只看"pid 存活"会把别人的进程认成自家实例
+
+### 启动接管（新增 `reconcile()`）
+
+- 宿主重启后句柄表为空，此前只能靠端口探测（答不出身份），于是把孤儿一律 adopt
+  成"外部实例"归位 running——既停不掉也回收不了，线上一天刷 3400+ 条登记簿
+- 现按身份收敛：`mine` 归位、`foreign` 标 conflict、`unknown` 记事件不冒充、
+  `absent` 清理过期 pid 凭证
+
+### 新增面板状态
+
+- `conflict`（端口被占，橙色）：与 `failed`（我启动失败）区分——处置方式不同
+- `unknown`（身份不确认，黄色）：保守呈现，绝不显示成"运行中"
+
+### 修复
+
+- **停止服务闪黑窗**（v0.11 遗留）：`_taskkill_tree` / `pid_alive` / `wait_gone`
+  三处 `subprocess.run` 漏传 `CREATE_NO_WINDOW`，注释声称"黑窗不打扰桌面"但实际
+  都在弹窗；统一收敛到 `_run_quiet()` 入口，杜绝再漏
+- **`opening.html` 对任何 HTTP 应答都跳转**：`fetch(mode:"no-cors")` 一 resolve
+  就 `location.replace`——端口上是别人的程序也会照跳。现改为先经宿主身份确认
+- **`host_start` 横幅恒为"定时任务: (无)"**：调度器只在自己循环里 `scan()`，取快照
+  时还没扫过；宿主启动前补一次 `scan()`
+- **端口冲突检查对 http 型全空转**：只认 `health.type=="port"` 的字段，而实际服务
+  全是 `http`（端口写在 url 里），等于一个都没检查到；现从 url 解析
+- **`quick_alive` 对 `none` 型恒返 True**：导致该类服务"启动即宣称健康就绪"，
+  实际未做任何检查
+- **`quick_alive` 对 port 型写死 IPv4**：只探 `127.0.0.1`，漏掉只监听 `::` 的服务
+- **`your-service` 注册条未声明 `stop_script`**：自家有 `run/stop.ps1` 却没登记，
+  成为孤儿后框架无手段停止 → 只能空转抹状态 → monitor 又归位 → 死循环
+
+### 性能
+
+- `pid_alive`：`tasklist`（约 300ms/次）→ `OpenProcess`（0.02ms），失败回退 tasklist
+- `identify` 全链：2s → 52ms（端口关闭时先 socket 预筛，不走 `urlopen` 的约 2s 重试路径）
+
+### 其他
+
+- 登记簿新增动作：`identity_mismatch` / `identity_unknown` / `pidfile_stale`
+- `stop()` 新增安全闸：端口被外人占用时**只清告警、绝不执行 `stop_script`**
+  （否则会把停止指令打到陌生服务的接口上）
+- `reg/your-service.json`、`reg/your-service.json`：端口迁至 33500 段
+  （原 8xxx 段为本机最拥挤区间）；`reg/some-service.json` 补官方 pidfile 声明
+- 测试：新增 `tests/test_identity.py` 14 例（四态判定、启动接管、停止安全闸、
+  pid 回收防误判），全量 **120 例**通过
+
+### 注意
+
+- 本次改动在内存中生效，需**重启宿主一次**
+- 两个自写服务的默认端口已变更（8765→33501、8095→33502）；如你在别处硬编码过
+  旧端口请一并更新。some-service 保持 8090
+
 ## v0.11.0（2026-09-24）
 
 目录结构对齐 `C:\path\to\README.md` 三档模型，并把「声明 / 数据 / 记录」彻底分层：
