@@ -145,6 +145,8 @@ def main() -> int:
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]
     listing = ", ".join(sorted(manager.specs)) or "(无)"
+    # 调度器只在自己循环里 scan；此处先扫一次，否则 host_start 横幅恒为"(无)"
+    scheduler.scan()
     cron_names = ", ".join(sorted(s["name"] for s in scheduler.snapshot())) or "(无)"
     audit.emit("host_start", pid=os.getpid(),
                note=f"v{VERSION} listening http://{cfg['host']}:{cfg['port']}"
@@ -154,6 +156,13 @@ def main() -> int:
     print(f"reg = {scanner.reg_dir}  |  注册服务: {listing}  |  登记簿 = {audit_path}",
           flush=True)
     print(f"cron = {cron_dir}  |  定时任务: {cron_names}", flush=True)
+
+    # 启动接管：宿主重启后句柄表为空，先按身份把残留实例收敛（否则孤儿既显示
+    # 不出 running、也停不掉、空闲也回收不了）。放在 host_start 之后，事件因果一致。
+    adopted = manager.reconcile()
+    if adopted:
+        print("[reconcile] " + " | ".join(f"{k}: {v}" for k, v in adopted.items()),
+              flush=True)
 
     # monitor 与自启都在 host_start 之后才起：登记簿首行必须是宿主自己起来，
     # 否则 monitor 的 adopt_external 会抢在前面，事件因果倒置

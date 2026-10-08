@@ -75,6 +75,10 @@ button:hover,a.btn:hover{border-color:var(--accent);color:var(--accent)}
     return data;
   }
 
+  // 直连探测：仅作"服务是否已在应答"的二次确认。
+  // 注意 mode:"no-cors" 对**任何** HTTP 应答都会 resolve——端口上蹲着别的程序
+  // 也会判 true。所以它绝不能单独决定跳转（会把用户送进陌生页面），
+  // 必须先由宿主确认身份（见 boot）。
   function reachable(u) {
     return fetch(u, { mode: "no-cors", cache: "no-store" })
       .then(function () { return true; })
@@ -88,23 +92,29 @@ button:hover,a.btn:hover{border-color:var(--accent);color:var(--accent)}
       // 幂等启动：已 running 则直接返回，不再二次拉起
       await api("POST", "/api/services/" + encodeURIComponent(name) + "/start?via=ondemand");
     } catch (e) {
-      // 启动请求可能因"已在启动/运行"等而报错，继续轮询实际状态即可
+      // 启动请求可能因"已在启动/运行/端口被占"等而报错，继续轮询实际状态即可
     }
     var deadline = Date.now() + 60000;
     var lastStatus = "";
     while (Date.now() < deadline) {
-      // 直连探测目标端口：服务一 bind 就命中，不必等宿主状态机收敛到 running
-      if (await reachable(target)) { location.replace(target); return; }
       var s = null;
       try { s = await getService(); } catch (e) { /* 宿主暂时不可达，继续 */ }
       if (s) {
-        if (s.status === "failed" || s.status === "invalid") {
+        // 宿主已按身份判定收敛状态，这里以它为准
+        if (s.status === "failed" || s.status === "invalid"
+            || s.status === "conflict") {
           fail(s.error || ("服务状态异常：" + (s.status || "未知")));
           return;
         }
+        if (s.status === "running") {
+          // 宿主确认是本服务实例后才跳；reachable 只作"已开始应答"的二次确认，
+          // 不通过就再等一轮（刚 bind 完可能还没进入处理循环）
+          if (await reachable(target)) { location.replace(target); return; }
+        }
         if (s.status !== lastStatus) {
           lastStatus = s.status;
-          $("#sub").textContent = "当前状态：" + (s.status === "starting" ? "启动中" : s.status);
+          $("#sub").textContent = "当前状态："
+            + (s.status === "starting" ? "启动中" : (s.status === "unknown" ? "身份不确认" : s.status));
         }
       }
       await sleep(250);

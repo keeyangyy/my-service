@@ -183,17 +183,22 @@ class Manager:
             if stale:
                 self._order = [n for n in self._order if n in specs]
                 self._save_order()   # 注销服务的顺序条目一并清掉
-            # 端口冲突检查（跨服务）
+            # 端口冲突检查（跨服务）：http 型也要查——从 url 解析端口，
+            # 此前只认 health.type=="port" 的字段，三个 http 型服务一个都没查到
             seen: dict[int, str] = {}
             for name, spec in specs.items():
-                port = spec.health_port
-                if spec.valid and spec.health_type == "port" and port:
-                    if port in seen and seen[port] != name:
-                        st = self.state[name]
-                        st["status"] = "invalid"
-                        st["error"] = f"health.port {port} 与 {seen[port]} 冲突"
-                    else:
-                        seen[port] = name
+                if not spec.valid:
+                    continue
+                port = self._health_port(spec)
+                if not port:
+                    continue
+                if port in seen and seen[port] != name:
+                    st = self.state[name]
+                    if not str(st.get("status", "")).startswith("invalid"):
+                        st["error"] = (f"健康端口 {port} 与 {seen[port]} 声明冲突"
+                                       "（两者不能同时运行）")
+                else:
+                    seen[port] = name
 
     # ------------------------------------------------------------ 查询
     def snapshot(self) -> list[dict]:
@@ -220,7 +225,7 @@ class Manager:
                     "mode": spec.mode,
                     "idle_timeout": spec.idle_timeout if spec.mode == "on_demand" else None,
                     "last_active": st.get("last_active"),
-                    "port": spec.health_port if spec.health_type == "port" else None,
+                    "port": self._health_port(spec),
                     "url": spec.url,
                     "uptime_sec": uptime,
                     "autostart": spec.autostart,
@@ -248,42 +253,190 @@ class Manager:
     def get_spec(self, name: str) -> Spec | None:
         return self.specs.get(name)
 
-    # ------------------------------------------------------------ 外部运行判定
-    def external_alive(self, name: str) -> tuple[bool, str]:
-        """判断服务当前是否已有实例在运行（超出框架进程表的：外部/残留/手动）。
+    # ------------------------------------------------------------ 实例身份
+    def identify(self, name: str) -> tuple[str, str, str]:
+        """判定健康目标上跑的是不是**本服务**：→ (结论, 依据, 说明)。
 
-        判定依据：port/http → 快速端口探测；process → pidfile 存活；
-        none / process 无 pidfile → 无法判定（返回 False，靠托管句柄）。
-        port/http 用快速端口探测而非 urlopen——防双开只需知道"端口有无实例监听"，
-        而 urlopen 在无监听端口上可能被代理/TUN 拖成数秒，拖慢启动。
+        结论三态（不含"absent"，那是端口无监听的单独情形，见下）：
+
+          mine    确认是本服务的实例（可安全接管/回收/停止）
+          foreign 确认**不是**本服务（端口被别的程序占了，无权干涉）
+          unknown 端口有人应答但认不出身份（保守：不冒充成功，也不当作外人）
+          absent  端口无监听 / 无凭证（尚未运行）
+
+        依据来源按"信息产生时机"分，优先级从高到低（后两条按需探测）：
+
+          own-handle   本进程亲手拉起的句柄还在（最强，无需探测）
+          own-pidfile  框架 pid 凭证上的 pid 仍存活（宿主重启后的接管场景）
+          health-service  响应体自报的 service 字段 == 注册名（服务侧现成原料）
+          declared-pidfile 注册条声明的 pidfile 存活（商业软件靠它兜底）
+
+        **零额外进程**：只用 HTTP 探测（复用既有通道）与本地文件读取。
+        历史上曾用 netstat/tasklist/powershell 反向探测，代价是每轮起子进程、
+        数百毫秒、并在桌面弹出控制台窗口——故弃用。
         """
         spec = self.specs.get(name)
         if spec is None or not spec.valid:
-            return False, "未注册"
-        htype = spec.health_type
-        if htype in ("port", "http"):
-            if runner.quick_alive(spec, None):
-                if htype == "port":
-                    return True, f"端口 {spec.health_port} 已有实例监听"
-                _, port = runner.parse_http_host_port(spec.health_url or "")
-                return True, f"健康端口 {port} 已有实例监听"
-            return False, "健康端口无监听"
-        if htype == "process" and spec.pidfile:
-            pf = spec.pidfile
-            p = (spec.path / pf).resolve() if not Path(pf).is_absolute() else Path(pf)
-            if p.is_file():
-                try:
-                    pid = int(p.read_text(encoding="ascii").strip())
-                except Exception:  # noqa: BLE001
-                    return False, "pidfile 内容非数字"
-                if runner.pid_alive(pid):
-                    return True, f"pidfile {pid} 存活"
-                return False, f"pidfile {pid} 已不在运行"
-            return False, "pidfile 不存在"
-        return False, "无法判定（none/process 无 pidfile）"
+            return "absent", "", "未注册或注册条无效"
 
-    def adopt_external(self, name: str, reason: str, act: str = "adopt_external") -> None:
-        """把已在外部运行的实例归位为 running（自启跳过等场景，让状态如实反映）。"""
+        # 端口是否有监听——廉价 socket 预筛（毫秒级）。
+        # 必须先算：下面"凭证类"判据都要用它交叉验证。
+        # 为什么必须交叉：**pid 会被系统回收**。旧服务的进程早退了，但残留凭证里的
+        # pid 可能已被判给别的进程（"存活" ≠ "是本服务"）。只看 pid 存活会误判 mine。
+        port = self._health_port(spec)
+        port_up = bool(port) and runner.quick_alive(spec, None)
+
+        # ① 本进程亲手拉起的句柄：直接信任，无需任何探测
+        h = self.handles.get(name)
+        if h is not None and h.popen.poll() is None:
+            return "mine", "own-handle", f"本框架拉起的实例（pid {h.pid}）"
+
+        # ② 框架 pid 凭证 **且端口在监听**，才认定是本服务实例。
+        # 宿主重启后句柄表为空，靠凭证接管；但绝不能凭一个存活的 pid 就冒充成功。
+        own_pid = runner.read_pidfile(runner.pidfile_path(spec))
+        if own_pid and runner.pid_alive(own_pid):
+            if port_up:
+                return "mine", "own-pidfile", f"框架 pid 凭证 {own_pid} 存活且端口在监听"
+            # 凭证存活但端口空着：旧进程已退、pid 已被别的进程复用 → 不认
+            return ("absent", "stale-pidfile",
+                    f"残留 pid 凭证 {own_pid} 的端口 {port} 无监听")
+
+        if spec.health_type == "http" and spec.health_url:
+            # 端口不通就没有身份可谈，直接判 absent
+            # （必须预筛——urlopen 在"连接被拒绝"时实测要 ~2s，socket 探测是毫秒级，
+            #   且不会在每 5 秒的 monitor 里拖垮 API）
+            if not port_up:
+                return "absent", "", "健康端口无监听"
+            # ③ 服务自报身份：复用既有 HTTP 通道，请求体里就有 service 字段
+            reachable, payload, why = runner.probe_http(spec)
+            if not reachable:
+                return "absent", "", why or "健康目标不可达"
+            claimed = (payload or {}).get("service")
+            if isinstance(claimed, str) and claimed.strip():
+                if claimed.strip() == self._service_name(spec, name):
+                    return "mine", "health-service", f"响应体自报 service={claimed}"
+                return ("foreign", "health-service",
+                        f"端口 {port} 上的程序自报 service={claimed}，非本服务")
+            # 无 service 字段 → 身份不确认。按三态之"无字段退回旧行为"：
+            #   注册条若声明了 pidfile，仍可继续核（④）；
+            #   否则无据可依，保守判 unknown（不冒充成功，也不当作外人）
+            if not spec.pidfile:
+                return ("unknown", "no-identity-field",
+                        f"端口 {port} 有应答但未自报 service，身份不确认")
+        elif spec.health_type == "port":
+            if not port_up:
+                return "absent", "", "端口无监听"
+
+        # ④ 注册条声明的 pidfile（外部/商业软件兜底）——同样要求端口在监听
+        #    （商业软件自带的 pidfile 也可能过期残留，pid 同样可能被回收）
+        decl_pid = self._declared_pid(spec)
+        if decl_pid and runner.pid_alive(decl_pid) and port_up:
+            return "mine", "declared-pidfile", f"注册条 pidfile {decl_pid} 存活且端口在监听"
+
+        if spec.health_type == "process":
+            return "absent", "", "进程型且无存活凭证"
+        return ("unknown", "", "有实例应答但无任何身份凭证可核") \
+            if port else ("absent", "", "未运行")
+
+    @staticmethod
+    def _service_name(spec: Spec, name: str) -> str:
+        """身份名：默认用注册名；注册条可用 identity.service 显式覆盖。"""
+        ident = spec.raw.get("identity") if isinstance(spec.raw, dict) else None
+        if isinstance(ident, dict) and ident.get("service"):
+            return str(ident["service"]).strip()
+        return name
+
+    def _health_port(self, spec: Spec) -> int | None:
+        """注册条声明的健康端口：port 型读字段，http 型从 url 解析。"""
+        if spec.health_type == "port":
+            return spec.health_port
+        if spec.health_type == "http":
+            _, port = runner.parse_http_host_port(spec.health_url or "")
+            return port
+        return None
+
+    def _declared_pid(self, spec: Spec) -> int | None:
+        """读注册条声明的 pidfile（支持相对服务目录与绝对路径两种写法）。"""
+        if not spec.pidfile:
+            return None
+        p = Path(spec.pidfile)
+        if not p.is_absolute():
+            p = spec.path / p
+        return runner.read_pidfile(p)
+
+    # ------------------------------------------------------------ 外部运行判定
+    def external_alive(self, name: str) -> tuple[bool, str]:
+        """健康目标上是否已有**本服务**的实例在跑（超出框架进程表的）。
+
+        判据已从"端口有人应答"升级为"按身份确认是 mine"——端口上有别人的程序
+        应答不算我们的实例（否则会把陌生服务误判成自家孤儿，进而 adopt 归位、
+        空闲回收，对别人的进程做无权的操作）。
+
+        保守取向：只有 verdict==mine 才返回 True。unknown 时宁可返回 False
+        （启动时可能重复拉起，但由服务自身的端口占用兜底拒绝），也不误停别人的进程。
+        """
+        verdict, via, reason = self.identify(name)
+        if verdict == "mine":
+            return True, f"{reason}（{via}）"
+        if verdict == "foreign":
+            return False, reason
+        return False, reason or "健康目标无本服务实例"
+
+    # ------------------------------------------------------------ 启动接管
+    def reconcile(self) -> dict[str, str]:
+        """宿主启动时按身份收敛残留实例，消除"重启即孤儿"。
+
+        宿主重启后句柄表是空的。v0.11 只问"端口有人应答吗"，答不出"是不是我的"，
+        于是把孤儿一律 adopt 成外部实例归位 running——既停不掉（无句柄）、也回收
+        不了（判据认不出），线上表现为"空闲 0:00 却不回收"且每轮刷两条登记簿。
+        本方法按 identify() 的四态分别处置：
+
+          mine    → 归位 running（凭证已确认是我的，后续可正常 stop/回收）
+          foreign → 标 conflict，如实告知"被谁占了"，不冒充
+          unknown → 保持原状并记 identity_unknown，不接管不冒充
+          absent  → 清掉过期 pid 凭证，保持 stopped
+
+        返回 {服务名: 处置结果}，供宿主启动日志与登记簿留痕。
+        """
+        out: dict[str, str] = {}
+        with self.lock:
+            self.refresh()
+            for name, spec in list(self.specs.items()):
+                st = self.state.get(name)
+                if st is None or not spec.valid or not spec.enabled:
+                    continue
+                verdict, via, reason = self.identify(name)
+                if verdict == "mine":
+                    self.adopt_external(name, f"启动接管：{reason}", via=via)
+                    out[name] = f"归位（{via}）"
+                elif verdict == "foreign":
+                    st.update(status="conflict", error=reason, fail_at=time.time())
+                    audit.emit("identity_mismatch", ok=False, svc=name, note=reason)
+                    out[name] = "端口被他人占用"
+                elif verdict == "unknown":
+                    st["error"] = reason
+                    audit.emit("identity_unknown", svc=name, note=reason)
+                    out[name] = "身份不确认"
+                else:
+                    # absent：清掉可能残留的 pid 凭证，避免下次误认
+                    pf = runner.pidfile_path(spec)
+                    if runner.read_pidfile(pf) is not None:
+                        try:
+                            pf.unlink(missing_ok=True)
+                            audit.emit("pidfile_stale", svc=name,
+                                       note="端口无监听，清理残留 pid 凭证")
+                        except OSError:
+                            pass
+                    out[name] = "未运行"
+        return out
+
+    def adopt_external(self, name: str, reason: str, act: str = "adopt_external",
+                       via: str = "") -> None:
+        """把已在外部运行的实例归位为 running（自启跳过等场景，让状态如实反映）。
+
+        调用前应已由 identify() 确认是本服务的实例（verdict==mine）；本函数
+        只做状态归位与埋点，不再自行判定——判定与归位分离，避免"认错还照做"。
+        """
         with self.lock:
             st = self.state.get(name)
             if st is None:
@@ -291,7 +444,8 @@ class Manager:
             if st["status"] != "running":
                 st.update(status="running", started_at=st.get("started_at") or time.time(),
                           error=None, fail_at=None)
-                audit.emit(act, svc=name, note=reason)
+                suffix = f"（{via}）" if via else ""
+                audit.emit(act, svc=name, note=reason + suffix)
 
     # ------------------------------------------------------------ 操作
     def start(self, name: str, via: str = "api") -> tuple[bool, str]:
@@ -315,14 +469,19 @@ class Manager:
             cur = st["status"]
             if cur in ("running", "starting"):
                 return True, f"已在 {cur}"   # 无状态变化，不记事件
-            # 防双开：冷启动（stopped/failed）前确认没有已存在的实例（外部/残留/手动），
-            # 否则会双重拉起（some-service 实弹教训；process 型靠 pidfile 判定）。
-            if cur in ("stopped", "failed"):
-                alive, _reason = self.external_alive(name)
-                if alive:
-                    why = f"检测到已有实例在运行（{_reason}），已拒绝重复启动"
-                    st.update(status="failed", error=why, fail_at=time.time())
-                    audit.emit("reject_double", ok=False, svc=name, note=_reason,
+            # 防双开：冷启动前的确认。判据已从"端口有人应答"升级为"端口上是**本服务**
+            # 的实例"——确认是我的就归位（不重复拉起，也不算失败）；是外人占着则
+            # 明确标 conflict 并拒绝，不把别人的服务当自己拉起，也不抹成"启动失败"。
+            if cur in ("stopped", "failed", "conflict"):
+                verdict, via, reason = self.identify(name)
+                if verdict == "mine":
+                    self.adopt_external(name, f"启动前确认为本服务实例：{reason}",
+                                        act="adopt_external", via=via)
+                    return True, "已在运行（实例归位）"
+                if verdict == "foreign":
+                    why = f"健康目标被占用：{reason}"
+                    st.update(status="conflict", error=why, fail_at=time.time())
+                    audit.emit("reject_double", ok=False, svc=name, note=reason,
                                dur_ms=_dur(began))
                     return False, why
             try:
@@ -355,6 +514,14 @@ class Manager:
                 if not st["status"].startswith("invalid"):
                     st.update(status="stopped", error=None, started_at=None)
                 return True, "已停止"      # 本来就没跑，不记事件
+            # 安全闸：端口被外人占用（conflict）且我方无句柄时，只清状态、绝不收割。
+            # 否则 stop_script（如 POST /api/shutdown）会打到陌生程序上——那是别人的服务，
+            # 框架无权干涉。用户点"清除"的语义就是"把这个红点清掉"，不是杀别人。
+            if handle is None and st["status"] == "conflict":
+                verdict, _via, why = self.identify(name)
+                if verdict != "mine":
+                    st.update(status="stopped", error=None, started_at=None)
+                    return True, f"端口占用方非本服务，仅清除告警（{why}）"
             self._user_stopping.add(name)
             self._pending_stop[name] = time.time()
             st["status"] = "stopping"
@@ -398,13 +565,28 @@ class Manager:
         return self.start(name, via=via)
 
     def _reap_idle(self, name: str) -> None:
-        """on_demand 空闲回收：条件复核后走正规 stop 流程（优雅停 + 状态回 stopped）。"""
+        """on_demand 空闲回收：条件复核后走正规 stop 流程（优雅停 + 状态回 stopped）。
+
+        回收前必须确认"要停的是本服务的实例"，两条信任来源：
+
+        - **句柄在场** → 直接信任：那是本进程亲手拉起的，不可能是别人
+        - **句柄缺席**（宿主重启后的接管场景）→ 回退到身份判定，只有 mine 才回收
+
+        v0.11 的问题不在于"守不守句柄"，而在于判据只有"端口有人应答"——那既
+        认不出孤儿（宿主重启后句柄丢失 → 判成外人 → 永远不回收），也可能误把
+        占着同端口的别人的程序当成自家实例去停。现在统一按身份收口。
+        """
         with self.lock:
             st = self.state.get(name)
             spec = self.specs.get(name)
             if (st is None or spec is None or st["status"] != "running"
                     or spec.mode != "on_demand" or name in self._idle_reaping):
                 return
+            if name not in self.handles:
+                # 无句柄：须先自证是本服务的实例，否则可能误停别人的进程
+                verdict, _via, _why = self.identify(name)
+                if verdict != "mine":
+                    return
             self._idle_reaping.add(name)
         try:
             self.stop(name, act="idle_reclaim",
@@ -554,19 +736,29 @@ class Manager:
 
                 elif status == "running":
                     if spec.mode == "detached":
-                        # 点火器型：运行中只信健康复检；失联=被外部停止
+                        # 点火器型：运行中按**身份**复检（点火器早已退场，句柄不可作数）
                         if handle and handle.popen.poll() is not None:
                             self.handles.pop(name, None)
                             runner.close_handle(handle)
                         if (spec.health_type in ("port", "http")
                                 and now - float(st.get("last_check") or 0) >= 5):
                             st["last_check"] = now
-                            healthy, why = runner.check_health(spec, None)
-                            if not healthy:
+                            verdict, _via, why = self.identify(name)
+                            if verdict == "foreign":
+                                # 端口被别的程序接手：不再冒充运行中
+                                st.update(status="conflict", error=why, fail_at=now)
+                                audit.emit("identity_mismatch", ok=False, svc=name, note=why)
+                            elif verdict == "unknown":
+                                st["error"] = why
+                                if not st.get("ident_noted"):
+                                    st["ident_noted"] = True
+                                    audit.emit("identity_unknown", svc=name, note=why)
+                            elif verdict == "absent":
                                 st.update(status="stopped", started_at=None,
-                                          error=(why or "健康检查失联，进程可能已被外部停止"))
+                                          error="健康检查失联，进程可能已被外部停止")
                                 audit.emit("health_flip", ok=False, svc=name,
-                                           note=why or "健康失联：进程可能已被外部停止")
+                                           note="健康失联：进程可能已被外部停止")
+                            # mine：一切正常，不动作
                         continue
                     if handle and handle.popen.poll() is not None:
                         rc = handle.popen.returncode
@@ -600,10 +792,21 @@ class Manager:
                             st.pop("flip_noted", None)   # 恢复后允许再记一次翻转
                         if not healthy:
                             if handle is None:
-                                # 外部归位实例（无句柄）：健康失联 = 已被外部停止，干净归位
-                                st.update(status="stopped", started_at=None, error=None)
-                                audit.emit("health_flip", ok=False, svc=name,
-                                           note="外部实例已失联，归位 stopped")
+                                # 外部归位实例（无句柄）：再核一次身份——
+                                #   仍是我的 → 真被我之外的因素停了，干净归位 stopped；
+                                #   变成外人 → 端口被接手，标 conflict（不冒充）；
+                                #   答不上来 → 保守记 error，不轻易抹成 stopped
+                                verdict, _via, iwhy = self.identify(name)
+                                if verdict == "foreign":
+                                    st.update(status="conflict", error=iwhy, fail_at=now)
+                                    audit.emit("identity_mismatch", ok=False,
+                                               svc=name, note=iwhy)
+                                elif verdict == "mine":
+                                    st.update(status="stopped", started_at=None, error=None)
+                                    audit.emit("health_flip", ok=False, svc=name,
+                                               note="本服务实例已失联，归位 stopped")
+                                else:
+                                    st["error"] = iwhy or why or "健康检查失败(复检)"
                             else:
                                 st["error"] = why or "健康检查失败(复检)"
                                 # 状态未翻转（仍 running）：只记第一次，否则每 5 秒刷一条噪音
@@ -613,15 +816,21 @@ class Manager:
                                                note=why or "健康检查失败(复检)")
 
                 elif status == "stopped":
-                    # 外部/手动启动的实例：定期探测端口，活着就归位 running。
-                    # 此前 stopped 无分支，手动拉起服务后面板永远停留在 stopped
-                    # （只有宿主自启、或 failed 的 detached 自愈才会归位），不符"观测即真相"。
+                    # 外部/手动启动的实例：定期按**身份**探测，确认是本服务才归位 running。
+                    # 此前 stopped 无分支，手动拉起服务后面板永远停留在 stopped；
+                    # 且判据只是"端口有人应答"，会把占着同端口的别人的程序认成自家实例。
                     if now - float(st.get("last_check") or 0) >= 5:
                         st["last_check"] = now
-                        alive, _reason = self.external_alive(name)
-                        if alive:
-                            # 外部/手动实例归位——统一走 adopt_external（含登记簿埋点）
-                            self.adopt_external(name, f"检测到外部实例：{_reason}")
+                        verdict, via, reason = self.identify(name)
+                        if verdict == "mine":
+                            # 本服务实例（外部/手动拉起的）归位——走 adopt_external（含埋点）
+                            self.adopt_external(
+                                name, f"检测到本服务实例：{reason}", via=via)
+                        elif verdict == "foreign":
+                            # 端口被别的程序占着：如实标注，不冒充、也不无权停它
+                            st.update(status="conflict", error=reason, fail_at=now)
+                            audit.emit("identity_mismatch", ok=False, svc=name, note=reason)
+                        # unknown / absent：保持 stopped，不动
 
                 elif status == "stopping":
                     began = self._pending_stop.get(name)

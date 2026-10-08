@@ -45,6 +45,9 @@ ACTS = (
     "spec_invalid",                     # 注册条被判无效/被移除
     "cron_run",                         # 定时任务执行一轮（成功/失败/超时/启动失败）
     "cron_skip",                        # 定时任务错过计划时刻且不补跑，顺延
+    "identity_mismatch",                # 健康端口被别的程序占用（确认非本服务实例）
+    "identity_unknown",                 # 端口有监听但无法确认占用者身份（保守不冒充）
+    "pidfile_stale",                    # 清理过期的 pid 凭证（端口已无监听）
 )
 
 _FILE = "host.jsonl"

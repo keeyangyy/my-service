@@ -118,21 +118,53 @@ def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
     return ProcessHandle(proc, time.time(), pidfile_path(spec))
 
 
+def _run_quiet(cmd: list[str], timeout: float, **kw) -> subprocess.CompletedProcess:
+    """执行外部命令并**隐藏窗口**（统一入口，防止再漏 CREATE_FLAGS）。
+
+    v0.11 有注释说"黑窗不打扰用户桌面"，但 _taskkill_tree / pid_alive /
+    wait_gone 三处实际调用都漏了 creationflags——停止服务时会闪出 cmd 窗口。
+    统一走本函数，新增调用不会再犯。
+    """
+    return subprocess.run(cmd, capture_output=True, check=False,
+                          timeout=timeout, creationflags=CREATE_FLAGS, **kw)
+
+
 def _taskkill_tree(pid: int) -> None:
     # taskkill /T 收割整棵进程树（覆盖 cmd.exe→孙子进程），/F 强制
-    subprocess.run(
-        ["taskkill", "/PID", str(pid), "/T", "/F"],
-        capture_output=True, timeout=8, check=False,
-    )
+    _run_quiet(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=8.0)
 
 
 def pid_alive(pid: int) -> bool:
-    """Windows 下判断指定 PID 的进程是否存在（tasklist 精确匹配）。"""
+    """判断指定 PID 的进程是否存在。
+
+    Windows 优先用 OpenProcess（Win32 API，**微秒级**、无子进程、无窗口）：
+    旧实现走 tasklist（每次 ~300ms），而身份判定会频繁调用它，慢得拖垮轮询。
+    OpenProcess 失败回退 tasklist，保持跨平台/异常环境下的可用性。
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            ERROR_ACCESS_DENIED = 5
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                             wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if h:
+                kernel32.CloseHandle(h)
+                return True
+            # 打不开时区分"不存在"与"存在但受保护"（ERROR_ACCESS_DENIED=5）
+            return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+        except Exception:  # noqa: BLE001 - 任何异常都回退 tasklist
+            pass
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True, timeout=6, check=False,
-        )
+        out = _run_quiet(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                         timeout=6.0, text=True)
     except Exception:  # noqa: BLE001
         return False
     return out.returncode == 0 and str(pid) in (out.stdout or "")
@@ -141,10 +173,13 @@ def pid_alive(pid: int) -> bool:
 def wait_gone(pid: int, deadline: float) -> bool:
     """轮询进程是否消失（managed 进程对象不在手边时的通用判据）。"""
     while time.time() < deadline:
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True, timeout=6, check=False,
-        )
+        try:
+            out = _run_quiet(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                             timeout=6.0, text=True)
+        except Exception:  # noqa: BLE001
+            out = None
+        if out is None:
+            return True
         if out.returncode != 0 or f"{pid}" not in (out.stdout or ""):
             return True
         time.sleep(0.3)
@@ -276,6 +311,49 @@ def check_health(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, str]:
     """返回 (通过?, 说明)。process 型要求 handle 在场。"""
     alive, why, _last = check_health_ext(spec, handle)
     return alive, why
+
+
+def probe_http(spec: Spec, timeout: float = 2.5) -> tuple[bool, dict | None, str]:
+    """GET 健康 URL → (可达?, JSON 响应体, 说明)。
+
+    这是**零额外进程**的身份原料：响应体里若带 service 字段，那就是服务自报的
+    身份，框架据此回答"端口上跑的是不是我"。相比反向探测（netstat / tasklist /
+    powershell 起子进程，数百毫秒且会弹出控制台窗口），本函数复用既有的 HTTP
+    通道——无新进程、无窗口、毫秒级。
+
+    非 JSON / 空响应体也算"可达"（只是身份信息缺失），由调用方决定如何处置。
+    """
+    if not spec.health_url:
+        return False, None, "未声明健康 url"
+    try:
+        req = urllib.request.Request(spec.health_url,
+                                     headers={"User-Agent": HEALTH_UA})
+        with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
+            payload: dict | None = None
+            try:
+                parsed = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:  # noqa: BLE001 - 非 JSON 不影响可达结论
+                pass
+            if getattr(resp, "status", 200) < 400:
+                return True, payload, ""
+            return False, payload, f"HTTP {resp.status}"
+    except OSError as exc:
+        return False, None, f"{exc.__class__.__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return False, None, f"{exc.__class__.__name__}: {exc}"
+
+
+def read_pidfile(path: Path) -> int | None:
+    """读 pid 凭证 → pid；不存在 / 非数字返回 None。
+
+    坏文件（半截写入、被清空）不该抛异常拖垮身份判定，一律当作"无凭证"。
+    """
+    try:
+        return int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
 
 
 def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, str, float | None]:

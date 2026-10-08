@@ -13,10 +13,12 @@
     host_start: "宿主启动", host_stop: "宿主停止",
     start: "启动", stop: "停止", restart: "重启",
     autostart: "自启发起", autostart_skip: "自启跳过",
-    adopt_external: "外部实例归位", health_flip: "健康翻转",
+    adopt_external: "实例归位", health_flip: "健康翻转",
     idle_reclaim: "空闲回收", crash: "意外退出",
     spawn_fail: "拉起失败", reject_double: "拒绝双开",
     spec_invalid: "注册条无效",
+    identity_mismatch: "端口被他人占用", identity_unknown: "身份不确认",
+    pidfile_stale: "清理残留 pid 凭证",
     cron_run: "定时执行", cron_skip: "定时跳过"
   };
 
@@ -27,6 +29,10 @@
     starting: { cls: "starting", label: "启动中" },
     stopping: { cls: "stopping", label: "停止中" },
     failed:   { cls: "failed",   label: "失败" },
+    // 端口被别的程序占用：不是"我启动失败"，处置方式也不同（改端口 or 找回占用方）
+    conflict: { cls: "conflict", label: "端口被占" },
+    // 有应答但无法确认身份：保守呈现，绝不显示成"运行中"
+    unknown:  { cls: "unknown",  label: "身份不确认" },
     invalid:  { cls: "invalid",  label: "清单无效" }
   };
 
@@ -866,6 +872,14 @@
       case "stopped":
       case "failed":
         return [{ action: "start", label: "启动", busy: false }];
+      // 端口被外人占：允许重试启动（占用方可能已撤）、也允许"清除"告警；
+      // 不给"重启"（重复拉起无意义）
+      case "conflict":
+        return [{ action: "start", label: "重试启动", busy: false },
+                { action: "stop", label: "清除", busy: false }];
+      case "unknown":
+        return [{ action: "start", label: "启动", busy: false },
+                { action: "stop", label: "停止", busy: false }];
       case "running":
         return [{ action: "restart", label: "重启", busy: false }, { action: "stop", label: "停止", busy: false }];
       case "starting":
@@ -1172,7 +1186,8 @@
     }
 
     // 过渡态锚点（用于焦点保护时复用按钮结构）
-    if (status === "stopped" || status === "failed" || status === "running") {
+    if (status === "stopped" || status === "failed" || status === "running"
+        || status === "conflict" || status === "unknown") {
       stableLayout.set(svc.name, status);
     }
 
