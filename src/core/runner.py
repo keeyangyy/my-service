@@ -65,10 +65,11 @@ class ProcessHandle:
     """
 
     def __init__(self, popen: subprocess.Popen, started_at: float,
-                 pidfile: Path):
+                 pidfile: Path, output_path: Path | None = None):
         self.popen = popen
         self.started_at = started_at
         self.pidfile = pidfile        # my-service\data\pids\<svc>.pid（框架产物）
+        self.output_path = output_path  # detached 型入口脚本的输出捕获（临时文件）
 
     @property
     def pid(self) -> int | None:
@@ -93,29 +94,72 @@ def pidfile_path(spec: Spec) -> Path:
     return base / "pids" / f"{spec.folder}.pid"
 
 
+def entry_output_path(spec: Spec) -> Path:
+    """detached 型入口脚本的输出捕获文件（data\\entry-out\\<svc>.out）。
+
+    只对 detached 型生效：这类服务的"起没起来"全由入口脚本一句话决定，而脚本
+    输出此前一律 DEVNULL——脚本喊"already running"然后退出 0，框架只看到
+    60 秒健康超时，真实原因彻底丢失。捕获一份，失败时把尾部写进登记簿 note。
+    """
+    base = _RUNTIME_DIR or Path(__file__).resolve().parents[2] / "data"
+    return base / "entry-out" / f"{spec.folder}.out"
+
+
 def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
     """拉起进程：stdout/stderr 一律丢弃（DEVNULL），pid 写 my-service\\data\\pids\\。
 
     服务日志由服务自己写（它家 logs\\），框架零接管——纳管与否不改变服务的日志形态。
     代价：服务自己 print 的启动报错不留档，故失败原因由审计流 note 字段兜住。
     log_base 参数保留兼容旧签名（已弃用）。
+
+    例外：detached 型的入口是"点火器"（拉起真进程后自己退场），它的输出就是
+    启动成败的唯一说明，故捕获到 data\\entry-out\\<svc>.out，由 state 在脚本
+    退场且健康未就绪时取尾部写进 note（见 read_output_tail）。
     """
     cmd = build_command(spec)
     env = {**os.environ, **spec.env}
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(spec.workdir),
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=CREATE_FLAGS,
-    )
+    out_path: Path | None = None
+    out_fh = None
+    if spec.mode == "detached":
+        try:
+            out_path = entry_output_path(spec)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_fh = open(out_path, "wb")      # 每次启动覆盖，只看这一次
+        except OSError:
+            out_path, out_fh = None, None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(spec.workdir),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=out_fh if out_fh is not None else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if out_fh is not None else subprocess.DEVNULL,
+            creationflags=CREATE_FLAGS,
+        )
+    finally:
+        if out_fh is not None:
+            out_fh.close()      # 子进程已继承句柄，父进程这份要关掉
     try:
         pidfile_path(spec).write_text(str(proc.pid), encoding="ascii")
     except OSError:
         pass
-    return ProcessHandle(proc, time.time(), pidfile_path(spec))
+    return ProcessHandle(proc, time.time(), pidfile_path(spec), out_path)
+
+
+def read_output_tail(path: Path | None, max_chars: int = 160) -> str:
+    """取捕获输出的尾部（压成单行），供登记簿 note 使用。读不到返回空串。"""
+    if path is None:
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    tail = " ⏎ ".join(lines[-3:])
+    return tail[-max_chars:] if len(tail) > max_chars else tail
 
 
 def _run_quiet(cmd: list[str], timeout: float, **kw) -> subprocess.CompletedProcess:
@@ -194,8 +238,13 @@ def _drop_pidfile(handle: ProcessHandle) -> None:
 
 
 def close_handle(handle: ProcessHandle) -> None:
-    """回收框架侧产物（pid 文件）。进程已退出时用，无日志句柄可关。"""
+    """回收框架侧产物（pid 文件 + 入口输出捕获）。进程已退出时用。"""
     _drop_pidfile(handle)
+    if handle.output_path is not None:
+        try:
+            handle.output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def stop_managed(handle: ProcessHandle) -> None:

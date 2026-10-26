@@ -495,6 +495,7 @@ class Manager:
             # 发起不成一条事件：成败由 monitor 在 starting 收敛时落终态（含耗时）
             st.update(status="starting", started_at=handle.started_at, error=None,
                       fail_at=None, start_began=began, start_via=via)
+            st.pop("entry_note", None)      # 清掉上一轮遗留的入口脚本输出
             return True, "starting"
 
     def stop(self, name: str, act: str = "stop", reason: str = "") -> tuple[bool, str]:
@@ -693,12 +694,20 @@ class Manager:
                         st["status"], st["error"] = ("running", None)
                         st.pop("start_began", None)
                         st.pop("start_via", None)
+                        st.pop("entry_note", None)   # 起来了就不必留失败线索
                         audit.emit("start", svc=name, dur_ms=dur,
                                    pid=handle.pid if handle else None,
                                    note=f"{spec.mode} 健康就绪（{via}）")
                         continue
                     if spec.mode == "detached" and handle and not alive:
-                        # 点火器脚本退场 = 正常；摘句柄，继续只等健康就绪
+                        # 点火器脚本退场 = 正常；摘句柄，继续只等健康就绪。
+                        # 但脚本说了什么必须留档：起不来的真相往往只在它的输出里
+                        # （如官方脚本凭一个被回收复用的 pid 喊 "already running"
+                        # 然后退出 0，框架这边只能看到 60 秒健康超时）。
+                        rc = handle.popen.returncode
+                        tail = runner.read_output_tail(handle.output_path)
+                        if tail:
+                            st["entry_note"] = f"入口脚本 rc={rc}：{tail}"
                         self.handles.pop(name, None)
                         runner.close_handle(handle)
                         handle = None
@@ -719,6 +728,9 @@ class Manager:
                         # 关键修复点：超时必须收敛，不能像 早期内部版本 那样残留 starting
                         note = (f"健康检查超时({timeout:.0f}s)"
                                 f"{('，' + why) if why else ''}（{via}）")
+                        extra = str(st.pop("entry_note", "") or "")
+                        if extra:
+                            note = f"{note} | {extra}"
                         st.update(status="failed", error=note, fail_at=now)
                         st.pop("start_began", None)
                         st.pop("start_via", None)
