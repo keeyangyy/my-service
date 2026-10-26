@@ -341,7 +341,16 @@
       : "是否参与调度（停用只暂停下一次触发，不打断正在跑的一轮）";
     toggle.addEventListener("click", function (e) { e.stopPropagation(); });
     cb.addEventListener("change", function () {
-      if (!bar) return;
+      if (!bar) {
+        // 主行开关（无配置面板）：即点即生效，直接提交服务端。
+        // 修复：此前这里直接 return——拨动既不写草稿也不调 API，
+        // 轮询重建又把勾选态拉回服务端原值，表现为「开关关不掉」。
+        var patch = {};
+        patch[field] = cb.checked;
+        saveCronConfig(name, patch,
+          function () { cb.checked = !cb.checked; });   // 失败：回拨视觉状态
+        return;
+      }
       var cur = cronData.get(name) || {};
       cronDraft(bar, cur)[field] = cb.checked;   // 本地草稿，保存按钮统一提交
       syncCronConfig(bar, cur);                  // 刷新未保存指示
