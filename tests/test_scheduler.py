@@ -67,11 +67,17 @@ class _Sandbox:
         return (self.reg / f"{name}.json").read_bytes()
 
     @staticmethod
-    def wait_running(sched: Scheduler, name: str, timeout: float = 5.0) -> bool:
-        """轮询等待异步执行线程进入 running（tick 发射是异步的，有窗口）。"""
+    def wait_running(sched: Scheduler, name: str, timeout: float = 10.0) -> bool:
+        """轮询等待任务真正被触发。
+
+        tick 发射是异步的，而任务可能在首次轮询前就跑完并从 `running` 退出——
+        所以「已在 running」和「last_run 已落账」都算已触发，避免慢机/快任务下的假失败。
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             if name in sched.running:
+                return True
+            if (sched.persist.get(name) or {}).get("last_run"):
                 return True
             time.sleep(0.05)
         return False
