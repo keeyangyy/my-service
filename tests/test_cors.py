@@ -27,6 +27,9 @@ LOCAL_V6 = "http://[::1]:9000"
 FOREIGN = "https://example.com"
 EVIL = "http://localhost.evil.com:8765"      # 前缀相似，必须判为外站
 NULL_ORIGIN = "null"                          # file:// 页面
+LAN_HOST = "http://c675-wjy:1236"             # 局域网按主机名访问
+LAN_IP = "http://198.51.100.44:1236"          # TEST-NET-2，白名单 CIDR 内
+OUTSIDE_IP = "http://192.0.2.9:1236"          # TEST-NET-1，白名单之外
 
 
 class _FakeManager:
@@ -65,9 +68,10 @@ class _FakeManager:
 class _Server:
     """起一个真实 HTTP 服务，端口随机，用完即停。"""
 
-    def __init__(self, cors_local_only: bool = True):
+    def __init__(self, cors_local_only: bool = True, cors_allow=None):
         self.mgr = _FakeManager()
-        handler = api.make_handler(self.mgr, None, None, cors_local_only)
+        handler = api.make_handler(self.mgr, None, None, cors_local_only,
+                                   cors_allow=cors_allow)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
@@ -265,6 +269,88 @@ class TestSwitchOff(unittest.TestCase):
         code, _, _ = self.srv.req("POST", "/api/services/svc-a/start", origin=FOREIGN,
                                   body={})
         self.assertNotEqual(code, 403)
+
+
+class TestAllowListHelpers(unittest.TestCase):
+    """cors_allow 判定：主机名 / 精确 IP / CIDR / 非法项。"""
+
+    def test_host(self):
+        self.assertTrue(api.is_allowed_origin(LAN_HOST, ["c675-wjy"]))
+        self.assertTrue(api.is_allowed_origin(LAN_HOST, ["C675-WJY"]))   # 大小写不敏感
+
+    def test_ip_and_cidr(self):
+        self.assertTrue(api.is_allowed_origin(LAN_IP, ["198.51.100.44"]))
+        self.assertTrue(api.is_allowed_origin(LAN_IP, ["198.51.100.0/24"]))
+        self.assertFalse(api.is_allowed_origin(LAN_IP, ["192.0.2.0/24"]))
+
+    def test_local_always_allowed(self):
+        self.assertTrue(api.is_allowed_origin(LOCAL, []))
+        self.assertTrue(api.is_allowed_origin(LOCAL_IP, []))
+
+    def test_bad_entry_ignored(self):
+        self.assertFalse(api.is_allowed_origin(LAN_HOST, ["not/a/cidr", ""]))
+        self.assertFalse(api.is_allowed_origin(LAN_HOST, []))
+
+
+class TestAllowListHttp(unittest.TestCase):
+    """白名单来源能拿到 CORS 头、写接口放行；白名单外仍按外站拒绝。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = _Server(cors_allow=["c675-wjy", "198.51.100.0/24"])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.close()
+
+    def test_host_read_gets_acao(self):
+        code, headers, body = self.srv.req("GET", "/api/services", origin=LAN_HOST)
+        self.assertEqual(code, 200)
+        self.assertEqual(_acao(headers), LAN_HOST)
+        self.assertIn("services", body)
+
+    def test_host_write_allowed(self):
+        self.srv.mgr.calls.clear()
+        code, headers, _ = self.srv.req("POST", "/api/services/svc-a/start",
+                                        origin=LAN_HOST, body={})
+        self.assertEqual(code, 202)
+        self.assertEqual(_acao(headers), LAN_HOST)
+        self.assertEqual(self.srv.mgr.calls, [("svc-a", "api")])
+
+    def test_cidr_write_allowed(self):
+        self.srv.mgr.calls.clear()
+        code, _, _ = self.srv.req("POST", "/api/services/svc-a/start",
+                                  origin=LAN_IP, body={})
+        self.assertEqual(code, 202)
+        self.assertEqual(self.srv.mgr.calls, [("svc-a", "api")])
+
+    def test_host_preflight(self):
+        code, headers, _ = self.srv.req("OPTIONS", "/api/services/svc-a/start",
+                                        origin=LAN_HOST)
+        self.assertEqual(code, 204)
+        self.assertEqual(_acao(headers), LAN_HOST)
+
+    def test_outside_allow_denied(self):
+        code, _, body = self.srv.req("POST", "/api/services/svc-a/start",
+                                     origin=OUTSIDE_IP, body={})
+        self.assertEqual(code, 403)
+        self.assertEqual(body.get("error"), "cross-origin denied")
+
+
+class TestAllowListDefaultUnchanged(unittest.TestCase):
+    """白名单空（默认）：局域网来源仍按外站拒绝，旧行为不变。"""
+
+    def setUp(self):
+        self.srv = _Server()
+
+    def tearDown(self):
+        self.srv.close()
+
+    def test_lan_denied_by_default(self):
+        code, headers, _ = self.srv.req("POST", "/api/services/svc-a/start",
+                                        origin=LAN_HOST, body={})
+        self.assertEqual(code, 403)
+        self.assertEqual(_acao(headers), "")
 
 
 if __name__ == "__main__":

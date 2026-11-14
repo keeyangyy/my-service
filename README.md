@@ -32,7 +32,7 @@ Windows 本机服务编排器。以声明式注册条纳管本地服务，提供
 ### 发行包（推荐）
 
 1. 从 [Releases](https://github.com/keeyangyy/my-service/releases/latest) 下载 `my-service-<version>.zip`。
-2. 解压至任意非受保护目录，例如 `D:/apps/my-service`。
+2. 解压至任意非受保护目录，例如 `C:/path/to/my-service`。
 3. 启动宿主：在 `run/` 目录右键 `start.ps1`，选择「使用 PowerShell 运行」；
    或在终端执行 `pwsh -File run/start.ps1`。
 4. 访问 <http://127.0.0.1:1236>。首次启动会在 `run/` 下生成 `Dashboard.url`，后续可双击打开面板。
@@ -112,6 +112,7 @@ pwsh -File ./run/start.ps1
 | `reg_dir` | `reg` | 注册条根目录 |
 | `audit_retention_days` | `7` | 事件保留天数，`0` 表示不清理 |
 | `cors_local_only` | `true` | 仅向本机来源网页授予跨源权限 |
+| `cors_allow` | `[]` | 额外放行的跨源来源（主机名 / IP / CIDR），局域网访问时用 |
 | `monitor.fast_sec` / `idle_sec` / `panel_grace_sec` | `1` / `10` / `15` | 状态轮询间隔与面板活跃宽限 |
 | `scheduler.tick_sec` | `10` | 调度器检查间隔 |
 | `backup.keep` | `7` | `data/bak/` 保留份数，`0` 表示不自动清理 |
@@ -151,8 +152,16 @@ my-service/
 
 ## 安全模型
 
-控制面仅绑定回环地址，跨源写操作默认拒绝，不提供账户体系。这一取舍的前提是「本机进程本身即可
-调用接口」；如果将 `host` 改为非回环地址，必须自行增加认证与访问控制。威胁模型与漏洞报告方式见
+默认只绑定回环地址、只向本机来源网页授予跨源权限，不提供账户体系。这一取舍的前提是「本机进程
+本身即可调用接口」。
+
+**要在局域网里用**（例如装在常开的机器上、从笔记本访问面板），需要同时做两件事：
+
+1. `config.json` 的 `host` 改为 `0.0.0.0`（或具体网卡地址）；
+2. `cors_allow` 列出允许的来源，例如 `["c675-wjy", "100.64.0.0/10"]`，支持主机名、精确 IP 与 CIDR。
+
+注意 CORS 只约束浏览器跨源，**不约束 curl / 脚本**——任何能连到端口的设备都能直接调接口。
+所以真正的边界是网络层：建议用防火墙只放行 Tailscale 或局域网网段。威胁模型与漏洞报告方式见
 [SECURITY.md](https://github.com/keeyangyy/my-service/blob/master/SECURITY.md)。
 
 ## 开发

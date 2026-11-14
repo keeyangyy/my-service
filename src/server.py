@@ -48,6 +48,7 @@ def load_config(home: Path) -> dict:
         "reg_dir": "reg",
         "audit_retention_days": 7,   # 登记簿事件保留天数（0 = 永不自动清理）
         "cors_local_only": True,     # 仅本机来源的网页可获得跨源许可（关掉=回到无 CORS 的历史行为）
+        "cors_allow": [],            # 额外放行的来源：主机名 / IP / CIDR（空=只本机）
         "backup": {"keep": 7},       # data/bak/ 保留份数（0 = 不自动清理）
     }
     cfg_path = _config_path(home)
@@ -119,6 +120,7 @@ def main() -> int:
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
                       controller=controller, scheduler=scheduler,
                       cors_local_only=bool(cfg.get("cors_local_only", True)),
+                      cors_allow=cfg.get("cors_allow") or (),
                       settings_path=_config_path(home),
                       backup_settings=backup_settings)
     controller.httpd = httpd

@@ -10,13 +10,15 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import audit, backup, update
-from .cors import is_local_origin, is_write_path, origin_host, origin_of
+from .cors import (is_allowed_origin, is_local_origin, is_write_path,
+                   origin_host, origin_of)
 from .static import load as load_static
 
 # 兼容旧私有名（原 core/api.py 的模块级纯函数，保持外部引用不破）
 _origin_of = origin_of
 _origin_host = origin_host
 _is_local_origin = is_local_origin
+_is_allowed_origin = is_allowed_origin
 _is_write_path = is_write_path
 
 
@@ -28,10 +30,15 @@ class _Handler(BaseHTTPRequestHandler):
     settings_path = None
     backup_settings = None
     cors_local_only: bool = True
+    cors_allow: tuple[str, ...] = ()
     server_version = "my-service"
     protocol_version = "HTTP/1.1"
 
     # ---------------------------------------------------------- 工具
+    def _allowed(self, origin: str) -> bool:
+        """来源是否放行：本机，或命中 cors_allow 白名单。"""
+        return _is_allowed_origin(origin, self.cors_allow)
+
     def _acao(self) -> tuple[str, bool]:
         """本请求的 CORS 处置：(回显的 Origin 或 '', 是否本地来源)。
 
@@ -43,14 +50,14 @@ class _Handler(BaseHTTPRequestHandler):
         origin = _origin_of(self.headers)
         if origin is None:
             return "", True
-        return (origin, True) if _is_local_origin(origin) else ("", False)
+        return (origin, True) if self._allowed(origin) else ("", False)
 
     def _denied(self, path: str) -> bool:
         """外站是否应被拒绝：仅拦写接口，且仅在开关开启时。"""
         if not self.cors_local_only:
             return False
         origin = _origin_of(self.headers)
-        if origin is None or _is_local_origin(origin):
+        if origin is None or self._allowed(origin):
             return False
         return _is_write_path(path)
 
@@ -566,7 +573,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 def make_handler(manager, host=None, scheduler=None,
                  cors_local_only: bool = True,
-                 settings_path=None, backup_settings=None):  # noqa: ANN001
+                 settings_path=None, backup_settings=None,
+                 cors_allow=None):  # noqa: ANN001
     """绑定依赖后返回 Handler 子类（依赖走类属性，方法体不依赖闭包）。"""
     return type("Handler", (_Handler,), {
         "manager": manager,
@@ -575,6 +583,8 @@ def make_handler(manager, host=None, scheduler=None,
         "settings_path": settings_path,
         "backup_settings": backup_settings,
         "cors_local_only": cors_local_only,
+        # 非 list/tuple 一律视为空，避免字符串被拆成单字符
+        "cors_allow": tuple(cors_allow) if isinstance(cors_allow, (list, tuple)) else (),
     })
 
 
@@ -609,9 +619,9 @@ def _tail_file(path: Path, name: str, n: int) -> dict:
     return {"name": name, "lines": lines}
 
 
-def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,
+def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,  # noqa: PLR0913
           cors_local_only: bool = True, settings_path=None,
-          backup_settings=None):  # noqa: ANN001
+          backup_settings=None, cors_allow=None):  # noqa: ANN001
     """绑定监听。controller 为 HostController（提供 meta/schedule），
     scheduler 为定时任务调度器（提供 snapshot/run_now）。
 
@@ -623,7 +633,8 @@ def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,
     import time
     handler = make_handler(manager, controller, scheduler, cors_local_only,
                            settings_path=settings_path,
-                           backup_settings=backup_settings)
+                           backup_settings=backup_settings,
+                           cors_allow=cors_allow)
     last_err: OSError | None = None
     for _ in range(40):
         try:

@@ -114,6 +114,7 @@ $cfg = [ordered]@{
     reg_dir              = "reg"
     audit_retention_days = 7
     cors_local_only      = $true
+    cors_allow           = @()
     monitor              = [ordered]@{ fast_sec = 1.0; idle_sec = 10.0; panel_grace_sec = 15.0 }
     scheduler            = [ordered]@{ tick_sec = 10.0 }
     backup               = [ordered]@{ keep = 7 }

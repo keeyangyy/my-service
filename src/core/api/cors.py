@@ -11,7 +11,9 @@ CORS / 外站门禁的纯判定。无 IO，便于单测与复用。
 """
 from __future__ import annotations
 
+import ipaddress
 from urllib.parse import urlparse
+from collections.abc import Iterable
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
@@ -39,6 +41,36 @@ def origin_host(origin: str) -> str:
 def is_local_origin(origin: str) -> bool:
     """来源是否为本机。端口不限——本机任何端口起的页面都算自己人。"""
     return origin_host(origin) in LOCAL_HOSTS
+
+
+def _match_allow(host: str, item: str) -> bool:
+    """单个白名单项是否命中 host：支持主机名、精确 IP、CIDR 网段。"""
+    item = item.strip().lower()
+    if not item:
+        return False
+    if "/" in item:
+        try:
+            net = ipaddress.ip_network(item, strict=False)
+        except ValueError:
+            return False
+        try:
+            return ipaddress.ip_address(host) in net
+        except ValueError:
+            return False
+    return host == item
+
+
+def is_allowed_origin(origin: str, allow: Iterable[str] = ()) -> bool:
+    """来源是否放行：本机，或命中白名单（主机名 / IP / CIDR）。
+
+    白名单为空时行为与 is_local_origin 完全一致（默认只放本机）。
+    """
+    if is_local_origin(origin):
+        return True
+    host = origin_host(origin)
+    if not host:
+        return False
+    return any(_match_allow(host, item) for item in allow)
 
 
 def is_write_path(path: str) -> bool:

@@ -2,6 +2,16 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## Unreleased
+
+### 新增功能
+
+- 局域网访问：新增 `cors_allow` 白名单
+  - `config.json` 新增 `cors_allow`，列出允许的跨源来源（主机名 / 精确 IP / CIDR 网段），默认空 = 只本机
+  - 配合 `host: 0.0.0.0`，可在局域网内打开面板并正常操作（此前写接口会被判为外站 `403`）
+  - CORS 只约束浏览器跨源，不约束 curl / 脚本；真正的边界仍是网络层（防火墙 / Tailscale ACL）
+  - `SECURITY.md`、`docs/design/cors.md`、README 的安全模型同步说明局域网部署取舍
+
 ## v0.14.1（2026-11-15）
 
 ### 文档
