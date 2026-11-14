@@ -240,9 +240,8 @@ class Manager(MonitorMixin):
             if not spec.pidfile:
                 return ("unknown", "no-identity-field",
                         f"端口 {port} 有应答但未自报 service，身份不确认")
-        elif spec.health_type == "port":
-            if not port_up:
-                return "absent", "", "端口无监听"
+        elif spec.health_type == "port" and not port_up:
+            return "absent", "", "端口无监听"
 
         # ④ 注册条声明的 pidfile（外部/商业软件兜底）——同样要求端口在监听
         #    （商业软件自带的 pidfile 也可能过期残留，pid 同样可能被回收）
