@@ -167,6 +167,7 @@ python -m unittest discover -s tests    # 全量单测
 pwsh -File .\tools\check_privacy.ps1    # 提交前隐私检查
 ```
 
+项目规则（框架边界、运行态约定、改动流程）见 [AGENTS.md](AGENTS.md)；
 代码约定、提交规范与**公开发布规则（脱敏清单）**见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可
