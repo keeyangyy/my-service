@@ -43,23 +43,35 @@ class HostController:
         self.autostart = self._detect_autostart()
 
     @staticmethod
-    def _startup_cmd_path() -> Path | None:
-        """启动文件夹里的自启 cmd（无需管理员权限的那一种）。"""
+    def _startup_dir() -> Path | None:
         appdata = os.environ.get("APPDATA")
         if not appdata:
             return None
         return (Path(appdata) / "Microsoft" / "Windows" / "Start Menu"
-                / "Programs" / "Startup" / "start-my-service.cmd")
+                / "Programs" / "Startup")
+
+    @classmethod
+    def _startup_vbs_path(cls) -> Path | None:
+        """启动文件夹里的自启 vbs（wscript 无窗口执行，不会闪黑窗）。"""
+        base = cls._startup_dir()
+        return base / "start-my-service.vbs" if base else None
+
+    @classmethod
+    def _startup_cmd_path(cls) -> Path | None:
+        """历史方案留下的 cmd（保留路径用于检测与清理）。"""
+        base = cls._startup_dir()
+        return base / "start-my-service.cmd" if base else None
 
     @staticmethod
     def _detect_autostart() -> str:
-        """探测本机自启方式：startup（启动文件夹）/ logon（计划任务）/ none。
+        """探测本机自启方式：startup（启动文件夹 vbs/cmd）/ logon（计划任务）/ none。
 
         构造时探测一次即可——自启项变化需要重装，不需要每秒查。
         """
-        cmd = HostController._startup_cmd_path()
-        if cmd is not None and cmd.is_file():
-            return "startup"
+        for path in (HostController._startup_vbs_path(),
+                     HostController._startup_cmd_path()):
+            if path is not None and path.is_file():
+                return "startup"
         try:
             done = subprocess.run(["schtasks", "/query", "/tn", "StartMyService"],
                                   capture_output=True, timeout=3)
@@ -69,31 +81,43 @@ class HostController:
             pass
         return "none"
 
-    def _launcher_line(self) -> str:
-        """自启时执行的命令：便携包用包根 start.cmd，源码模式走 run/start.ps1。"""
-        portable = self.home != self.app_dir and (self.home / "start.cmd").is_file()
-        if portable:
-            return f'start "" /min "{self.home / "start.cmd"}"'
-        run_ps = self.app_dir / "run" / "start.ps1"
-        return ('start "" /min pwsh -NoProfile -WindowStyle Hidden '
-                f'-ExecutionPolicy Bypass -File "{run_ps}" start')
+    def _autostart_launcher(self) -> tuple[Path, Path]:
+        """自启用的（解释器, 入口）：优先 pythonw（GUI 子系统，无控制台窗口）。"""
+        script = self.app_dir / "src" / "server.py"
+        if self.home != self.app_dir:
+            portable = self.home / "runtime" / "pythonw.exe"
+            if portable.is_file():
+                return portable, script
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if pythonw.is_file():
+            return pythonw, script
+        return Path(sys.executable), script
+
+    def _vbs_content(self) -> str:
+        """生成无窗口启动脚本：wscript 用 SW_HIDE(0) 拉起 pythonw。"""
+        exe, script = self._autostart_launcher()
+        return (f"' my-service 开机自启（无窗口）\r\n"
+                f'CreateObject("WScript.Shell").Run """{exe}"" ""{script}""", 0, False\r\n')
 
     def set_autostart(self, enabled: bool) -> tuple[bool, str]:
         """写/删启动文件夹自启项（面板开关用）→ (ok, 当前状态)。
 
-        只处理启动文件夹这一种：不需要管理员权限。计划任务 / SYSTEM / Nssm
-        属于高级模式，仍走 run/install_autostart.ps1。
+        写 `.vbs` 而不是 `.cmd`：wscript 无窗口执行，不会出现历史方案那种
+        "登录时闪一个 conhost 黑窗"。只处理启动文件夹（无需管理员权限）；
+        计划任务 / SYSTEM / Nssm 属于高级模式，仍走 run/install_autostart.ps1。
         """
-        path = self._startup_cmd_path()
-        if path is None:
+        vbs = self._startup_vbs_path()
+        legacy = self._startup_cmd_path()
+        if vbs is None:
             return False, "缺少 APPDATA 环境变量"
         try:
             if enabled:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                content = "@echo off\r\n" + self._launcher_line() + "\r\n"
-                path.write_bytes(content.encode("gbk"))
+                vbs.parent.mkdir(parents=True, exist_ok=True)
+                vbs.write_bytes(self._vbs_content().encode("gbk"))
             else:
-                path.unlink(missing_ok=True)
+                vbs.unlink(missing_ok=True)
+            if legacy is not None:
+                legacy.unlink(missing_ok=True)   # 清掉历史 cmd 方案，避免双启动
         except OSError as exc:
             return False, f"写自启项失败: {exc}"
         self.autostart = "startup" if enabled else "none"

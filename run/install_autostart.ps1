@@ -23,27 +23,25 @@ $portableLauncher = Join-Path $dataRoot "start.cmd"
 switch ($Mode.ToLower()) {
     "startup" {
         # 启动文件夹方案（默认）：登录时由启动体验执行，进程跑在当前用户交互会话。
-        # 便携包指向包根 start.cmd（升级替换 app/ 不影响自启，且不依赖 pwsh）；
-        # 源码模式仍走 run\start.ps1（需要 pwsh 7）。.cmd 必须 GBK + CRLF。
+        # 写 .vbs 而不是 .cmd：wscript 以 SW_HIDE 启动 pythonw（GUI 子系统），
+        # 两者都不创建控制台窗口 → 不再出现历史那种 conhost 黑窗。
+        # 便携包用 runtime\pythonw.exe；源码模式用系统同名 pythonw。
         $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
-        $cmdPath = Join-Path $startupDir "start-my-service.cmd"
-        if (Test-Path -LiteralPath $portableLauncher) {
-            $target = "便携包 start.cmd"
-            $content = "@echo off`r`nstart `"`" /min `"$portableLauncher`"`r`n"
-        } else {
-            $target = "run\start.ps1"
-            $content = "@echo off`r`n" +
-                       "start `"`" /min pwsh -NoProfile -WindowStyle Hidden " +
-                       "-ExecutionPolicy Bypass -File `"$runPs`" start`r`n"
+        $vbsPath = Join-Path $startupDir "start-my-service.vbs"
+        $legacyCmd = Join-Path $startupDir "start-my-service.cmd"
+        $pythonw = Join-Path $dataRoot "runtime\pythonw.exe"
+        if (-not (Test-Path -LiteralPath $pythonw)) {
+            $pythonw = Join-Path (Split-Path (Get-Command python.exe).Source) "pythonw.exe"
         }
-        if (Test-Path -LiteralPath $cmdPath) {
-            $old = [IO.File]::ReadAllText($cmdPath, [Text.Encoding]::GetEncoding(936))
-            if ($old -ne $content) {
-                Write-Host "检测到已有自启项，目标将更新为: $target"
-            }
+        $server = Join-Path $app "src\server.py"
+        $line = 'CreateObject("WScript.Shell").Run """{0}"" ""{1}""", 0, False' -f $pythonw, $server
+        $content = "' my-service 开机自启（无窗口）`r`n" + $line + "`r`n"
+        [IO.File]::WriteAllText($vbsPath, $content, [Text.Encoding]::GetEncoding(936))
+        if (Test-Path -LiteralPath $legacyCmd) {
+            Remove-Item -LiteralPath $legacyCmd -Force
+            Write-Host "已清理历史 cmd 方案（避免双启动）: $legacyCmd"
         }
-        [IO.File]::WriteAllText($cmdPath, $content, [Text.Encoding]::GetEncoding(936))
-        Write-Host "✓ 已安装启动文件夹自启: $cmdPath → $target"
+        Write-Host "✓ 已安装启动文件夹自启（无窗口）: $vbsPath"
         Write-Host "  注销重新登录即可验证；卸载: uninstall_autostart.ps1"
         # 顺带生成面板快捷方式（URL 取自本机 config.json；不写 IconFile，可跨机器）
         & (Join-Path $app "src\ctl.ps1") shortcut

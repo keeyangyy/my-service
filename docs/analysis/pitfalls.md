@@ -29,18 +29,30 @@
 
 **曾用方案——S4U 后台任务**：把任务主体改成「不管用户是否登录都要运行」的 S4U 登录类型（后台房间：逻辑上无窗可弹）。改动仅在 `run/install_autostart.ps1` Logon 分支。要点：触发器仍 `AtLogOn`；S4U 不存密码 → 无网络凭据；RunLevel 必须 Limited。
 
-**最终方案（2026-09-05 至今）——启动文件夹**：S4U 跑在非交互窗口站，脚本操作仍显别扭；改成启动文件夹方案（改动在系统目录，不在仓库）：
+**S4U 阶段（2026-08-30 起）**：S4U 跑在非交互窗口站，无窗但脚本操作别扭。
 
-```
-%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start-my-service.cmd   （GBK）
+**启动文件夹阶段（2026-09-05 起）**：改放 `%APPDATA%\...\Startup\start-my-service.cmd`（GBK）：
+
+```cmd
 @echo off
 start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\my-service\run\start.ps1" start
 ```
 
 - 登录时由启动体验执行，进程跑在**当前用户交互会话** → `svc.ps1` / `ctl.ps1` / 面板直接可操作，无凭据限制、无 session 0 概念。
-- 黑窗：`start "" /min` + `-WindowStyle Hidden` 最小化秒退，实测可接受。
-- 卸载 = 删除该 cmd（`uninstall_autostart.ps1` 一并清理计划任务，双保险）。
+- **黑窗仍在**：`-WindowStyle Hidden` 只隐藏 pwsh，管不住 `start` 自身开的 cmd 窗口，实机能感知到闪一下。
 - 计划任务方案（S4U / SYSTEM-AtStartup / nssm 服务）保留为 `install_autostart.ps1` 的 `-Mode` 备选。
+
+**无窗口阶段（2026-11-14 起）——vbs + pythonw**：`start /min` 的窗口根治不了，改为启动文件夹放 `.vbs`：
+
+```vbs
+' my-service 开机自启（无窗口）
+CreateObject("WScript.Shell").Run """<pythonw.exe>"" ""<app>\src\server.py""", 0, False
+```
+
+- `wscript` 以 SW_HIDE(0) 启动 `pythonw.exe`（GUI 子系统，本身无控制台）→ 登录时**完全无黑窗**
+- 不依赖 pwsh；便携包用 `runtime\pythonw.exe`，源码模式用系统同名 pythonw
+- 面板「设置 → 开机自启」直接写/删该 vbs（`HostController.set_autostart`）；旧 cmd 自动清理，避免双启动
+- 卸载 = 删除该 vbs（`uninstall_autostart.ps1` 一并清理计划任务）
 
 ## AI/自动化会话改代码后如何重载宿主（实测 2026-09-08）
 
