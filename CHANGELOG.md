@@ -1,14 +1,15 @@
 # 更新日志
 
-本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
+本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
-## Unreleased（结构统一 2026-11-14）
+## v0.13.0（2026-11-14）
 
 ### 结构
 
 - 前端 `src/web/` 迁至顶层 `web/`（与 `src/` 平级），`src/core/api.py` 的 `WEB_DIR` 相应上提一级
 - README 目录树同步
 - 新增 `AGENTS.md`（项目规则入口）：框架边界、运行态约定、按需读取表与改动流程
+- 公开发布准备：README 重写、LICENSE（MIT）、CONTRIBUTING（含脱敏清单）、SECURITY、`tools/check_privacy.ps1`
 
 ### 编排模型（注册条重构）
 
@@ -20,6 +21,7 @@
 - 运行态并入注册条 `runtime`，删除 `data/service_runtime.json`、`cron_runtime.json`、`service_order.json`、`cron_order.json`
 - 回收仅 `on_demand`：`last_active` 优先，否则 `max(started_at, adopted_at)`
 - `state/` 合并为 `manager.py` + `monitor.py`；`audit-prune` 并入 monitor
+- detached 型入口脚本的标准输出纳入登记簿，静默失败可见
 
 ### 进程定位与状态
 
@@ -42,6 +44,11 @@
 - 「事件」按钮恢复独立，不再与设置面板联动
 - 移除服务与定时任务的按路径关联：删除 `core/linkage.py` 与 snapshot 的 `cron_names` 字段
 - 设置弹窗新增「事件保留天数」与「立即备份」（`reg/` + `config.json` + `adapters/` → `bak/`，不进 git）
+- 服务列表改为三块分组 + 两行卡片布局，分组与卡片均可拖拽排序
+
+### 修复
+
+- 定时任务主行开关拨动后不生效
 
 ## v0.12.0（2026-10-08）
 
