@@ -18,6 +18,7 @@
       <span class="conn-text" id="conn-text">— 服务</span>
       <span class="host-uptime" id="host-uptime" title="my-service 自身运行时长">宿主 —</span>
       <span class="conn-sep" aria-hidden="true"></span>
+      <button class="btn-host" id="btn-global-settings" title="编排器设置（面板刷新 / monitor / 定时任务检查间隔）">⚙ 设置</button>
       <button class="btn-host btn-host-audit" id="btn-host-audit" title="查看 my-service 启停登记簿（host.jsonl）">▤ 登记簿</button>
       <button class="btn-host btn-host-restart" id="btn-host-restart" title="重启 my-service（被管服务不受影响，继续运行）">⟳ 重启</button>
       <button class="btn-host btn-host-stop" id="btn-host-stop" title="停止 my-service（被管服务不受影响，继续运行）">■ 停止</button>
@@ -29,26 +30,46 @@
   <main class="app-main">
     <div id="audit-drawer" class="audit-drawer" hidden></div>
     <div id="empty-state" class="empty-state" hidden>
-      尚无服务 —— 在 C:\path\to\&lt;名字&gt;\ 放一份 manifest.json 即可注册
+      尚无服务 —— 在 reg\services\ 放一份 &lt;名字&gt;.json 即可注册
     </div>
-    <!-- 服务按 mode 分两组：常驻（managed/detached）与即用即走（on_demand）。
+    <!-- 服务按 mode 分两组：常驻（managed）与即用即走（on_demand）。
          分组纯展示，由前端按 snapshot 的 mode 推导，注册条无需任何新字段；
          某组为空时整组（含标题）隐藏。 -->
     <section id="svc-persistent" class="svc-section" hidden>
       <h2 class="section-title">🗄 常驻服务 <span class="svc-count" id="cntPd">0</span>
-        <span class="section-sub">managed / detached —— 起来就长期运行</span></h2>
+        <span class="section-sub">managed —— 起来就长期运行</span></h2>
       <div id="service-list" class="service-list"></div>
     </section>
     <section id="svc-ondemand" class="svc-section" hidden>
       <h2 class="section-title">⚡ 即用即走 <span class="svc-count" id="cntOd">0</span>
-        <span class="section-sub">on_demand —— 点开即启，空闲自动回收</span></h2>
+        <span class="section-sub">on_demand —— 点开即启，超时回收</span></h2>
       <div id="service-list-ondemand" class="service-list"></div>
     </section>
     <section id="cron-section" class="cron-section" hidden>
-      <h2 class="section-title">⏱ 定时任务 <span class="section-sub">reg\cron\*.json —— 到点跑一次脚本，无常驻进程</span></h2>
+      <h2 class="section-title">⏱ 定时任务 <span class="section-sub">task —— 到点跑一次脚本，无常驻进程</span></h2>
       <div id="cron-list" class="cron-list"></div>
     </section>
   </main>
+
+  <div id="settings-modal" class="settings-modal" hidden>
+    <div class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h3 id="settings-title">⚙ 编排器设置</h3>
+      <label>面板可见时刷新（秒）<input id="set-fast" type="number" min="0.2" step="0.2"></label>
+      <label>面板隐藏时刷新（秒）<input id="set-idle" type="number" min="1" step="1"></label>
+      <label>面板活跃宽限（秒）<input id="set-grace" type="number" min="1" step="1"></label>
+      <label>定时任务检查间隔（秒）<input id="set-tick" type="number" min="1" step="1"></label>
+      <label>事件保留天数（0 = 永不清理）<input id="set-audit" type="number" min="0" step="1"></label>
+      <div class="settings-backup">
+        <button id="set-backup" type="button">立即备份</button>
+        <span id="backup-info" class="settings-hint">—</span>
+      </div>
+      <div class="settings-actions">
+        <button id="set-cancel" type="button">取消</button>
+        <button id="set-save" type="button" class="primary">保存</button>
+      </div>
+      <p class="settings-hint">保存后立即生效，并写入 config.json。</p>
+    </div>
+  </div>
 
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>

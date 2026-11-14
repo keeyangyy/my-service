@@ -3,8 +3,8 @@
 
   // ===== 模块常量 =====
   var API_BASE = "http://127.0.0.1:1236";
-  var POLL_FAST = 1000;
-  var POLL_SLOW = 3000;
+  var POLL_ACTIVE = 1000;
+  var POLL_HIDDEN = 10000;
   var LOG_N = 200;
   var ALL_KEY = "(all)";   // 登记簿抽屉的伪服务名（不带 svc 过滤）
 
@@ -29,7 +29,7 @@
     starting: { cls: "starting", label: "启动中" },
     stopping: { cls: "stopping", label: "停止中" },
     failed:   { cls: "failed",   label: "失败" },
-    // 端口被别的程序占用：不是"我启动失败"，处置方式也不同（改端口 or 找回占用方）
+    // 历史兼容：端口被占用在后端已并入 stopped + error，这里保留展示映射
     conflict: { cls: "conflict", label: "端口被占" },
     // 有应答但无法确认身份：保守呈现，绝不显示成"运行中"
     unknown:  { cls: "unknown",  label: "身份不确认" },
@@ -54,7 +54,18 @@
     hostStop: document.getElementById("btn-host-stop"),
     cronSection: document.getElementById("cron-section"),
     cronList: document.getElementById("cron-list"),
-    verTag: document.getElementById("ver-tag")
+    verTag: document.getElementById("ver-tag"),
+    globalSettings: document.getElementById("btn-global-settings"),
+    settingsModal: document.getElementById("settings-modal"),
+    setFast: document.getElementById("set-fast"),
+    setIdle: document.getElementById("set-idle"),
+    setGrace: document.getElementById("set-grace"),
+    setTick: document.getElementById("set-tick"),
+    setAudit: document.getElementById("set-audit"),
+    setBackup: document.getElementById("set-backup"),
+    backupInfo: document.getElementById("backup-info"),
+    setSave: document.getElementById("set-save"),
+    setCancel: document.getElementById("set-cancel")
   };
 
   // 状态：同一时刻只允许一个事件视图展开（某张卡片内，或顶部全局抽屉）
@@ -87,7 +98,7 @@
     return String(s).replace(/(["\\])/g, "\\$1");
   }
 
-  /* 服务分组：mode 为 on_demand 归"即用即走"，其余（managed/detached）归"常驻"。
+  /* 服务分组：mode 为 on_demand 归"即用即走"，其余（managed）归"常驻"。
      纯前端推导，注册条不加字段；后端 snapshot 已带 mode 字段。 */
   function isOnDemand(svc) { return svc && svc.mode === "on_demand"; }
   function listFor(svc) { return isOnDemand(svc) ? els.listOd : els.list; }
@@ -174,7 +185,86 @@
     return Array.isArray(data.crons) ? data.crons : [];
   }
 
-  // ===== 定时任务（reg\cron\ —— 第二物种：到点跑一次脚本，无常驻进程）=====
+  // ===== 编排器设置（全局 ⚙）=====
+  async function openSettings() {
+    try {
+      var res = await api("GET", "/api/settings");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var data = await res.json();
+      var m = data.monitor || {};
+      var s = data.scheduler || {};
+      els.setFast.value = m.fast_sec != null ? m.fast_sec : 1;
+      els.setIdle.value = m.idle_sec != null ? m.idle_sec : 10;
+      els.setGrace.value = m.panel_grace_sec != null ? m.panel_grace_sec : 15;
+      els.setTick.value = s.tick_sec != null ? s.tick_sec : 10;
+      els.setAudit.value = m.audit_retention_days != null ? m.audit_retention_days : 7;
+      els.settingsModal.hidden = false;
+      refreshBackupInfo();
+    } catch (e) {
+      toast("读取设置失败：" + e.message, "err");
+    }
+  }
+
+  async function saveSettings() {
+    var body = {
+      monitor: {
+        fast_sec: Number(els.setFast.value),
+        idle_sec: Number(els.setIdle.value),
+        panel_grace_sec: Number(els.setGrace.value),
+        audit_retention_days: Number(els.setAudit.value)
+      },
+      scheduler: { tick_sec: Number(els.setTick.value) }
+    };
+    try {
+      var res = await api("POST", "/api/settings", body);
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+      els.settingsModal.hidden = true;
+      toast("设置已保存（立即生效）", "ok");
+    } catch (e) {
+      toast("保存失败：" + e.message, "err");
+    }
+  }
+
+  // ===== 备份（reg/ + config.json + adapters/ → bak/）=====
+  async function refreshBackupInfo() {
+    try {
+      var res = await api("GET", "/api/backups");
+      var data = await res.json();
+      var list = data.backups || [];
+      if (!list.length) {
+        els.backupInfo.textContent = "尚无备份";
+        els.backupInfo.title = "备份保存在 my-service/bak/";
+      } else {
+        var last = list[0];
+        els.backupInfo.textContent = "最近 " + last.name + "（共 " + list.length + " 份）";
+        els.backupInfo.title = last.path;
+      }
+    } catch (e) {
+      els.backupInfo.textContent = "读取备份列表失败";
+    }
+  }
+
+  async function doBackup() {
+    els.setBackup.disabled = true;
+    try {
+      var res = await api("POST", "/api/backup");
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+      toast("已备份 " + data.files + " 个文件 → bak/" + data.name, "ok");
+      refreshBackupInfo();
+    } catch (e) {
+      toast("备份失败：" + e.message, "err");
+    } finally {
+      els.setBackup.disabled = false;
+    }
+  }
+
+  // ===== 定时任务（reg\tasks\ —— 第二物种：到点跑一次脚本，无常驻进程）=====
   function cronStatus(c) {
     if (!c.valid) return "invalid";
     if (c.running) return "running";
@@ -687,7 +777,9 @@
         cfgBtn.title = "展开/收起调度配置（模式、时间、超时、补跑）";
         cfgBtn.addEventListener("click", function (e) {
           e.stopPropagation();
+          var wasOpen = cronCfgOpen.has(c.name);
           toggleCronConfig(c.name, row);
+          cfgBtn.textContent = wasOpen ? "⚙ 设置" : "收起";
         });
         var logBtn = document.createElement("button");
         logBtn.className = "btn btn-log";
@@ -709,6 +801,9 @@
         inner.appendChild(info);
         inner.appendChild(actions);
         row.appendChild(inner);
+        var sub = document.createElement("div");
+        sub.className = "svc-sub";
+        row.appendChild(sub);
         row.appendChild(buildCronConfig(c));   // 配置面板（默认收起）
         bindRowDrag(row, "crons");
         els.cronList.appendChild(row);
@@ -729,8 +824,19 @@
       var nm = document.createElement("span");
       nm.className = "svc-name";
       nm.textContent = c.display || c.name;
-      // 描述挂到任务名悬停：主行空间留给状态与调度信息，避免溢出压到右侧开关
+      // 描述放第二行，主行空间留给状态与调度信息
       if (c.description) nm.title = c.description;
+      var sub = row.querySelector(".svc-sub");
+      if (sub) {
+        sub.replaceChildren();
+        if (c.description) {
+          var sd = document.createElement("span");
+          sd.className = "svc-desc";
+          sd.textContent = c.description;
+          sd.title = c.description;
+          sub.appendChild(sd);
+        }
+      }
       info.appendChild(nm);
       info.appendChild(cronChip(c.schedule, "调度规则（超时 " + c.timeout_sec + "s" +
         (c.catch_up ? "，错过补跑" : "") + "）——点「⚙ 设置」修改"));
@@ -864,7 +970,7 @@
   }
 
   // ===== 状态徽章 =====
-  function statusBadge(status) {
+  function statusBadge(status, svc) {
     var map = STATUS_MAP[status] || STATUS_MAP.stopped;
     var b = document.createElement("span");
     b.className = "status-badge " + map.cls;
@@ -872,11 +978,18 @@
     dot.className = "dot";
     b.appendChild(dot);
     b.appendChild(document.createTextNode(map.label));
+    if (svc && status === "running") {
+      var src = svc.pid_source || "未知";
+      var conf = svc.confidence || "unknown";
+      b.title = conf === "confirmed"
+        ? "运行中（证据：" + src + "）"
+        : "运行中（证据：" + src + " / " + conf + "，未完全确认）";
+    }
     return b;
   }
 
   // ===== 操作按钮（焦点安全） =====
-  function wantedOps(status) {
+  function wantedOps(status, svc) {
     switch (status) {
       case "stopped":
       case "failed":
@@ -890,7 +1003,11 @@
         return [{ action: "start", label: "启动", busy: false },
                 { action: "stop", label: "停止", busy: false }];
       case "running":
-        return [{ action: "restart", label: "重启", busy: false }, { action: "stop", label: "停止", busy: false }];
+        var canStop = !!(svc && svc.pid) && (svc.confidence || "unknown") !== "unknown";
+        return [
+          { action: "restart", label: "重启", busy: false },
+          { action: "stop", label: "停止", busy: false, disabled: !canStop }
+        ];
       case "starting":
         return [{ action: "start", label: "启动中…", busy: true }];
       case "stopping":
@@ -904,7 +1021,7 @@
     var b = document.createElement("button");
     b.className = "btn btn-" + def.action;
     b.dataset.action = def.action;
-    b.disabled = !!def.busy;
+    b.disabled = !!(def.busy || def.disabled);
     b.textContent = def.label;
     b.addEventListener("click", function (e) {
       e.stopPropagation();
@@ -914,7 +1031,7 @@
   }
 
   function setOpButton(btn, def) {
-    btn.disabled = !!def.busy;
+    btn.disabled = !!(def.busy || def.disabled);
     btn.className = "btn btn-" + def.action;
     btn.textContent = def.label;
   }
@@ -991,15 +1108,8 @@
     gIdle.appendChild(cfgEl("span", "cfg-idle-left", "idle-left"));
     bar.appendChild(gIdle);
 
-    // ---- 分区二：关联的定时任务（按路径归属，见 core/linkage.py）----
-    var gCron = cfgEl("div", "cfg-group cfg-linked");
-    gCron.appendChild(cfgEl("span", "cfg-group-title", null, "关联的定时任务"));
-    gCron.appendChild(cfgEl("span", "linked-body", null, "—"));
-    bar.appendChild(gCron);
-
-    bar.appendChild(cfgEl("div", "cfg-hint", null,
-      "回收时长＝无操作多久后释放进程（改完立即生效）；关联任务按脚本所在目录自动判定，"
-      + "无需配置。此处不含启停——启停请在主行操作。"));
+    var hint = cfgEl("div", "cfg-hint");
+    bar.appendChild(hint);
     return bar;
   }
 
@@ -1036,52 +1146,17 @@
         }
       }
     }
-    renderLinkedCrons(bar, svc);
+    var hint = bar.querySelector(".cfg-hint");
+    if (hint) {
+      hint.textContent = onDemand
+        ? "回收时长＝无操作多久后释放进程（改完立即生效）。此处不含启停——启停请在主行操作。"
+        : "常驻服务无自动回收。此处不含启停——启停请在主行操作。";
+    }
   }
 
   function cardSetIdleSec(bar, secs) {
     var card = bar.parentNode;
     if (card && card.dataset) card.dataset.idleSec = String(secs);
-  }
-
-  function renderLinkedCrons(bar, svc) {
-    var box = bar.querySelector(".linked-body");
-    if (!box) return;
-    var names = svc.cron_names || [];
-    if (!names.length) {
-      box.textContent = "无（脚本不在本服务目录下，或尚无定时任务）";
-      box.classList.add("none");
-      return;
-    }
-    box.classList.remove("none");
-    box.replaceChildren();
-    names.forEach(function (cn) {
-      var c = cronData.get(cn);
-      var row = document.createElement("span");
-      row.className = "linked-cron";
-      var lab = document.createElement("span");
-      lab.className = "linked-name";
-      lab.textContent = c ? (c.display || c.name) : cn;
-      if (c) {
-        lab.title = (c.description || "") + " / " + (c.schedule || "");
-        var meta = document.createElement("span");
-        meta.className = "linked-meta";
-        meta.textContent = c.enabled ? ("下次 " + fmtClock(c.next_run)) : "已停用";
-        row.appendChild(lab); row.appendChild(meta);
-        var run = document.createElement("button");
-        run.className = "btn btn-mini btn-cron-run";
-        run.textContent = "▶";
-        run.title = "立即运行「" + lab.textContent + "」";
-        run.addEventListener("click", function (e) {
-          e.stopPropagation();
-          runCron(cn, run);
-        });
-        row.appendChild(run);
-      } else {
-        row.appendChild(lab);   // 快照里还没有（首轮未到），先占位显示名字
-      }
-      box.appendChild(row);
-    });
   }
 
   function buildCardSkeleton(card) {
@@ -1142,10 +1217,12 @@
       e.stopPropagation();
       var nm = card.dataset.name;
       var bar = card.querySelector(".svc-config");
-      if (svcCfgOpen.has(nm)) { svcCfgOpen.delete(nm); if (bar) bar.hidden = true; }
+      if (svcCfgOpen.has(nm)) { svcCfgOpen.delete(nm); if (bar) bar.hidden = true;
+        cfgBtn.textContent = "⚙ 设置"; cfgBtn.classList.remove("active"); }
       else {
         svcCfgOpen.add(nm);
         if (bar) syncSvcConfig(bar, svcData.get(nm) || { name: nm });
+        cfgBtn.textContent = "收起"; cfgBtn.classList.add("active");
       }
     });
 
@@ -1156,6 +1233,9 @@
     inner.appendChild(info);
     inner.appendChild(actions);
     card.appendChild(inner);
+    var sub = document.createElement("div");
+    sub.className = "svc-sub";
+    card.appendChild(sub);
     card.appendChild(buildSvcConfig(card));   // 设置面板（默认收起）
 
     // 整行点击跳转（懒打开：先弹中转页，就绪后跳转）
@@ -1212,7 +1292,7 @@
     // 信息区（无焦点元素，可直接重建）
     var info = card.querySelector(".info");
     info.replaceChildren();
-    info.appendChild(statusBadge(status));
+    info.appendChild(statusBadge(status, svc));
     var nameEl = document.createElement("span");
     nameEl.className = "svc-name";
     nameEl.textContent = svc.display || svc.name;
@@ -1224,48 +1304,59 @@
       arrow.title = "点击整行打开服务网页";
       info.appendChild(arrow);
     }
-    if (svc.mode === "on_demand") {
-      var idleMin = Math.round((svc.idle_timeout || 600) / 60);
-      var od = document.createElement("span");
-      od.className = "chip";
-      if (svc.status === "running" && typeof svc.last_active === "number") {
-        var remainSec = Math.max(0, (svc.idle_timeout || 600) - (Date.now() / 1000 - svc.last_active));
-        var rm = Math.floor(remainSec / 60);
-        var rs = Math.floor(remainSec % 60);
-        od.textContent = "空闲回收 " + rm + ":" + String(rs).padStart(2, "0");
-        od.title = "无操作 " + idleMin + " 分钟后自动停止；还剩 " + rm + " 分 " + rs + " 秒";
-      } else {
-        od.textContent = "按需 · 空闲" + idleMin + "分钟停";
-        od.title = "点开自动启动；页面无操作 " + idleMin + " 分钟后框架自动停止";
-      }
-      info.appendChild(od);
-    }
+    // 端口与时间放在同一组里，保证并排且顺序统一：端口在前，时间在后
+    var chips = document.createElement("span");
+    chips.className = "svc-chips";
     if (svc.port) {
       var pc = document.createElement("span");
       pc.className = "chip";
       pc.textContent = "端口 " + svc.port;
-      info.appendChild(pc);
+      chips.appendChild(pc);
     }
-    var up = fmtUptime(svc.uptime_sec);
-    if (up) {
-      var uc = document.createElement("span");
-      uc.className = "chip";
-      uc.textContent = "运行 " + up;
-      info.appendChild(uc);
+    if (svc.mode === "on_demand") {
+      var totalSec = svc.idle_timeout || 600;
+      var od = document.createElement("span");
+      od.className = "chip";
+      var idleBasis = (typeof svc.last_active === "number") ? svc.last_active : svc.started_at;
+      if (svc.status === "running" && typeof idleBasis === "number") {
+        var remainSec = Math.max(0, totalSec - (Date.now() / 1000 - idleBasis));
+        var rm = Math.floor(remainSec / 60);
+        var rs = Math.floor(remainSec % 60);
+        od.textContent = "回收 " + rm + ":" + String(rs).padStart(2, "0");
+        od.title = "启动后 " + Math.round(totalSec / 60) + " 分钟回收；还剩 "
+          + rm + " 分 " + rs + " 秒";
+      } else {
+        od.textContent = "回收 " + Math.round(totalSec / 60) + " 分钟";
+        od.title = "启动后 " + Math.round(totalSec / 60) + " 分钟自动回收（点开即启）";
+      }
+      chips.appendChild(od);
+    } else {
+      var up = fmtUptime(svc.uptime_sec);
+      if (up) {
+        var uc = document.createElement("span");
+        uc.className = "chip";
+        uc.textContent = "运行 " + up;
+        chips.appendChild(uc);
+      }
     }
-    if (svc.description) {
-      var d = document.createElement("span");
-      d.className = "svc-desc";
-      d.textContent = svc.description;
-      d.title = svc.description;
-      info.appendChild(d);
-    }
-    if (svc.error) {
-      var er = document.createElement("span");
-      er.className = "svc-error";
-      er.textContent = svc.error;
-      er.title = svc.error;
-      info.appendChild(er);
+    info.appendChild(chips);
+    var sub = card.querySelector(".svc-sub");
+    if (sub) {
+      sub.replaceChildren();
+      if (svc.description) {
+        var d = document.createElement("span");
+        d.className = "svc-desc";
+        d.textContent = svc.description;
+        d.title = svc.description;
+        sub.appendChild(d);
+      }
+      if (svc.error) {
+        var er = document.createElement("span");
+        er.className = "svc-error";
+        er.textContent = svc.error;
+        er.title = svc.error;
+        sub.appendChild(er);
+      }
     }
 
     // 自启滑块（复用，只更新勾选态）；on_demand 按需启动，不支持自启，隐藏
@@ -1279,7 +1370,7 @@
     var opGroup = card.querySelector(".op-group");
     var focusedBtn = opGroup.querySelector("button.btn:focus");
     var focusedAction = focusedBtn ? focusedBtn.dataset.action : null;
-    var wanted = wantedOps(status);
+    var wanted = wantedOps(status, svc);
 
     if (focusedAction) {
       var defByAction = {};
@@ -1305,7 +1396,7 @@
       opGroup.appendChild(note);
     }
 
-    // 事件按钮（复用，更新文案/激活态）——展开的是 my-service 启停登记簿，不是服务日志
+    // 事件按钮（展开的是 my-service 启停登记簿，不是服务日志）
     var logBtn = card.querySelector(".btn-log");
     var isOpen = openLogs.has(svc.name);
     logBtn.classList.toggle("active", isOpen);
@@ -1544,16 +1635,10 @@
 
   function poll(forceFast) {
     if (pollTimer) clearTimeout(pollTimer);
-    var fast = !!forceFast;
-    if (!fast) {
-      // 两组都要查：starting/stopping 可能出现在任一容器里
-      eachSvcList(function (l) {
-        if (!fast && l.querySelector(".status-badge.starting, .status-badge.stopping")) {
-          fast = true;
-        }
-      });
-    }
-    pollTimer = setTimeout(tick, fast ? POLL_FAST : POLL_SLOW);
+    // 面板心跳：让 monitor 知道有人在看（脚本调用不经过这里）
+    fetch(API_BASE + "/api/panel/ping", { cache: "no-store" }).catch(function () {});
+    var delay = document.hidden ? POLL_HIDDEN : POLL_ACTIVE;
+    pollTimer = setTimeout(tick, delay);
   }
 
   // ===== 宿主自身操作（重启/停止）——专属通道 =====
@@ -1620,6 +1705,23 @@
   }
   els.hostRestart.addEventListener("click", function () { doHostAction("restart"); });
   els.hostStop.addEventListener("click", function () { doHostAction("stop"); });
+  if (els.globalSettings) {
+    els.globalSettings.addEventListener("click", function () { openSettings(); });
+  }
+  if (els.setCancel) {
+    els.setCancel.addEventListener("click", function () { els.settingsModal.hidden = true; });
+  }
+  if (els.setSave) {
+    els.setSave.addEventListener("click", saveSettings);
+  }
+  if (els.setBackup) {
+    els.setBackup.addEventListener("click", doBackup);
+  }
+  if (els.settingsModal) {
+    els.settingsModal.addEventListener("click", function (e) {
+      if (e.target === els.settingsModal) els.settingsModal.hidden = true;
+    });
+  }
 
   // ===== 初始化 =====
   (async function init() {
