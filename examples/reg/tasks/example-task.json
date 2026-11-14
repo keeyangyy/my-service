@@ -1,0 +1,16 @@
+{
+  "path": "C:/path/to/your-service",
+  "display": "示例：每日任务",
+  "description": "示例：到点跑一次的脚本（间隔不低于 10 秒）",
+  "mode": "task",
+  "start": {
+    "entry": "src/run_all.py",
+    "args": ["--site", "example"]
+  },
+  "schedule": { "type": "daily", "at": ["09:30"] },
+  "runtime": {
+    "enabled": true,
+    "catch_up": false,
+    "run_timeout_sec": 300
+  }
+}

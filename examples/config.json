@@ -1,0 +1,15 @@
+{
+  "host": "127.0.0.1",
+  "port": 1236,
+  "reg_dir": "reg",
+  "audit_retention_days": 7,
+  "cors_local_only": true,
+  "monitor": {
+    "fast_sec": 1,
+    "idle_sec": 10,
+    "panel_grace_sec": 15
+  },
+  "scheduler": {
+    "tick_sec": 10
+  }
+}

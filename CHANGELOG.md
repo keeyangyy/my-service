@@ -9,6 +9,38 @@
 - 前端 `src/web/` 迁至顶层 `web/`（与 `src/` 平级），`src/core/api.py` 的 `WEB_DIR` 相应上提一级
 - README 目录树同步
 
+### 编排模型（注册条重构）
+
+- 注册条改为六组：`start / stop / health / identity / runtime / schedule`
+- 目录：`reg/services/` + `reg/tasks/`，删除 `reg/cron/`、`reg/_archive/`
+- 三种 mode：`managed / on_demand / task`；点火脚本用 `start.detach`（替代 `detached`）
+- 健康只留 `http / port / process`；去掉 `none`
+- 去掉 `conflict` 状态：端口被占、自报不符统一 `stopped` + `error`
+- 运行态并入注册条 `runtime`，删除 `data/service_runtime.json`、`cron_runtime.json`、`service_order.json`、`cron_order.json`
+- 回收仅 `on_demand`：`last_active` 优先，否则 `max(started_at, adopted_at)`
+- `state/` 合并为 `manager.py` + `monitor.py`；`audit-prune` 并入 monitor
+
+### 进程定位与状态
+
+- 新增 Windows 进程信息：端口→PID（`GetExtendedTcpTable`）、进程创建时间、进程名/路径枚举
+- `locate()` 回退链：句柄 → 框架 pidfile → 服务 pidfile → 端口 → 进程名
+- 状态对象 9 字段：`status / pid / pid_source / started_at / started_source / first_seen_at / last_active / confidence / error`
+- 停止外部实例：按定位到的 PID 树杀
+
+### 节奏与设置
+
+- monitor：面板活跃 1s / 空闲 10s；写操作后立即唤醒
+- 面板心跳：`/api/panel/ping`（脚本调用不算活跃）
+- scheduler：默认 10s，可配置；`interval.every_sec` 下限 10 秒
+- 新增 `GET/POST /api/settings`（monitor 间隔、scheduler tick，写回 `config.json`）
+- 前端轮询：可见 1s / 隐藏 10s
+
+### 面板
+
+- 「事件」按钮恢复独立，不再与设置面板联动
+- 移除服务与定时任务的按路径关联：删除 `core/linkage.py` 与 snapshot 的 `cron_names` 字段
+- 设置弹窗新增「事件保留天数」与「立即备份」（`reg/` + `config.json` + `adapters/` → `bak/`，不进 git）
+
 ## v0.12.0（2026-10-08）
 
 框架学会回答"**这个端口上跑的是不是我的服务**"。此前它只会问"端口有人应答吗"，

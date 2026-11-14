@@ -1,0 +1,21 @@
+{
+  "path": "C:/path/to/your-service",
+  "display": "your-service",
+  "description": "示例：带网页面板的本机服务",
+  "mode": "on_demand",
+  "url": "http://127.0.0.1:33510/",
+  "start": { "entry": "src/server.py" },
+  "stop": { "script": "run/stop.ps1" },
+  "health": {
+    "type": "http",
+    "url": "http://127.0.0.1:33510/health",
+    "timeout_sec": 30,
+    "service": "your-service"
+  },
+  "identity": { "pidfile": "data/server.pid" },
+  "runtime": {
+    "enabled": true,
+    "autostart": false,
+    "idle_timeout_sec": 600
+  }
+}
