@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -297,6 +298,71 @@ class TestReconcile(unittest.TestCase):
         out = mgr.reconcile()
         self.assertFalse(pf.exists(), "absent 时应清掉过期 pid 凭证")
         self.assertEqual(out.get("svc"), "未运行")
+
+
+class TestPortHealthWithProcessIdentity(unittest.TestCase):
+    """port 型 + identity.process：唯一匹配且与端口属主一致才算 mine。
+
+    这是 v0.15.1 补的能力：此前 port 型只有 pidfile 一条路，第三方二进制
+    （sd-server.exe 之类）没有 pidfile 就永远判 unknown。
+    """
+
+    PORT = 8791
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="msident-port-"))
+        self.reg = self.root / "reg"
+        self.reg.mkdir()
+        self.home = self.root / "svc"
+        self.home.mkdir()
+        (self.home / "start.ps1").write_text("# noop\n", encoding="utf-8")
+        runner.set_runtime_dir(self.root / "data")
+        audit.init(self.root / "logs")
+        self.srv = None
+
+    def tearDown(self):
+        if self.srv is not None:
+            self.srv.shutdown()
+            self.srv.server_close()
+        audit._path = None
+        runner.set_runtime_dir(Path(tempfile.gettempdir()) / "msident-gone")
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write_port_reg(self, identity=None):
+        reg = {
+            "path": str(self.home), "mode": "managed",
+            "start": {"entry": "start.ps1"},
+            "health": {"type": "port", "port": self.PORT},
+        }
+        if identity:
+            reg["identity"] = identity
+        (self.reg / "svc.json").write_text(json.dumps(reg), encoding="utf-8")
+        self.mgr = Manager(Scanner(self.reg), self.root / "order.json")
+
+    def test_mine_when_process_matches_port_owner(self):
+        self._write_port_reg({"process": "svc.exe", "match": "name"})
+        self.srv, _, _ = _stub(self.PORT, None)
+        with mock.patch.object(runner, "find_processes", return_value=[4321]), \
+                mock.patch.object(runner, "port_owner_pid", return_value=4321):
+            v, via, why = self.mgr.identify("svc")
+        self.assertEqual(v, "mine", why)
+        self.assertEqual(via, "process")
+
+    def test_foreign_when_process_is_not_port_owner(self):
+        self._write_port_reg({"process": "svc.exe", "match": "name"})
+        self.srv, _, _ = _stub(self.PORT, None)
+        with mock.patch.object(runner, "find_processes", return_value=[4321]), \
+                mock.patch.object(runner, "port_owner_pid", return_value=9999):
+            v, via, why = self.mgr.identify("svc")
+        self.assertEqual(v, "foreign", why)
+        self.assertEqual(via, "process-port-mismatch")
+
+    def test_unknown_without_identity_process(self):
+        """port 型且没有 identity：保守判 unknown，不冒充运行中。"""
+        self._write_port_reg()
+        self.srv, _, _ = _stub(self.PORT, None)
+        v, _, _ = self.mgr.identify("svc")
+        self.assertEqual(v, "unknown")
 
 
 if __name__ == "__main__":

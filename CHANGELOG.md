@@ -2,6 +2,16 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.15.1（2026-11-15）
+
+### 修复
+
+- `port` 型健康无法识别没有 pidfile 的实例
+  - 此前 `port` 型只有 pidfile 一条路，`sd-server.exe` 这类第三方二进制永远判 `unknown`
+  - 现在 `port` / `http` 型都允许 `identity.process` 唯一匹配，且要求与端口属主一致
+  - 属主不符判 `foreign`（`process-port-mismatch`），不冒充本服务
+  - `tests/test_identity.py` 新增 3 例：属主一致 → mine、属主不符 → foreign、无 identity → unknown
+
 ## v0.15.0（2026-11-15）
 
 ### 新增功能
