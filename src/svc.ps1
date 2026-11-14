@@ -21,8 +21,6 @@ $app = Split-Path $PSScriptRoot -Parent
 $dataRoot = $app
 if ($env:MY_SERVICE_HOME) {
     $dataRoot = [IO.Path]::GetFullPath($env:MY_SERVICE_HOME)
-} elseif (Test-Path -LiteralPath (Join-Path (Split-Path $app -Parent) "runtime\python.exe")) {
-    $dataRoot = Split-Path $app -Parent
 }
 $bindHost = "127.0.0.1"
 $port = 1236

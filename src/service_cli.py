@@ -34,24 +34,24 @@ START_WAIT_TENTHS = 30          # 等待宿主写 host.pid 的上限（3 秒）
 
 
 def resolve_data_root(app: Path) -> Path:
-    """数据根：MY_SERVICE_HOME → 便携包（上一级有 runtime/python.exe）→ 源码模式 = app。
+    """数据根：MY_SERVICE_HOME → 否则 = app（包根与代码根同级）。
 
     与 server._resolve_home 同语义；这里独立实现，避免 CLI 依赖宿主装配链。
     """
     env = os.environ.get("MY_SERVICE_HOME")
     if env:
         return Path(env).expanduser().resolve()
-    if (app.parent / "runtime" / "python.exe").is_file():
-        return app.parent
     return app
 
 
 def interpreter(app: Path, data_root: Path) -> Path:
-    """宿主解释器：优先 pythonw（GUI 子系统，无控制台），便携包用 runtime 里的。"""
-    if data_root != app:
-        portable = data_root / "runtime" / "pythonw.exe"
-        if portable.is_file():
-            return portable
+    r"""宿主解释器：优先 pythonw（GUI 子系统，无控制台）。
+
+    `-WithRuntime` 打包时包内自带 runtime\pythonw.exe，优先用它；否则用系统 pythonw。
+    """
+    portable = Path(app) / "runtime" / "pythonw.exe"
+    if portable.is_file():
+        return portable
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     if pythonw.is_file():
         return pythonw
@@ -115,10 +115,8 @@ def version(app: Path) -> str:
 
 
 def shortcut_path(app: Path, data_root: Path) -> Path:
-    """面板快捷方式：源码模式放 app/run/；便携包放包根（升级替换 app/ 时不丢）。"""
-    if Path(data_root) == Path(app):
-        return Path(app) / "run" / "Dashboard.url"
-    return Path(data_root) / "Dashboard.url"
+    r"""面板快捷方式落点：run\Dashboard.url（每台机器生成、不入库；升级替换 run/ 后会自动重建）。"""
+    return Path(app) / "run" / "Dashboard.url"
 
 
 def write_shortcut(app: Path, data_root: Path) -> Path:
@@ -217,6 +215,32 @@ def cmd_update_apply(app: Path, data_root: Path) -> int:
     return 1
 
 
+def cmd_apply_update_and_start(app: Path, data_root: Path) -> int:
+    """面板「更新并重启」的落地动作：等旧宿主退出 → 应用升级 → 起新宿主。
+
+    由旧宿主在退出前派生（见 core/host.py `_spawn_replacement`），因此能安全替换
+    正被占用的代码目录；没有暂存升级时等价于普通重启。
+    """
+    from core import update
+
+    old = read_pid(data_root)
+    if old:
+        deadline = time.time() + 30
+        while time.time() < deadline and pid_alive(old):
+            time.sleep(0.2)
+        if pid_alive(old):
+            print(f"旧宿主 pid={old} 未退出，放弃升级以免双实例", file=sys.stderr)
+            return 1
+    if (Path(data_root) / update.UPDATE_SUBDIR / "code.new").is_dir():
+        result = update.apply_pending(data_root)
+        if result.get("ok"):
+            print(f"已应用升级 v{result.get('version')}"
+                  f"（旧代码备份: {result.get('backup')}）")
+        else:
+            print(f"升级未生效: {result.get('error')}", file=sys.stderr)
+    return cmd_start(app, data_root)
+
+
 HANDLERS = {
     "start": cmd_start,
     "stop": cmd_stop,
@@ -224,6 +248,7 @@ HANDLERS = {
     "status": cmd_status,
     "shortcut": cmd_shortcut,
     "update-apply": cmd_update_apply,
+    "apply-update-and-start": cmd_apply_update_and_start,
 }
 
 

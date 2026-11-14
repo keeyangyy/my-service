@@ -45,10 +45,11 @@ class TestServiceCli(unittest.TestCase):
     def test_resolve_data_root_source_mode(self):
         self.assertEqual(resolve_data_root(self.app), self.app)
 
-    def test_resolve_data_root_portable(self):
-        (self.root / "runtime").mkdir()
-        (self.root / "runtime" / "python.exe").write_text("", encoding="ascii")
-        self.assertEqual(resolve_data_root(self.app), self.root)
+    def test_resolve_data_root_ignores_runtime(self):
+        """包根就是代码根：打包（哪怕带 runtime）也不改变数据根。"""
+        (self.app / "runtime").mkdir()
+        (self.app / "runtime" / "python.exe").write_text("", encoding="ascii")
+        self.assertEqual(resolve_data_root(self.app), self.app)
 
     def test_resolve_data_root_env_wins(self):
         custom = self.root / "custom"
@@ -59,15 +60,17 @@ class TestServiceCli(unittest.TestCase):
         self.assertEqual(shortcut_path(self.app, self.app),
                          self.app / "run" / "Dashboard.url")
 
-    def test_shortcut_path_portable(self):
+    def test_shortcut_path_always_under_run(self):
+        """快捷方式固定落 run/（每台机器生成；升级替换 run/ 后自动重建）。"""
         self.assertEqual(shortcut_path(self.app, self.root),
-                         self.root / "Dashboard.url")
+                         self.app / "run" / "Dashboard.url")
 
-    def test_interpreter_prefers_portable_pythonw(self):
-        (self.root / "runtime").mkdir()
-        pythonw = self.root / "runtime" / "pythonw.exe"
+    def test_interpreter_prefers_bundled_pythonw(self):
+        """-WithRuntime 打包时包内自带 pythonw，优先用它。"""
+        (self.app / "runtime").mkdir()
+        pythonw = self.app / "runtime" / "pythonw.exe"
         pythonw.write_text("", encoding="ascii")
-        self.assertEqual(interpreter(self.app, self.root), pythonw)
+        self.assertEqual(interpreter(self.app, self.app), pythonw)
 
     def test_read_pid_and_alive_for_self(self):
         (self.root / "data").mkdir()

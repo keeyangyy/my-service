@@ -16,10 +16,14 @@ from core import update  # noqa: E402
 
 
 def _make_zip(path: Path, version: str, layout: str = "root") -> None:
-    """最小升级包。root = 包根即代码根（新布局）；app = 代码在 app/ 里（旧布局）。"""
+    """最小升级包。root = 包根即代码根（新布局）；app = 代码在 app/ 里（旧布局）。
+
+    必须带 `src/core/`：替换以「目录」为单位，且会校验 src 完整性，残缺 src 会被拒绝。
+    """
     base = f"my-service-{version}" if layout == "root" else f"my-service-{version}/app"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(f"{base}/src/server.py", "print('new')\n")
+        zf.writestr(f"{base}/src/core/host.py", 'VERSION = "9.9.9"\n')
         zf.writestr(f"{base}/README.md", "new readme\n")
         zf.writestr(f"{base}/docs/guide/usage.md", "new guide\n")
         zf.writestr(f"{base}/data/logs/ignore.log", "must not be installed\n")
@@ -110,13 +114,25 @@ class TestUpdate(unittest.TestCase):
         (self.home / "run").mkdir()
         (self.home / "run" / "start.ps1").write_text("# old run\n", encoding="utf-8")
         staged = self.home / "data" / "update" / "code.new"
-        (staged / "src").mkdir(parents=True)
+        (staged / "src" / "core").mkdir(parents=True)
         (staged / "src" / "server.py").write_text("print('new')\n", encoding="utf-8")
         result = update.apply_pending(self.home)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["applied"], ["src"])
         self.assertTrue((self.home / "web" / "app.js").is_file())
         self.assertTrue((self.home / "run" / "start.ps1").is_file())
+
+    def test_apply_pending_rejects_incomplete_src(self):
+        """暂存的 src 缺 core/ 时拒绝替换——否则整棵树会被换残废。"""
+        staged = self.home / "data" / "update" / "code.new"
+        (staged / "src").mkdir(parents=True)
+        (staged / "src" / "server.py").write_text("print('broken')\n", encoding="utf-8")
+        before = (self.home / "src" / "server.py").read_text(encoding="utf-8")
+        result = update.apply_pending(self.home)
+        self.assertFalse(result["ok"])
+        self.assertIn("不完整", result["error"])
+        self.assertEqual((self.home / "src" / "server.py").read_text(encoding="utf-8"),
+                         before, "拒绝替换时原代码必须原样")
 
 
 if __name__ == "__main__":

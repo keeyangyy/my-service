@@ -84,13 +84,14 @@ class TestHostAutostart(unittest.TestCase):
         self.host.set_autostart(True)
         self.assertEqual(HostController._detect_autostart(), "startup")
 
-    def test_portable_uses_runtime_pythonw(self):
+    def test_bundled_runtime_pythonw_wins(self):
+        """-WithRuntime 打包：包根 runtime\\pythonw.exe 优先于系统 pythonw。"""
         home = self.root / "pkg"
-        (home / "app" / "src").mkdir(parents=True)
+        (home / "src").mkdir(parents=True)
         (home / "runtime").mkdir()
         (home / "runtime" / "pythonw.exe").write_text("", encoding="ascii")
         host = HostController(None, self.root / "logs", self.root / "data",
-                              app_dir=home / "app", home=home)
+                              app_dir=home, home=home)
         ok, _ = host.set_autostart(True)
         self.assertTrue(ok)
         target, _, _ = _read_shortcut(self._lnk())

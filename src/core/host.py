@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import audit
+from . import audit, update
 
 VERSION = "0.13.0"
 
@@ -90,12 +90,14 @@ class HostController:
         return "none"
 
     def _autostart_launcher(self) -> tuple[Path, Path]:
-        """自启用的（解释器, 入口）：优先 pythonw（GUI 子系统，无控制台窗口）。"""
+        r"""自启用的（解释器, 入口）：优先 pythonw（GUI 子系统，无控制台窗口）。
+
+        `-WithRuntime` 打包时包根有 runtime\pythonw.exe，优先用它；否则用系统 pythonw。
+        """
         script = self.app_dir / "src" / "server.py"
-        if self.home != self.app_dir:
-            portable = self.home / "runtime" / "pythonw.exe"
-            if portable.is_file():
-                return portable, script
+        portable = self.app_dir / "runtime" / "pythonw.exe"
+        if portable.is_file():
+            return portable, script
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         if pythonw.is_file():
             return pythonw, script
@@ -171,11 +173,17 @@ class HostController:
         threading.Timer(0.5, self._run, args=(action,)).start()
 
     def _spawn_replacement(self) -> None:
-        launcher = self.home / "start.cmd"
-        if self.home != self.app_dir and launcher.is_file():
-            # 便携包：由 launcher 重启——它会先替换待生效的 app/，再起 python
+        """派生新宿主。有暂存升级时先拉一个更新器，等本进程退出再替换代码。
+
+        面板「更新并重启」= `/api/update/apply` 下载暂存 → 本进程派生更新器 → 退出；
+        更新器（`service_cli.py apply-update-and-start`）等旧 pid 消失后替换
+        `src/ web/ run/ docs/` 与三个文档，再起新宿主——不依赖 start.cmd / 包内 Python。
+        """
+        if update.pending_version(self.home):
             subprocess.Popen(
-                [str(launcher)], cwd=str(self.home),
+                [sys.executable, str(SRC_DIR / "service_cli.py"),
+                 "apply-update-and-start"],
+                cwd=str(SRC_DIR),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, creationflags=_DETACH, close_fds=True,
             )

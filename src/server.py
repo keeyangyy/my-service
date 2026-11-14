@@ -29,14 +29,11 @@ def _resolve_home(base: Path) -> Path:
     """数据根 home。
 
     - 显式 `MY_SERVICE_HOME` 优先（便于自定义数据位置）
-    - 便携包：`base`（app/）的上一级有 `runtime/python.exe` → 数据放包根
-    - 源码模式：home = base（行为与历史一致）
+    - 其余情况 home = base：包根与代码根同级（包根就是代码根），不需要再区分
     """
     env = os.environ.get("MY_SERVICE_HOME")
     if env:
         return Path(env).expanduser().resolve()
-    if (base.parent / "runtime" / "python.exe").is_file():
-        return base.parent
     return base
 
 

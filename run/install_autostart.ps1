@@ -15,12 +15,10 @@ param()
 $ErrorActionPreference = "Stop"
 $entry = $PSScriptRoot                     # = <代码根>\run
 $app = Split-Path $entry -Parent           # = app（代码根）
-# $dataRoot = 数据根：MY_SERVICE_HOME 优先；便携包（上一级有 runtime\python.exe）取上一级
+# $dataRoot = 数据根：MY_SERVICE_HOME 优先；包根就是代码根，否则 = $app
 $dataRoot = $app
 if ($env:MY_SERVICE_HOME) {
     $dataRoot = [IO.Path]::GetFullPath($env:MY_SERVICE_HOME)
-} elseif (Test-Path -LiteralPath (Join-Path (Split-Path $app -Parent) "runtime\python.exe")) {
-    $dataRoot = Split-Path $app -Parent
 }
 
 $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"

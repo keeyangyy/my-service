@@ -526,14 +526,15 @@ class _Handler(BaseHTTPRequestHandler):
     def _post_update_apply(self, parts: list[str], body: dict) -> bool:
         """POST /api/update/apply {version,url,sha256} —— 下载暂存到 data/update/code.new。
 
-        重启时由包根 start.cmd 调 `service_cli.py update-apply` 按清单替换
-        `src/ web/ run/ docs/` + 三文档（旧代码留 data/bak/code-prev 可回滚）。
+        前端下载成功后会自动调 `/api/host/restart`；旧宿主派生 `apply-update-and-start`
+        更新器，等本进程退出后按清单替换 `src/ web/ run/ docs/` + 三文档
+        （旧代码留 data/bak/code-prev 可回滚），再起新宿主。
+        仅打包部署（包根有 VERSION.txt）支持；源码工作区一律拒绝，避免覆盖工作区。
         """
         if not self._is(parts, "api", "update", "apply"):
             return False
         home = getattr(self.host, "home", None)
-        app_dir = getattr(self.host, "app_dir", None)
-        if self.host is None or home is None or app_dir is None or home == app_dir:
+        if self.host is None or home is None or not update.is_deployed(home):
             self._json(400, {"ok": False,
                              "error": "源码模式不支持一键升级，请用 git pull"})
             return True

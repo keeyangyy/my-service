@@ -28,6 +28,14 @@ BACKUP_SUBDIR = Path("data") / "bak"
 # 包根 = 仓库结构，没有 app/ 层；只换这几个目录与文档，reg/ data/ config.json 一律不动。
 CODE_DIRS = ("src", "web", "run", "docs")
 CODE_FILES = ("README.md", "CHANGELOG.md", "LICENSE")
+# 打包产物才有的标记：包根 VERSION.txt 由 tools/build-portable.ps1 写入。
+# 源码仓库里没有它，所以用它区分「打包部署」与「开发工作区」——决定能否一键升级。
+DEPLOY_MARKER = "VERSION.txt"
+
+
+def is_deployed(home: Path) -> bool:
+    """是否打包部署（包根有 VERSION.txt）。源码工作区一律 False，避免自助升级覆盖工作区。"""
+    return (Path(home) / DEPLOY_MARKER).is_file()
 
 
 def _ver_tuple(version: str) -> tuple[int, ...]:
@@ -190,6 +198,12 @@ def apply_pending(home: Path) -> dict:
     names = [n for n in CODE_DIRS + CODE_FILES if (new / n).exists()]
     if not names:
         return {"ok": False, "error": "暂存区为空（data/update/code.new 里没有清单项）"}
+    # 替换以「目录」为单位：暂存的 src 若不完整，替换后整棵树会残废，宁可拒绝
+    staged_src = new / "src"
+    if staged_src.exists() and not ((staged_src / "server.py").is_file()
+                                    and (staged_src / "core").is_dir()):
+        return {"ok": False,
+                "error": "暂存的 src 不完整（缺 server.py 或 core/），已放弃替换"}
     shutil.rmtree(backup, ignore_errors=True)
     backup.mkdir(parents=True, exist_ok=True)
 

@@ -1,15 +1,16 @@
 # my-service 便携包构建（Windows）
 #
-# 产物结构（包根 = 仓库结构，不再有 app/ 层）：
-#   src/ web/ run/             代码与入口
-#   docs/guide/                使用说明（只带用户向文档：使用指南 + 注册指南 + 截图）
+# 产物结构（包根 = 仓库结构，只做「裁切」：不打测试/工具/开发者文档，也不打 Python）：
+#   src/ web/ run/             代码与入口（双击 run\start.ps1 启停，需要系统 Python）
+#   docs/guide/                使用说明（用户向：使用指南 + 注册指南 + 截图）
 #   README.md CHANGELOG.md LICENSE
 #   config.json                数据根配置
-#   start.cmd stop.cmd         稳定入口（不依赖 pwsh）
 #   VERSION.txt
-#   runtime/                   内嵌 Python（升级不动）
 #   reg/services|tasks/        注册条（用户手写，升级保留）
 #   data/logs  data/bak        运行时数据骨架（升级保留）
+#
+# 依赖：目标机器需要 Python 3.10+（开发与测试环境为 3.14）。
+#       要打包给没装 Python 的机器，加 -WithRuntime（包根多一个 runtime/，约 +11 MB）。
 #
 # 不进包：tests/ examples/ tools/ AGENTS.md CONTRIBUTING.md SECURITY.md
 #         ruff.toml .coveragerc .editorconfig .gitignore .gitattributes .github/
@@ -17,13 +18,15 @@
 #
 # 用法:
 #   pwsh -File .\tools\build-portable.ps1
-#   pwsh -File .\tools\build-portable.ps1 -Version 0.14.0 -PythonVersion 3.12.10
-#   pwsh -File .\tools\build-portable.ps1 -SkipZip      # 只组装目录，方便调试
+#   pwsh -File .\tools\build-portable.ps1 -Version 0.14.0
+#   pwsh -File .\tools\build-portable.ps1 -WithRuntime     # 连 Python 一起打
+#   pwsh -File .\tools\build-portable.ps1 -SkipZip         # 只组装目录，方便调试
 param(
     [string]$Version = "",
     [string]$OutDir = "dist",
     [string]$PythonVersion = "3.12.10",
     [string]$RepoSlug = "keeyangyy/my-service",
+    [switch]$WithRuntime,
     [switch]$SkipZip
 )
 
@@ -31,7 +34,7 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $cache = Join-Path $PSScriptRoot ".cache"
 
-# 包内代码目录（升级 = 按这份清单替换，见 src/service_cli.py update-apply）
+# 包内代码目录（升级 = 按这份清单替换，见 src/core/update.py 的 CODE_DIRS / CODE_FILES）
 $CODE_DIRS = @("src", "web", "run", "docs")
 $CODE_FILES = @("README.md", "CHANGELOG.md", "LICENSE")
 
@@ -60,17 +63,20 @@ function Get-Runtime {
 }
 
 if (-not $Version) { $Version = Get-Version -Repo $repo }
-Write-Host "构建 my-service $Version（Python $PythonVersion）"
+Write-Host "构建 my-service $Version"
 
-$runtimeSrc = Get-Runtime -PythonVersion $PythonVersion -Cache $cache
 # -OutDir 支持绝对路径（便于组装到临时目录做校验）
 $outBase = if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $repo $OutDir }
 $stage = Join-Path $outBase "my-service-$Version"
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# ---- runtime（升级不动） ----
-Copy-Item -LiteralPath $runtimeSrc -Destination (Join-Path $stage "runtime") -Recurse -Force
+# ---- 可选：内嵌 Python（默认不打，目标机器用系统 Python） ----
+if ($WithRuntime) {
+    Write-Host "打包内嵌 Python $PythonVersion（-WithRuntime）"
+    $runtimeSrc = Get-Runtime -PythonVersion $PythonVersion -Cache $cache
+    Copy-Item -LiteralPath $runtimeSrc -Destination (Join-Path $stage "runtime") -Recurse -Force
+}
 
 # ---- 代码目录（升级替换的对象） ----
 foreach ($d in "src", "web", "run") {
@@ -116,9 +122,6 @@ $cfgText = ($cfg | ConvertTo-Json -Depth 4).Replace("`r`n", "`n") + "`n"
 [IO.File]::WriteAllText((Join-Path $stage "config.json"), $cfgText,
                         [Text.UTF8Encoding]::new($false))
 
-# ---- 启动器与版本 ----
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "portable\start.cmd") -Destination $stage -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "portable\stop.cmd") -Destination $stage -Force
 [IO.File]::WriteAllText((Join-Path $stage "VERSION.txt"), $Version + "`n",
                         [Text.UTF8Encoding]::new($false))
 
@@ -148,4 +151,4 @@ $latest = [ordered]@{
 [IO.File]::WriteAllText((Join-Path $outBase "latest.json"),
                         (($latest | ConvertTo-Json) -replace "`r`n", "`n") + "`n",
                         [Text.UTF8Encoding]::new($false))
-Write-Host "版本清单: $(Join-Path $outBase latest.json)"
+Write-Host "版本清单: $(Join-Path $outBase 'latest.json')"
