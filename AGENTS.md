@@ -50,4 +50,22 @@
 2. 改代码 / 文档，补单测。
 3. 跑 `python -m unittest discover -s tests` 与 `pwsh -File tools/check_privacy.ps1`。
 4. 更新 `CHANGELOG.md`。
-5. 提交：`type(scope): 中文摘要`（`feat` / `fix` / `docs` / `test` / `chore` / `refactor`）。
+4. 更新 `CHANGELOG.md`。
+
+## 提交规范
+
+遵循 git-workflow：Conventional Commits，**body 必填**。
+
+- 标题：`type(scope): 中文摘要`，祈使句、不加句号；type 用 `feat` / `fix` / `refactor` / `perf` / `docs` / `test` / `chore` / `release`。
+- body：小节名独占一行、以 `：` 结尾；内容用列表（细分主题一行，说明缩进一级）；三段之间空一行。
+- 日常提交用 `变更` + `原因`，必要时加 `注意`；一次提交只做一件事，不混多功能。
+- 提交身份必须是公开账号：`git config --show-origin user.name` 自检，不得让实名进公开历史。
+- 已发布的历史不追溯重写（v0.13.0 之前的历史保持原样）。
+
+## 发版流程
+
+1. `CHANGELOG.md`：把 Unreleased 折叠为 `## vX.Y.Z（日期）`，补齐本期遗漏条目。
+2. 改 `src/core/host.py` 的 `VERSION`（SemVer：新功能/重构 → MINOR+1，修复 → PATCH+1）。
+3. 全量单测绿后提交：`release: 发布 vX.Y.Z`；body 首行「更新内容（自 <上一版本> 以来）：」，小节依次为 `破坏性变更` / `新增功能` / `重构 / 性能` / `修复` / `升级说明` / `注意`。
+4. 打 Annotated Tag：`git tag -a vX.Y.Z -m "<一句话摘要>"`，随后推送 master 与 tag。
+
