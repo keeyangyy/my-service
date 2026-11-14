@@ -139,7 +139,8 @@ my-service/
 │   ├── services/<名称>.json   # 服务注册条（唯一发现源）
 │   └── tasks/<名称>.json      # 定时任务注册条
 ├── adapters/                  # 可选转接层：<名称>/ 下放薄适配脚本，自动优先命中
-├── run/                       # 人的入口
+├── run/                       # 人的入口（双击 start/stop；详见 run/README.md）
+│   ├── README.md              # 入口说明：哪个能双击、哪个是给脚本用的
 │   ├── start.ps1 / stop.ps1 / restart.ps1
 │   ├── install_autostart.ps1 / uninstall_autostart.ps1
 │   └── Dashboard.url          # 首次启动时按本机配置生成（不入库）
@@ -148,7 +149,7 @@ my-service/
 ├── bak/                       # 实例配置备份，保留最近 N 份（不入库）
 ├── src/
 │   ├── server.py              # 组装入口（config → Scanner → Manager → Scheduler → HTTP）
-│   ├── ctl.ps1                # 启停内部引擎（run/ 的底层）
+│   ├── service_cli.py         # 启停引擎（run/*.ps1 与便携包 cmd 的底层）
 │   ├── svc.ps1                # 终端 / AI 会话用的服务管理 CLI
 │   └── core/                  # api / state / scheduler / runner / scanner / audit / backup
 ├── web/                       # 前端静态资源（index.html / app.js / style.css / opening.html）

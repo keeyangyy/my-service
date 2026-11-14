@@ -15,7 +15,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# 端点从 config.json 读取（与 ctl.ps1 同源），避免硬编码端口
+# 端点从 config.json 读取（与 service_cli.py 同源），避免硬编码端口
 # $app = 代码根；$dataRoot = 数据根（便携包为 app 的上一级）
 $app = Split-Path $PSScriptRoot -Parent
 $dataRoot = $app

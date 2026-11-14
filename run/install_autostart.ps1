@@ -47,4 +47,6 @@ Write-Host "✓ 已安装开机自启（无窗口）: $vbsPath"
 Write-Host "  注销重新登录即可验证；卸载: uninstall_autostart.ps1"
 
 # 顺带生成面板快捷方式（URL 取自本机 config.json；不写 IconFile，可跨机器）
-& (Join-Path $app "src\ctl.ps1") shortcut
+$pyCli = Join-Path $dataRoot "runtime\python.exe"
+if (-not (Test-Path -LiteralPath $pyCli)) { $pyCli = (Get-Command python.exe).Source }
+& $pyCli (Join-Path $app "src\service_cli.py") shortcut

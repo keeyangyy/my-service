@@ -1,4 +1,4 @@
-# my-service 宿主启动入口（通用约定 run\start.ps1）
-# 实现细节在根部 run.ps1；此壳保持 services 目录协议一致。
-& (Join-Path $PSScriptRoot "..\src\ctl.ps1") start
+# my-service 启动入口（双击可用）
+# 启停逻辑统一在 src/service_cli.py（本文件只是薄壳）
+& (Get-Command python.exe).Source (Join-Path $PSScriptRoot "..\src\service_cli.py") start
 exit $LASTEXITCODE
