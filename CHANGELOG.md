@@ -2,7 +2,7 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
-## Unreleased
+## v0.14.0（2026-11-15）
 
 ### 修复
 
@@ -58,6 +58,17 @@
 - 开机自启改用启动文件夹 `.lnk` 快捷方式（取代 `vbs`）
   - 目标 `pythonw.exe` + `src/server.py`，pythonw 无控制台 → 登录无窗口；少一层 `wscript`，右键属性即可查看
   - `.lnk` 用系统自带 `powershell.exe` + `WScript.Shell` 生成（只在安装时用），面板开关与 `run/install_autostart.ps1` 行为一致，并清理历史 vbs/cmd
+
+### 工程
+
+- 发版改走流水线 `.github/workflows/release.yml`，本地不再手工打 tag
+  - 触发：Actions 页面填版本号，或 `gh workflow run release.yml -f version=X.Y.Z`
+  - tag 与 Release 只在检查全绿、便携包构建成功之后由流水线生成；任一步失败自动删 tag 与 Release
+  - 顺序：preflight（版本一致 / CHANGELOG 段落 / 本地与远端无重名 tag）→ `ci.yml` 全量检查 →
+    windows 打包并校验 `latest.json` → 草稿 Release 上传资产 → 资产与发布后自检 → 转正为 Latest
+  - 发布说明直接取 `CHANGELOG.md` 该版本段落；便携包与 `latest.json` 作为 Release 资产上传，
+    面板「检查更新」读到的就是这份
+- `ci.yml` 支持 `workflow_call`，发版流水线与 PR 检查共用同一套命令，避免两处判据漂移
 
 ## v0.13.0（2026-11-14）
 
