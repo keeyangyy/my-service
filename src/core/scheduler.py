@@ -44,8 +44,21 @@ class CronSpec:
     RUNTIME_KEYS = ("enabled", "catch_up", "run_timeout_sec", "order", "archived")
 
     def __init__(self, name: str, reg_path: Path, runtime: dict | None = None):
+        self._init_defaults(name, reg_path)
+        view = self._load(runtime)
+        if view is None:
+            return
+        problems: list[str] = []
+        problems += self._apply_declaration(view, name)
+        problems += self._apply_schedule(view)
+        problems += self._check_entry()
+        if problems:
+            self.valid = False
+            self.error = "；".join(problems)
+
+    def _init_defaults(self, name: str, reg_path: Path) -> None:
         self.folder = name                        # 任务名 = 注册文件名（去 .json）
-        self.reg_path = reg_path                  # reg\cron\<name>.json（只读声明）
+        self.reg_path = reg_path                  # reg\tasks\<name>.json（只读声明）
         self.raw: dict = {}                       # 注册条原文（声明 + 默认计划）
         self.runtime: dict = {}                   # 本条运行态账面值（生效值来源）
         self.valid: bool = True
@@ -59,44 +72,42 @@ class CronSpec:
         self.cwd: str = "."
         self.env: dict[str, str] = {}
         self.schedule_type: str = ""              # daily | interval
-        self.schedule_times: list[tuple[int, int]] = []   # daily 的时刻列表（解析时排序去重）
-        self.every_sec: float = 0.0               # interval 的周期
+        self.schedule_times: list[tuple[int, int]] = []
+        self.every_sec: float = 0.0
         self.timeout_sec: float = 300.0
         self.catch_up: bool = False
         self.order: float | None = None
 
+    def _load(self, runtime: dict | None) -> dict | None:
+        """读注册条并与运行态账本合并 → view；解析失败返回 None。"""
         try:
-            text = reg_path.read_text(encoding="utf-8-sig")
-            data = json.loads(text)
+            data = json.loads(self.reg_path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 raise ValueError("注册条根节点必须是 JSON 对象")
             self.raw = data
         except Exception as exc:  # noqa: BLE001 - 坏注册条一律变 invalid
             self.valid = False
             self.error = f"注册条解析失败: {exc}"
-            return
-
-        # ---- 声明 + 运行态合并：账本值覆盖注册条同名键（后者只作回落）----
+            return None
+        # 账本值覆盖注册条同名键（后者只作回落）
         self.runtime = {k: runtime[k] for k in self.RUNTIME_KEYS
                         if isinstance(runtime, dict) and k in runtime}
-        view = {**data, **self.runtime}
+        return {**data, **self.runtime}
 
+    def _apply_declaration(self, view: dict, name: str) -> list[str]:
         problems: list[str] = []
-
-        # 旧结构字段直接拒绝（不保留兼容层）
         legacy = [k for k in ("entry", "args", "cwd", "enabled", "catch_up",
                               "timeout_sec") if k in view]
         if legacy:
             problems.append(f"旧版字段 {legacy} 已废弃，请改为 start / runtime 分组")
 
-        # ---- path（与服务注册条同语义：任务脚本的真实家）----
         raw_path = view.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             problems.append("缺少 path 字段（脚本所在目录）")
         else:
             cand = Path(raw_path.strip())
             if not cand.is_absolute():
-                cand = (reg_path.parent / cand).resolve()
+                cand = (self.reg_path.parent / cand).resolve()
             self.path = cand.resolve()
             if not self.path.is_dir():
                 problems.append(f"path 不是存在的目录: {self.path}")
@@ -123,61 +134,62 @@ class CronSpec:
         self.timeout_sec = max(5.0, min(self.timeout_sec, 86400.0))
         if isinstance(start.get("env"), dict):
             self.env = {str(k): str(v) for k, v in start["env"].items()}
+        return problems
 
-        # ---- schedule（必需，物种核心字段）----
+    def _apply_schedule(self, view: dict) -> list[str]:
         sched = view.get("schedule")
         if not isinstance(sched, dict):
-            problems.append('缺少 schedule 字段（{"type":"daily","at":"HH:MM"} '
-                            '或 {"type":"interval","every_sec":N}）')
-        else:
-            stype = str(sched.get("type", "")).lower()
-            if stype == "daily":
-                self.schedule_type = "daily"
-                raw_at = sched.get("at")
-                raw_at = [raw_at] if isinstance(raw_at, str) else raw_at
-                if not isinstance(raw_at, list) or not raw_at:
-                    problems.append('daily 的 at 需为 "HH:MM" 或 ["HH:MM", ...]（至少一个时刻）')
-                else:
-                    times: list[tuple[int, int]] = []
-                    bad: list[str] = []
-                    for item in raw_at:
-                        s = str(item).strip()
-                        try:
-                            hh, mm = s.split(":")
-                            t = (int(hh), int(mm))
-                            if not (0 <= t[0] <= 23 and 0 <= t[1] <= 59):
-                                raise ValueError
-                            times.append(t)
-                        except (ValueError, TypeError):
-                            bad.append(s)
-                    if bad:
-                        problems.append(f"daily 的 at 含非法时刻（需 HH:MM）: {bad}")
-                    else:
-                        self.schedule_times = sorted(set(times))
-                        if not self.schedule_times:
-                            problems.append("daily 的 at 不能为空")
-            elif stype == "interval":
-                self.schedule_type = "interval"
-                try:
-                    self.every_sec = float(sched.get("every_sec", 0))
-                except (TypeError, ValueError):
-                    self.every_sec = 0
-                if self.every_sec < 10:
-                    problems.append("interval 的 every_sec 需 >= 10 秒")
-                else:
-                    self.every_sec = min(self.every_sec, 604800.0)  # ≤ 7 天
-            else:
-                problems.append(f"schedule.type 仅支持 daily/interval，得到 {stype!r}")
+            return ['缺少 schedule 字段（{"type":"daily","at":"HH:MM"} '
+                    '或 {"type":"interval","every_sec":N}）']
+        stype = str(sched.get("type", "")).lower()
+        if stype == "daily":
+            self.schedule_type = "daily"
+            return self._apply_daily(sched)
+        if stype == "interval":
+            self.schedule_type = "interval"
+            return self._apply_interval(sched)
+        return [f"schedule.type 仅支持 daily/interval，得到 {stype!r}"]
 
-        # ---- 入口存在性 ----
+    def _apply_daily(self, sched: dict) -> list[str]:
+        raw_at = sched.get("at")
+        raw_at = [raw_at] if isinstance(raw_at, str) else raw_at
+        if not isinstance(raw_at, list) or not raw_at:
+            return ['daily 的 at 需为 "HH:MM" 或 ["HH:MM", ...]（至少一个时刻）']
+        times: list[tuple[int, int]] = []
+        bad: list[str] = []
+        for item in raw_at:
+            s = str(item).strip()
+            try:
+                hh, mm = s.split(":")
+                t = (int(hh), int(mm))
+                if not (0 <= t[0] <= 23 and 0 <= t[1] <= 59):
+                    raise ValueError
+                times.append(t)
+            except (ValueError, TypeError):
+                bad.append(s)
+        if bad:
+            return [f"daily 的 at 含非法时刻（需 HH:MM）: {bad}"]
+        self.schedule_times = sorted(set(times))
+        if not self.schedule_times:
+            return ["daily 的 at 不能为空"]
+        return []
+
+    def _apply_interval(self, sched: dict) -> list[str]:
+        try:
+            self.every_sec = float(sched.get("every_sec", 0))
+        except (TypeError, ValueError):
+            self.every_sec = 0
+        if self.every_sec < 10:
+            return ["interval 的 every_sec 需 >= 10 秒"]
+        self.every_sec = min(self.every_sec, 604800.0)  # ≤ 7 天
+        return []
+
+    def _check_entry(self) -> list[str]:
         if not self.entry:
-            problems.append("缺少 entry 字段")
-        elif self.entry_abs and not self.entry_abs.is_file():
-            problems.append(f"入口文件不存在: {self.entry_abs}")
-
-        if problems:
-            self.valid = False
-            self.error = "；".join(problems)
+            return ["缺少 entry 字段"]
+        if self.entry_abs and not self.entry_abs.is_file():
+            return [f"入口文件不存在: {self.entry_abs}"]
+        return []
 
     def _resolve(self, rel: str) -> Path:
         return (self.path / rel).resolve()
@@ -519,71 +531,80 @@ class Scheduler:
             spec = self.specs.get(name)
             if spec is None:
                 return False, "not_found", f"未知定时任务 {name}"
-
-            runtime_patch: dict = {}
-            schedule_patch = None
-            if "enabled" in patch:
-                runtime_patch["enabled"] = bool(patch["enabled"])
-            if "catch_up" in patch:
-                runtime_patch["catch_up"] = bool(patch["catch_up"])
-            if "timeout_sec" in patch:
-                try:
-                    runtime_patch["run_timeout_sec"] = float(patch["timeout_sec"])
-                except (TypeError, ValueError):
-                    return False, "invalid", "timeout_sec 需为数字"
-            if "run_timeout_sec" in patch:
-                try:
-                    runtime_patch["run_timeout_sec"] = float(patch["run_timeout_sec"])
-                except (TypeError, ValueError):
-                    return False, "invalid", "run_timeout_sec 需为数字"
-            if "schedule" in patch:
-                sched = patch["schedule"]
-                if not isinstance(sched, dict):
-                    return False, "invalid", "schedule 需为对象"
-                stype = str(sched.get("type", "")).lower()
-                if stype not in ("daily", "interval"):
-                    return False, "invalid", "schedule.type 仅支持 daily/interval"
-                if stype == "daily":
-                    at = sched.get("at")
-                    ok_at = (isinstance(at, str) or
-                             (isinstance(at, list) and len(at) > 0))
-                    if not ok_at:
-                        return False, "invalid", 'daily 的 at 需为 "HH:MM" 或非空时刻数组'
-                if stype == "interval":
-                    try:
-                        every = float(sched.get("every_sec", 0))
-                    except (TypeError, ValueError):
-                        return False, "invalid", "every_sec 需为数字"
-                    if every < 10:
-                        return False, "invalid", "every_sec 需 >= 10 秒"
-                schedule_patch = sched
+            runtime_patch, schedule_patch, error = self._parse_patch(patch)
+            if error:
+                return False, "invalid", error
             if not runtime_patch and schedule_patch is None:
                 return False, "invalid", "没有需要修改的字段"
+            return self._commit_patch(name, spec, runtime_patch, schedule_patch)
 
-            old_runtime = dict(spec.raw.get("runtime") or {})
-            old_schedule = spec.raw.get("schedule")
-            ok = True
+    def _parse_patch(self, patch: dict) -> tuple[dict, dict | None, str]:
+        """把外部 patch 归一化 → (runtime_patch, schedule_patch, 错误消息)。"""
+        runtime_patch: dict = {}
+        if "enabled" in patch:
+            runtime_patch["enabled"] = bool(patch["enabled"])
+        if "catch_up" in patch:
+            runtime_patch["catch_up"] = bool(patch["catch_up"])
+        for key in ("timeout_sec", "run_timeout_sec"):
+            if key in patch:
+                try:
+                    runtime_patch["run_timeout_sec"] = float(patch[key])
+                except (TypeError, ValueError):
+                    return {}, None, f"{key} 需为数字"
+        schedule_patch = None
+        if "schedule" in patch:
+            schedule_patch, error = self._validate_schedule_patch(patch["schedule"])
+            if error:
+                return {}, None, error
+        return runtime_patch, schedule_patch, ""
+
+    def _validate_schedule_patch(self, sched: object) -> tuple[dict | None, str]:
+        if not isinstance(sched, dict):
+            return None, "schedule 需为对象"
+        stype = str(sched.get("type", "")).lower()
+        if stype not in ("daily", "interval"):
+            return None, "schedule.type 仅支持 daily/interval"
+        if stype == "daily":
+            at = sched.get("at")
+            ok_at = isinstance(at, str) or (isinstance(at, list) and len(at) > 0)
+            if not ok_at:
+                return None, 'daily 的 at 需为 "HH:MM" 或非空时刻数组'
+        if stype == "interval":
+            try:
+                every = float(sched.get("every_sec", 0))
+            except (TypeError, ValueError):
+                return None, "every_sec 需为数字"
+            if every < 10:
+                return None, "every_sec 需 >= 10 秒"
+        return sched, ""
+
+    def _commit_patch(self, name: str, spec: "CronSpec", runtime_patch: dict,
+                      schedule_patch: dict | None) -> tuple[bool, str, str]:
+        """写回注册条并重解析；新配置无效则回滚。"""
+        old_runtime = dict(spec.raw.get("runtime") or {})
+        old_schedule = spec.raw.get("schedule")
+        ok = True
+        if runtime_patch:
+            ok = self._set_runtime(name, runtime_patch) and ok
+        if schedule_patch is not None:
+            ok = self._set_schedule(name, schedule_patch) and ok
+        if not ok:
+            return False, "io", "写注册条失败"
+
+        new_spec = CronSpec(name, spec.reg_path)
+        if not new_spec.valid:
             if runtime_patch:
-                ok = self._set_runtime(name, runtime_patch) and ok
-            if schedule_patch is not None:
-                ok = self._set_schedule(name, schedule_patch) and ok
-            if not ok:
-                return False, "io", "写注册条失败"
-
-            new_spec = CronSpec(name, spec.reg_path)
-            if not new_spec.valid:
-                if runtime_patch:
-                    self._set_runtime(name, old_runtime)
-                if schedule_patch is not None and old_schedule is not None:
-                    self._set_schedule(name, old_schedule)
-                self.scan()
-                return False, "invalid", f"{new_spec.error or '新配置无效'}（已回滚）"
-            self.specs[name] = new_spec
-            if schedule_patch is not None:
-                p = self.persist.setdefault(name, {})
-                p["next_run"] = self._init_next_run(new_spec, time.time())
-            self._save_state()
-            return True, "ok", "已更新"
+                self._set_runtime(name, old_runtime)
+            if schedule_patch is not None and old_schedule is not None:
+                self._set_schedule(name, old_schedule)
+            self.scan()
+            return False, "invalid", f"{new_spec.error or '新配置无效'}（已回滚）"
+        self.specs[name] = new_spec
+        if schedule_patch is not None:
+            p = self.persist.setdefault(name, {})
+            p["next_run"] = self._init_next_run(new_spec, time.time())
+        self._save_state()
+        return True, "ok", "已更新"
 
     def toggle_enabled(self, name: str, value: bool) -> tuple[bool, str]:
         """开关任务调度（面板滑块）：权威值写回注册条 runtime.enabled。

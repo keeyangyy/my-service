@@ -90,31 +90,58 @@ class Spec:
 
     # ---------------------------------------------------------------- 解析
     def _parse(self, data: dict) -> None:
+        """按注册条六组顺序解析；任一组失败即中止（错误已记录在 self.error）。"""
+        steps = (
+            self._reject_legacy,
+            self._apply_path,
+            self._apply_basic,
+            self._apply_start,
+            self._apply_stop,
+            self._apply_health,
+            self._apply_identity,
+            self._apply_runtime,
+            self._apply_schedule,
+            self._apply_url,
+        )
+        for step in steps:
+            if step(data) is False:
+                return
+        self._validate()
+
+    def _reject_legacy(self, data: dict) -> bool:
         # 旧结构直接拒绝（不保留兼容层）
         legacy = [k for k in ("entry", "stop_script", "args", "cwd") if k in data]
         if legacy:
             self.valid = False
-            self.error = (f"旧版字段 {legacy} 已废弃，请改为 start/stop 分组")
-            return
+            self.error = f"旧版字段 {legacy} 已废弃，请改为 start/stop 分组"
+            return False
+        return True
 
+    def _apply_path(self, data: dict) -> bool:
         raw_path = data.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
-            return self._invalid("缺少 path 字段（服务真实目录）")
+            self._invalid("缺少 path 字段（服务真实目录）")
+            return False
         cand = Path(raw_path.strip())
         if not cand.is_absolute():
             cand = (self.reg_path.parent / cand).resolve()
         self.path = cand.resolve()
         if not self.path.is_dir():
-            return self._invalid(f"path 不是存在的目录: {self.path}")
+            self._invalid(f"path 不是存在的目录: {self.path}")
+            return False
+        return True
 
+    def _apply_basic(self, data: dict) -> bool:
         self.display = str(data.get("display") or self.folder)
         self.description = str(data.get("description") or "")
         self.mode = str(data.get("mode") or "managed").lower()
+        return True
 
-        # start
+    def _apply_start(self, data: dict) -> bool:
         start = data.get("start")
         if not isinstance(start, dict):
-            return self._invalid("缺少 start 分组")
+            self._invalid("缺少 start 分组")
+            return False
         self.entry = str(start.get("entry") or "").strip()
         args = start.get("args") or []
         self.args = [str(a) for a in args] if isinstance(args, list) else []
@@ -122,41 +149,40 @@ class Spec:
         if isinstance(start.get("env"), dict):
             self.env = {str(k): str(v) for k, v in start["env"].items()}
         self.start_detach = bool(start.get("detach", False))
+        return True
 
-        # stop
+    def _apply_stop(self, data: dict) -> bool:
         stop = data.get("stop")
         if isinstance(stop, dict):
             self.stop_script = str(stop.get("script") or "") or None
-            try:
-                self.stop_grace = float(stop.get("grace_sec", 10.0))
-            except (TypeError, ValueError):
-                self.stop_grace = 10.0
+            self.stop_grace = _to_float(stop.get("grace_sec"), 10.0)
+        return True
 
-        # health
+    def _apply_health(self, data: dict) -> bool:
         health = data.get("health")
         if not isinstance(health, dict):
-            return self._invalid("缺少 health 分组")
+            self._invalid("缺少 health 分组")
+            return False
         self.health_type = str(health.get("type") or "").lower()
         try:
             self.health_port = int(health["port"]) if "port" in health else None
         except (TypeError, ValueError):
             self.health_port = None
         self.health_url = health.get("url")
-        try:
-            self.health_timeout = float(health.get("timeout_sec", 30.0))
-        except (TypeError, ValueError):
-            self.health_timeout = 30.0
+        self.health_timeout = _to_float(health.get("timeout_sec"), 30.0)
         svc = health.get("service")
         self.health_service = str(svc).strip() if isinstance(svc, str) and svc.strip() else None
+        return True
 
-        # identity
+    def _apply_identity(self, data: dict) -> bool:
         identity = data.get("identity")
         if isinstance(identity, dict):
             self.pidfile = str(identity.get("pidfile") or "") or None
             self.identity_process = str(identity.get("process") or "") or None
             self.identity_match = str(identity.get("match") or "name").lower()
+        return True
 
-        # runtime
+    def _apply_runtime(self, data: dict) -> bool:
         runtime = data.get("runtime")
         if isinstance(runtime, dict):
             self.enabled = bool(runtime.get("enabled", True))
@@ -167,17 +193,12 @@ class Spec:
                     self.order = float(runtime["order"])
                 except (TypeError, ValueError):
                     self.order = None
-            try:
-                self.idle_timeout = float(runtime.get("idle_timeout_sec", 600.0))
-            except (TypeError, ValueError):
-                self.idle_timeout = 600.0
-            try:
-                self.run_timeout = float(runtime.get("run_timeout_sec", 300.0))
-            except (TypeError, ValueError):
-                self.run_timeout = 300.0
+            self.idle_timeout = _to_float(runtime.get("idle_timeout_sec"), 600.0)
+            self.run_timeout = _to_float(runtime.get("run_timeout_sec"), 300.0)
             self.catch_up = bool(runtime.get("catch_up", False))
+        return True
 
-        # schedule（仅 task）
+    def _apply_schedule(self, data: dict) -> bool:
         schedule = data.get("schedule")
         if isinstance(schedule, dict):
             self.schedule_type = str(schedule.get("type") or "").lower()
@@ -189,12 +210,10 @@ class Spec:
                     parsed = _parse_hhmm(str(t))
                     if parsed:
                         self.schedule_times.append(parsed)
-            try:
-                self.every_sec = float(schedule.get("every_sec", 0.0))
-            except (TypeError, ValueError):
-                self.every_sec = 0.0
+            self.every_sec = _to_float(schedule.get("every_sec"), 0.0)
+        return True
 
-        # url 缺省从 health.url 推导
+    def _apply_url(self, data: dict) -> bool:
         u = data.get("url")
         if isinstance(u, str) and u.strip():
             self.url = u.strip()
@@ -202,55 +221,72 @@ class Spec:
             p = urlsplit(self.health_url)
             if p.scheme and p.netloc:
                 self.url = f"{p.scheme}://{p.netloc}/"
-
-        self._validate()
+        return True
 
     # ---------------------------------------------------------------- 校验
     def _validate(self) -> None:
         problems: list[str] = []
-        if self.mode not in ("managed", "on_demand", "task"):
-            problems.append(f"mode 仅支持 managed/on_demand/task，得到 {self.mode!r}")
-        if not self.entry:
-            problems.append("start.entry 不能为空")
-        elif not self.entry_abs.is_file():
-            problems.append(f"入口文件不存在: {self.entry_abs}")
-
-        if self.health_type not in ("http", "port", "process"):
-            problems.append(f"health.type 仅支持 http/port/process，得到 {self.health_type!r}")
-        elif self.health_type == "http" and not self.health_url:
-            problems.append("health.type=http 需要 health.url")
-        elif self.health_type == "port" and self.health_port is None:
-            problems.append("health.type=port 需要 health.port")
-        elif self.health_type == "process" and not (self.pidfile or self.identity_process):
-            problems.append("health.type=process 需要 identity.pidfile 或 identity.process")
-
-        if self.mode == "task":
-            if not self.schedule_type:
-                problems.append("mode=task 需要 schedule")
-            elif self.schedule_type not in ("daily", "interval"):
-                problems.append(f"schedule.type 仅支持 daily/interval，得到 {self.schedule_type!r}")
-            elif self.schedule_type == "daily" and not self.schedule_times:
-                problems.append("daily 需要至少一个 at 时刻（HH:MM）")
-            elif self.schedule_type == "interval" and self.every_sec < INTERVAL_MIN_SEC:
-                problems.append(f"interval.every_sec 不能小于 {INTERVAL_MIN_SEC:.0f} 秒")
-            if self.start_detach:
-                problems.append("mode=task 不支持 start.detach")
-        else:
-            if self.start_detach and self.mode != "managed":
-                problems.append("start.detach 仅允许 mode=managed")
-            if self.mode == "on_demand":
-                if not self.stop_script:
-                    problems.append("mode=on_demand 需要 stop.script（否则无法回收）")
-                if self.start_detach:
-                    problems.append("mode=on_demand 不支持 start.detach")
-
-        if self.idle_timeout != 0 and not (IDLE_MIN_SEC <= self.idle_timeout <= IDLE_MAX_SEC):
-            problems.append(
-                f"runtime.idle_timeout_sec 需为 0 或 {int(IDLE_MIN_SEC)}~{int(IDLE_MAX_SEC)} 秒")
-
+        problems += self._check_mode_entry()
+        problems += self._check_health()
+        problems += self._check_mode_rules()
+        problems += self._check_idle_timeout()
         if problems:
             self.valid = False
             self.error = "；".join(problems)
+
+    def _check_mode_entry(self) -> list[str]:
+        out: list[str] = []
+        if self.mode not in ("managed", "on_demand", "task"):
+            out.append(f"mode 仅支持 managed/on_demand/task，得到 {self.mode!r}")
+        if not self.entry:
+            out.append("start.entry 不能为空")
+        elif not self.entry_abs.is_file():
+            out.append(f"入口文件不存在: {self.entry_abs}")
+        return out
+
+    def _check_health(self) -> list[str]:
+        if self.health_type not in ("http", "port", "process"):
+            return [f"health.type 仅支持 http/port/process，得到 {self.health_type!r}"]
+        if self.health_type == "http" and not self.health_url:
+            return ["health.type=http 需要 health.url"]
+        if self.health_type == "port" and self.health_port is None:
+            return ["health.type=port 需要 health.port"]
+        if self.health_type == "process" and not (self.pidfile or self.identity_process):
+            return ["health.type=process 需要 identity.pidfile 或 identity.process"]
+        return []
+
+    def _check_mode_rules(self) -> list[str]:
+        if self.mode == "task":
+            out = self._check_task_schedule()
+            if self.start_detach:
+                out.append("mode=task 不支持 start.detach")
+            return out
+        out: list[str] = []
+        if self.start_detach and self.mode != "managed":
+            out.append("start.detach 仅允许 mode=managed")
+        if self.mode == "on_demand":
+            if not self.stop_script:
+                out.append("mode=on_demand 需要 stop.script（否则无法回收）")
+            if self.start_detach:
+                out.append("mode=on_demand 不支持 start.detach")
+        return out
+
+    def _check_task_schedule(self) -> list[str]:
+        if not self.schedule_type:
+            return ["mode=task 需要 schedule"]
+        if self.schedule_type not in ("daily", "interval"):
+            return [f"schedule.type 仅支持 daily/interval，得到 {self.schedule_type!r}"]
+        if self.schedule_type == "daily" and not self.schedule_times:
+            return ["daily 需要至少一个 at 时刻（HH:MM）"]
+        if self.schedule_type == "interval" and self.every_sec < INTERVAL_MIN_SEC:
+            return [f"interval.every_sec 不能小于 {INTERVAL_MIN_SEC:.0f} 秒"]
+        return []
+
+    def _check_idle_timeout(self) -> list[str]:
+        if self.idle_timeout != 0 and not (IDLE_MIN_SEC <= self.idle_timeout <= IDLE_MAX_SEC):
+            return [
+                f"runtime.idle_timeout_sec 需为 0 或 {int(IDLE_MIN_SEC)}~{int(IDLE_MAX_SEC)} 秒"]
+        return []
 
     def _invalid(self, msg: str) -> None:
         self.valid = False
@@ -282,6 +318,16 @@ class Spec:
     @property
     def is_task(self) -> bool:
         return self.mode == "task"
+
+
+def _to_float(value: object, default: float) -> float:
+    """宽松转 float：None / 非法值一律回落到默认值。"""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_hhmm(text: str) -> tuple[int, int] | None:
