@@ -1,0 +1,12 @@
+{
+  "path": "{{WORKDIR}}/services",
+  "display": "示例心跳任务",
+  "description": "每 30 秒往日志追加一行的示例任务",
+  "mode": "task",
+  "start": {
+    "entry": "demo_task.py",
+    "args": ["--note", "demo heartbeat", "--log", "{{WORKDIR}}/data/demo-task.log"]
+  },
+  "schedule": { "type": "interval", "every_sec": 30 },
+  "runtime": { "enabled": true, "catch_up": false, "run_timeout_sec": 60 }
+}

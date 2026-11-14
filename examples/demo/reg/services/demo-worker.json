@@ -1,0 +1,13 @@
+{
+  "path": "{{WORKDIR}}/services",
+  "display": "示例常驻服务",
+  "description": "常驻托管示例，健康探测走端口（33511），宿主启动时自动拉起",
+  "mode": "managed",
+  "start": {
+    "entry": "demo_app.py",
+    "args": ["--port", "33511", "--name", "示例常驻服务", "--color", "green", "--pidfile", "demo-worker.pid"]
+  },
+  "health": { "type": "port", "port": 33511, "timeout_sec": 30 },
+  "identity": { "pidfile": "demo-worker.pid" },
+  "runtime": { "enabled": true, "autostart": true }
+}

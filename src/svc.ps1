@@ -14,7 +14,20 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Base = "http://127.0.0.1:1236"
+
+# 端点从 config.json 读取（与 ctl.ps1 同源），避免硬编码端口
+$root = Split-Path $PSScriptRoot -Parent
+$bindHost = "127.0.0.1"
+$port = 1236
+$cfgPath = Join-Path $root "config.json"
+if (Test-Path -LiteralPath $cfgPath) {
+    try {
+        $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+        if ($cfg.host) { $bindHost = [string]$cfg.host }
+        if ($cfg.port) { $port = [int]$cfg.port }
+    } catch { }
+}
+$Base = "http://${bindHost}:${port}"
 
 function Invoke-Api([string]$Method, [string]$Path, $Body = $null) {
     $args_ = @{ Method = $Method; Uri = "$Base$Path"; TimeoutSec = 8 }

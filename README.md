@@ -12,6 +12,10 @@
 - **开机要手动一个个点**：一条命令安装自启（启动文件夹 / 登录计划任务 / 系统服务）。
 - **谁在跑、什么时候起的**：控制面写结构化登记簿 `logs/host.jsonl`，面板「事件」直接看。
 
+## 界面
+
+![控制台主面板](docs/images/panel.png)
+
 ## 特性
 
 | 能力 | 说明 |
@@ -42,7 +46,15 @@ start http://127.0.0.1:1236         # 打开面板
 
 首次启动会按本机 `config.json` 生成 `run\Dashboard.url`（双击即可开面板；该文件不入库）。
 
-想先看效果，可以把 `examples/` 里的示例注册条复制过去：
+想先看效果，直接跑仓库自带的 demo：把源码复制到临时目录、用独立端口（1246）起实例，
+不动你本机的 `reg/` 与数据。
+
+```powershell
+pwsh -File .\examples\demo\start-demo.ps1          # 起在 http://127.0.0.1:1246
+pwsh -File .\examples\demo\start-demo.ps1 -Stop    # 停掉并清理
+```
+
+只想复制示例注册条过去也可以：
 
 ```powershell
 Copy-Item .\examples\reg\services\example-web.json .\reg\services\
@@ -119,8 +131,14 @@ my-service/
 ├── web/                       # 前端静态资源（index.html / app.js / style.css / opening.html）
 ├── tools/
 │   └── check_privacy.ps1      # 公开发布前的隐私检查
+├── examples/                  # 示例注册条 + 可运行 demo（examples/demo）
 ├── tests/                     # 单元测试
-└── docs/                      # 设计与使用文档
+├── docs/                      # 设计与使用文档
+│   └── images/                # 面板截图（README 引用）
+├── AGENTS.md                  # 项目规则入口（框架边界 / 提交与发版规范）
+├── CONTRIBUTING.md            # 贡献指南与公开发布规则（脱敏清单）
+├── SECURITY.md                # 威胁模型与漏洞报告
+└── LICENSE                    # MIT 许可证
 ```
 
 ## 配置
@@ -159,6 +177,8 @@ my-service/
 | 日常操作、REST API、快速上手 | [docs/guide/usage.md](docs/guide/usage.md) |
 | 注册新服务、接入检查单 | [docs/guide/registration.md](docs/guide/registration.md) |
 | 历史排坑（冷启动慢 / 自启黑窗 / 会话绑定） | [docs/analysis/pitfalls.md](docs/analysis/pitfalls.md) |
+| 项目规则、提交与发版规范 | [AGENTS.md](AGENTS.md) |
+| 跑 demo 体验完整链路 | [examples/demo/README.md](examples/demo/README.md) |
 
 ## 开发与测试
 

@@ -30,6 +30,13 @@
 | 公开发布规则（脱敏清单） | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | 威胁模型与漏洞报告 | [SECURITY.md](SECURITY.md) |
 
+## 公开素材（截图 / 示例）
+
+- 截图、演示图、示例数据**只能来自 demo 环境**：`pwsh -File examples/demo/start-demo.ps1`（独立端口 1246、独立 `demo-reg`），不要拿本机真实实例截图。
+- 截图前先核对页面连的是哪个实例：看顶栏端口与注册服务名，或查 `/api/services`。
+- 图片放 `docs/images/`，README 只放必要的一张主面板图。
+- 入库前逐张看过：不得出现真实服务名、本机路径、用户名、真实软件名。
+
 ## 代码约定
 
 - 编码 UTF-8 无 BOM、换行 LF；`.bat` / `.cmd` 例外，必须 GBK + CRLF。

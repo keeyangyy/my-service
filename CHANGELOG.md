@@ -2,6 +2,21 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## Unreleased
+
+### 修复
+
+- 前端硬编码接口地址，改端口的实例会连到别的宿主
+  - `web/app.js` 的 `API_BASE` 改为同源相对路径
+  - `src/svc.ps1` 改为从 `config.json` 读 host/port
+
+### 新增功能
+
+- `examples/demo`：可运行的示例环境
+  - 一键复制源码到临时目录、用独立端口起实例，含 4 条示例注册条与 2 个示例服务
+- README 增加控制台截图
+  - `docs/images/panel.png`，取自 demo 环境
+
 ## v0.13.0（2026-11-14）
 
 ### 结构

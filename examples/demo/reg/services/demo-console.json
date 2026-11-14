@@ -1,0 +1,20 @@
+{
+  "path": "{{WORKDIR}}/services",
+  "display": "示例面板",
+  "description": "点开即起的示例 Web 服务（33510）",
+  "mode": "on_demand",
+  "url": "http://127.0.0.1:33510/",
+  "start": {
+    "entry": "demo_app.py",
+    "args": ["--port", "33510", "--name", "示例面板", "--color", "blue", "--pidfile", "demo-console.pid"]
+  },
+  "stop": { "script": "stop_demo.ps1", "grace_sec": 10 },
+  "health": {
+    "type": "http",
+    "url": "http://127.0.0.1:33510/health",
+    "timeout_sec": 30,
+    "service": "示例面板"
+  },
+  "identity": { "pidfile": "demo-console.pid" },
+  "runtime": { "enabled": true, "autostart": false, "idle_timeout_sec": 600 }
+}

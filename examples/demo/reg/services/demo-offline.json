@@ -1,0 +1,13 @@
+{
+  "path": "{{WORKDIR}}/services",
+  "display": "示例离线服务",
+  "description": "未启动示例：展示 stopped 状态与错误信息",
+  "mode": "managed",
+  "start": {
+    "entry": "demo_app.py",
+    "args": ["--port", "33512", "--name", "示例离线服务", "--color", "amber", "--pidfile", "demo-offline.pid"]
+  },
+  "health": { "type": "http", "url": "http://127.0.0.1:33512/health", "timeout_sec": 5 },
+  "identity": { "pidfile": "demo-offline.pid" },
+  "runtime": { "enabled": true, "autostart": false }
+}

@@ -2,7 +2,8 @@
   "use strict";
 
   // ===== 模块常量 =====
-  var API_BASE = "http://127.0.0.1:1236";
+  // 同源相对路径：面板与 API 由同一个宿主托管，改 config.json 的端口后仍然正确
+  var API_BASE = "";
   var POLL_ACTIVE = 1000;
   var POLL_HIDDEN = 10000;
   var LOG_N = 200;
