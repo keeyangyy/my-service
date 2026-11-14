@@ -9,7 +9,7 @@
 
 - **服务散在各处**：每个服务一个目录、一套启停命令 → 在 `reg/` 放一条 JSON 就接入，面板与 CLI 统一操作。
 - **忘记关、端口被占**：内置健康探测与状态机，能收敛「启动中」这类卡死状态，按需服务空闲自动回收。
-- **开机要手动一个个点**：一条命令安装自启（启动文件夹 / 登录计划任务 / 系统服务）。
+- **开机要手动一个个点**：面板一键「开机自启」（启动文件夹 + vbs，无窗口），不用跑脚本。
 - **谁在跑、什么时候起的**：控制面写结构化登记簿 `logs/host.jsonl`，面板「事件」直接看。
 
 ## 界面
@@ -66,7 +66,7 @@ Copy-Item .\examples\reg\tasks\example-task.json .\reg\tasks\
 ```powershell
 pwsh -File .\run\stop.ps1
 pwsh -File .\run\restart.ps1
-.\run\install_autostart.ps1         # 安装开机自启（默认启动文件夹方案）
+.\run\install_autostart.ps1         # 安装开机自启（启动文件夹 + vbs，无窗口）
 ```
 
 ## 便携包（免装 Python）
@@ -88,7 +88,7 @@ my-service-x.y.z/
 ```
 
 - 首次 `start.cmd` 会在包根生成 `Dashboard.url`
-- 开机自启：`app\run\install_autostart.ps1`（便携包会自动指向包根 `start.cmd`，以后升级不用重装）
+- 开机自启：面板 ⚙ 设置里勾选，或 `app\run\install_autostart.ps1`（vbs 直接指向 `app\src\server.py`，升级替换 `app/` 后不用重装）
 - 升级：替换 `app/` 即可，`data/ logs/ reg/ config.json` 不动
 - 自定义数据位置：设置环境变量 `MY_SERVICE_HOME` 指向任意目录
 

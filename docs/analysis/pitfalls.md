@@ -54,6 +54,26 @@ CreateObject("WScript.Shell").Run """<pythonw.exe>"" ""<app>\src\server.py""", 0
 - 面板「设置 → 开机自启」直接写/删该 vbs（`HostController.set_autostart`）；旧 cmd 自动清理，避免双启动
 - 卸载 = 删除该 vbs（`uninstall_autostart.ps1` 一并清理计划任务）
 
+**精简（2026-11-14）——只保留一种**：日常只用启动文件夹 vbs，故删除 `install_autostart.ps1` 里的 Logon / Boot / Nssm 三个分支。三种高级模式的历史用法留档于此，需要时手工执行：
+
+```powershell
+# Logon：登录触发、S4U 后台无窗（需管理员 / gsudo）
+$act = New-ScheduledTaskAction -Execute 'wscript.exe' `
+    -Argument '"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start-my-service.vbs"'
+Register-ScheduledTask -TaskName StartMyService -Action $act `
+    -Trigger (New-ScheduledTaskTrigger -AtLogOn) `
+    -Principal (New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U) `
+    -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))
+
+# Boot：SYSTEM 开机任务（Session 0，需提权；无法脚本关停）
+#   同上，改用 -Trigger (New-ScheduledTaskTrigger -AtStartup)
+#   与 -Principal (New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest)
+
+# Nssm：注册为 Windows 服务
+nssm install MyService "C:\path\to\runtime\pythonw.exe" "C:\path\to\app\src\server.py"
+nssm set MyService AppDirectory "C:\path\to\app\src"
+```
+
 ## AI/自动化会话改代码后如何重载宿主（实测 2026-09-08）
 
 **现象**：AI 会话里启动的宿主，会随该会话结束而消失（面板打不开、定时任务停摆），而用户自己双击 `run/start.ps1` 起的宿主能稳定跑一整天（实测 09:29→20:09 无中断）。
