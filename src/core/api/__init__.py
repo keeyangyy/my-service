@@ -195,8 +195,16 @@ class _Handler(BaseHTTPRequestHandler):
         return self._json(200, {"crons": crons})
 
     def _get_update_check(self, parsed) -> None:  # noqa: ANN001
-        """GET /api/update/check —— 拉 GitHub Release 的 latest.json 对比版本。"""
+        """GET /api/update/check —— 拉 GitHub Release 的 latest.json 对比版本。
+
+        源码工作区直接拒绝（升级请用 git pull），省掉一次必然无意义的网络请求。
+        """
         from ..host import VERSION
+        home = getattr(self.host, "home", None)
+        if self.host is None or home is None or not update.is_deployed(home):
+            self._json(400, {"ok": False,
+                             "error": "源码工作区不支持自助升级，请用 git pull"})
+            return
         try:
             info = update.check(VERSION)
         except Exception as exc:  # noqa: BLE001 - 网络/格式异常统一报 502

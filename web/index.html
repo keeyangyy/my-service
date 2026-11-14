@@ -17,8 +17,13 @@
       <span class="conn-dot" id="conn-dot"></span>
       <span class="conn-text" id="conn-text">— 服务</span>
       <span class="host-uptime" id="host-uptime" title="my-service 自身运行时长">宿主 —</span>
-      <span class="host-autostart" id="host-autostart" hidden></span>
       <span class="conn-sep" aria-hidden="true"></span>
+      <label class="host-switch" id="host-autostart-wrap" title="开机自启（启动文件夹 .lnk）">
+        <input type="checkbox" id="host-autostart-toggle">
+        <span class="host-switch-track" aria-hidden="true"><span class="host-switch-thumb"></span></span>
+        <span class="host-switch-text">自启</span>
+      </label>
+      <button class="btn-host" id="btn-check-update" title="检查更新（便携包：下载后自动重启生效）">⟳ 更新</button>
       <button class="btn-host" id="btn-global-settings" title="编排器设置（面板刷新 / monitor / 定时任务检查间隔）">⚙ 设置</button>
       <button class="btn-host btn-host-audit" id="btn-host-audit" title="查看 my-service 启停登记簿（host.jsonl）">▤ 登记簿</button>
       <button class="btn-host btn-host-restart" id="btn-host-restart" title="重启 my-service（被管服务不受影响，继续运行）">⟳ 重启</button>
@@ -64,13 +69,6 @@
       <div class="settings-backup">
         <button id="set-backup" type="button">立即备份</button>
         <span id="backup-info" class="settings-hint">—</span>
-      </div>
-      <label class="settings-toggle">开机自启（启动文件夹）<input id="set-autostart" type="checkbox"></label>
-      <p class="settings-hint" id="autostart-hint">—</p>
-      <div class="settings-update">
-        <span id="update-info" class="settings-hint">版本 —</span>
-        <button id="btn-check-update" type="button">检查更新</button>
-        <button id="btn-apply-update" type="button" class="primary" hidden>升级并重启</button>
       </div>
       <div class="settings-actions">
         <button id="set-cancel" type="button">取消</button>
