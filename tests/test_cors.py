@@ -115,6 +115,7 @@ class TestOriginHelpers(unittest.TestCase):
             self.assertTrue(api._is_local_origin(origin), origin)
 
     def test_foreign_hosts(self):
+        # 192.0.2.9 属 RFC 5737 的 TEST-NET-1，专用于文档/测试，避免示例里出现真实私网地址
         for origin in (FOREIGN, EVIL, NULL_ORIGIN, "http://192.0.2.9:8765"):
             self.assertFalse(api._is_local_origin(origin), origin)
 
