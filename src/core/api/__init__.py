@@ -10,60 +10,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import audit
-
-WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
-
-# ---------------------------------------------------------------- CORS / 外站门禁
-# 背景：控制面绑定 127.0.0.1，本机任何程序（curl/脚本/服务）本来就能直接调用，
-# 从来不需要额外开放。唯一受限的是"浏览器里的网页"——跨源时浏览器默认不把响应
-# 交给页面 JS，带 JSON 的请求还会先发 OPTIONS 预检、没被应答就根本不发。
-# 方案 S：判据只有一条"来源是否本机"——本机网页（任意端口）全放行且能读回结果；
-# 外站网页一律拒绝（浏览器跨源 POST 必定带 Origin，故可可靠识别；不带 Origin 的
-# 请求即 curl/脚本/同源面板，按本机程序处理，行为与历史完全一致）。
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
-
-# 会改变宿主或服务状态的接口（外站门禁只拦这些；读接口无需拦，读也读不到）
-WRITE_PREFIXES = (
-    "/api/services/", "/api/crons/", "/api/audit/clear", "/api/config/", "/api/host/",
+from .. import audit, backup
+from .cors import (
+    LOCAL_HOSTS, WRITE_PREFIXES, is_local_origin, is_write_path,
+    origin_host, origin_of,
 )
+from .static import WEB_DIR, load as load_static
 
+# 兼容旧私有名（原 core/api.py 的模块级纯函数，保持外部引用不破）
+_origin_of = origin_of
+_origin_host = origin_host
+_is_local_origin = is_local_origin
+_is_write_path = is_write_path
 
-def _origin_of(headers) -> str | None:
-    """取出请求的 Origin；不存在返回 None（同源请求 / curl / 非浏览器客户端）。"""
-    origin = (headers.get("Origin") or "").strip()
-    return origin or None
-
-
-def _origin_host(origin: str) -> str:
-    """由 Origin 解析主机名（小写，去端口）。解析不出来返回空串。"""
-    try:
-        host = (urlparse(origin).hostname or "").lower()
-    except ValueError:
-        return ""
-    return host
-
-
-def _is_local_origin(origin: str) -> bool:
-    """来源是否为本机。端口不限——本机任何端口起的页面都算自己人。"""
-    return _origin_host(origin) in LOCAL_HOSTS
-
-
-def _is_write_path(path: str) -> bool:
-    return path.startswith(WRITE_PREFIXES)
-
-
-MIME = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".png": "image/png", ".ico": "image/x-icon",
-}
 
 
 def make_handler(manager, host=None, scheduler=None,
-                 cors_local_only: bool = True):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None, scheduler: core.scheduler.Scheduler|None
+                 cors_local_only: bool = True,
+                 settings_path=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None, scheduler: core.scheduler.Scheduler|None
     class Handler(BaseHTTPRequestHandler):
         server_version = "my-service"
         protocol_version = "HTTP/1.1"
@@ -107,11 +71,10 @@ def make_handler(manager, host=None, scheduler=None,
             self.wfile.write(body)
 
         def _static(self, rel: str) -> None:
-            path = (WEB_DIR / rel).resolve()
-            if not path.is_file() or WEB_DIR.resolve() not in path.parents:
+            loaded = load_static(rel)
+            if loaded is None:
                 return self._json(404, {"ok": False, "error": "not found"})
-            body = path.read_bytes()
-            mime = MIME.get(path.suffix.lower(), "application/octet-stream")
+            body, mime = loaded
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(body)))
@@ -150,6 +113,24 @@ def make_handler(manager, host=None, scheduler=None,
 
             if path == "/health":
                 return self._json(200, {"ok": True})
+
+            if path == "/api/panel/ping":
+                note = getattr(manager, "note_panel", None)
+                if callable(note):
+                    note()
+                return self._json(200, {"ok": True})
+
+            if path == "/api/settings":
+                return self._json(200, {
+                    "ok": True,
+                    "monitor": dict(getattr(manager, "settings", {}) or {}),
+                    "scheduler": {"tick_sec": getattr(scheduler, "tick_sec", 10.0)},
+                })
+
+            if path == "/api/backups":
+                items = (backup.list_backups(Path(settings_path).parent)
+                         if settings_path else [])
+                return self._json(200, {"ok": True, "backups": items})
 
             if path == "/api/host":
                 if host is None:
@@ -219,6 +200,75 @@ def make_handler(manager, host=None, scheduler=None,
             # 外站门禁：写接口统一在此拦截，避免逐条路由漏挂
             if self._denied(unquote(parsed.path)):
                 return self._json(403, {"ok": False, "error": "cross-origin denied"})
+
+            # 写操作后立即唤醒 monitor，不等空闲间隔
+            wake = getattr(manager, "wake", None)
+            if callable(wake):
+                wake()
+
+            # POST /api/backup —— 立即备份 reg/ + config.json + adapters/
+            if len(parts) == 2 and parts[0] == "api" and parts[1] == "backup":
+                if not settings_path:
+                    return self._json(501, {"ok": False,
+                                            "error": "未配置备份根目录"})
+                try:
+                    info = backup.create_backup(Path(settings_path).parent)
+                except OSError as exc:
+                    return self._json(500, {"ok": False, "error": f"备份失败：{exc}"})
+                return self._json(200, {"ok": True, **info})
+
+            # POST /api/settings  {"monitor": {...}, "scheduler": {...}}
+            if len(parts) == 2 and parts[0] == "api" and parts[1] == "settings":
+                mon = body.get("monitor")
+                sch = body.get("scheduler")
+                if not isinstance(mon, dict) and not isinstance(sch, dict):
+                    return self._json(400, {"ok": False,
+                                            "error": "需要 monitor 或 scheduler 对象"})
+                if isinstance(mon, dict):
+                    for key in ("fast_sec", "idle_sec", "panel_grace_sec",
+                                "audit_retention_days"):
+                        if key not in mon:
+                            continue
+                        try:
+                            val = float(mon[key])
+                        except (TypeError, ValueError):
+                            return self._json(400, {
+                                "ok": False, "error": f"{key} 需为数字"})
+                        if key == "audit_retention_days":
+                            if not (0 <= val <= 3650):
+                                return self._json(400, {
+                                    "ok": False,
+                                    "error": "audit_retention_days 需在 0 ~ 3650 天之间"})
+                            manager.settings[key] = val
+                        else:
+                            manager.settings[key] = max(0.2, val)
+                if isinstance(sch, dict) and "tick_sec" in sch:
+                    try:
+                        scheduler.tick_sec = max(1.0, float(sch["tick_sec"]))
+                    except (TypeError, ValueError):
+                        return self._json(400, {"ok": False,
+                                                "error": "tick_sec 需为数字"})
+                if settings_path:
+                    try:
+                        sp = Path(settings_path)
+                        cfg = (json.loads(sp.read_text(encoding="utf-8-sig"))
+                               if sp.is_file() else {})
+                        cfg["monitor"] = {
+                            **cfg.get("monitor", {}),
+                            **{k: manager.settings[k] for k in
+                               ("fast_sec", "idle_sec", "panel_grace_sec",
+                                "audit_retention_days")},
+                        }
+                        cfg["scheduler"] = {
+                            **cfg.get("scheduler", {}),
+                            "tick_sec": getattr(scheduler, "tick_sec", 10.0),
+                        }
+                        sp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
+                                      encoding="utf-8")
+                    except OSError:
+                        return self._json(500, {"ok": False,
+                                                "error": "写 config.json 失败"})
+                return self._json(200, {"ok": True})
 
             # POST /api/services/order  {"names": [...]}  —— 面板拖拽排序
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "services" \
@@ -371,7 +421,7 @@ def _tail_file(path: Path, name: str, n: int) -> dict:
 
 
 def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,
-          cors_local_only: bool = True):  # noqa: ANN001
+          cors_local_only: bool = True, settings_path=None):  # noqa: ANN001
     """绑定监听。controller 为 HostController（提供 meta/schedule），
     scheduler 为定时任务调度器（提供 snapshot/run_now）。
 
@@ -381,7 +431,8 @@ def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,
     端口重试：restart 时新宿主会在旧进程释放 1236 前反复重试 bind，实现无竞态交接。
     """
     import time
-    handler = make_handler(manager, controller, scheduler, cors_local_only)
+    handler = make_handler(manager, controller, scheduler, cors_local_only,
+                           settings_path=settings_path)
     last_err: OSError | None = None
     for _ in range(40):
         try:

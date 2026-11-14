@@ -60,9 +60,9 @@ class _Sandbox:
         # 端口取一个几乎不可能被监听的号，保证健康探测必然失败
         data = {
             "path": str(self.root),
-            "entry": "entry.py",
-            "mode": "detached",
-            "stop_script": "entry.py",
+            "mode": "managed",
+            "start": {"entry": "entry.py", "detach": True},
+            "stop": {"script": "entry.py"},
             "health": {"type": self.health_type, "port": 1, "timeout_sec": 1},
         }
         data.update(kw)

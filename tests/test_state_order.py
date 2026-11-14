@@ -30,7 +30,9 @@ class TestServiceOrdering(unittest.TestCase):
             home.mkdir()
             (home / "start.ps1").write_text("# noop\n", encoding="utf-8")
             (self.reg / f"{name}.json").write_text(json.dumps(
-                {"path": str(home), "entry": "start.ps1"}), encoding="utf-8")
+                {"path": str(home), "mode": "managed",
+                 "start": {"entry": "start.ps1"},
+                 "health": {"type": "port", "port": 8790}}), encoding="utf-8")
         self.mgr = self._mgr()
 
     def tearDown(self):
@@ -70,7 +72,9 @@ class TestServiceOrdering(unittest.TestCase):
         home.mkdir()
         (home / "start.ps1").write_text("# noop\n", encoding="utf-8")
         (self.reg / "d-svc.json").write_text(json.dumps(
-            {"path": str(home), "entry": "start.ps1"}), encoding="utf-8")
+            {"path": str(home), "mode": "managed",
+             "start": {"entry": "start.ps1"},
+             "health": {"type": "port", "port": 8790}}), encoding="utf-8")
         self.mgr.refresh()
         self.assertEqual(self._names(), ["c-svc", "b-svc", "a-svc", "d-svc"])
 
@@ -80,8 +84,12 @@ class TestServiceOrdering(unittest.TestCase):
         self.mgr.refresh()                       # monitor 每秒都会做，这里手动触发
         self.assertEqual(self.mgr._order, ["c-svc", "a-svc"])
         self.assertEqual(self._names(), ["c-svc", "a-svc"])
-        saved = json.loads((self.root / "service_order.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved, ["c-svc", "a-svc"])
+        saved = {
+            n: json.loads((self.reg / f"{n}.json").read_text(encoding="utf-8"))
+            .get("runtime", {}).get("order")
+            for n in ("c-svc", "a-svc")
+        }
+        self.assertEqual(saved, {"c-svc": 1, "a-svc": 2})
 
     def test_no_order_path_falls_back_to_alphabetical(self):
         m = Manager(Scanner(self.reg))            # 未给 order 路径（脚本/单测直调）

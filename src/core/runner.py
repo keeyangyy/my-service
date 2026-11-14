@@ -50,8 +50,8 @@ def _interpreter_for(entry: Path) -> list[str]:
 
 
 def build_command(spec: Spec) -> list[str]:
-    if spec.mode not in ("managed", "detached", "on_demand"):
-        raise ValueError(f"mode={spec.mode} 未支持")
+    if spec.mode not in ("managed", "on_demand"):
+        raise ValueError(f"mode={spec.mode} 未支持（task 不应走 start_process）")
     cmd = _interpreter_for(spec.entry_abs)
     cmd += [spec.entry_abs.as_posix()]
     cmd += list(spec.args)
@@ -69,7 +69,7 @@ class ProcessHandle:
         self.popen = popen
         self.started_at = started_at
         self.pidfile = pidfile        # my-service\data\pids\<svc>.pid（框架产物）
-        self.output_path = output_path  # detached 型入口脚本的输出捕获（临时文件）
+        self.output_path = output_path  # 点火脚本（start.detach）的输出捕获（临时文件）
 
     @property
     def pid(self) -> int | None:
@@ -95,9 +95,9 @@ def pidfile_path(spec: Spec) -> Path:
 
 
 def entry_output_path(spec: Spec) -> Path:
-    """detached 型入口脚本的输出捕获文件（data\\entry-out\\<svc>.out）。
+    """点火脚本（start.detach）的输出捕获文件（data\\entry-out\\<svc>.out）。
 
-    只对 detached 型生效：这类服务的"起没起来"全由入口脚本一句话决定，而脚本
+    只对 start.detach 生效：这类服务的"起没起来"全由入口脚本一句话决定，而脚本
     输出此前一律 DEVNULL——脚本喊"already running"然后退出 0，框架只看到
     60 秒健康超时，真实原因彻底丢失。捕获一份，失败时把尾部写进登记簿 note。
     """
@@ -112,7 +112,7 @@ def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
     代价：服务自己 print 的启动报错不留档，故失败原因由审计流 note 字段兜住。
     log_base 参数保留兼容旧签名（已弃用）。
 
-    例外：detached 型的入口是"点火器"（拉起真进程后自己退场），它的输出就是
+    例外：start.detach 的入口是"点火器"（拉起真进程后自己退场），它的输出就是
     启动成败的唯一说明，故捕获到 data\\entry-out\\<svc>.out，由 state 在脚本
     退场且健康未就绪时取尾部写进 note（见 read_output_tail）。
     """
@@ -120,7 +120,7 @@ def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
     env = {**os.environ, **spec.env}
     out_path: Path | None = None
     out_fh = None
-    if spec.mode == "detached":
+    if spec.start_detach:
         try:
             out_path = entry_output_path(spec)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +176,11 @@ def _run_quiet(cmd: list[str], timeout: float, **kw) -> subprocess.CompletedProc
 def _taskkill_tree(pid: int) -> None:
     # taskkill /T 收割整棵进程树（覆盖 cmd.exe→孙子进程），/F 强制
     _run_quiet(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=8.0)
+
+
+def kill_tree(pid: int) -> None:
+    """公开的整树收割（外部实例没有句柄时，按定位到的 pid 停止）。"""
+    _taskkill_tree(pid)
 
 
 def pid_alive(pid: int) -> bool:
@@ -352,7 +357,8 @@ def quick_alive(spec: Spec, handle: ProcessHandle | None) -> bool:
         host, port = parse_http_host_port(spec.health_url or "")
         return port_listening(host, port) if port else True
     if spec.health_type == "process":
-        return handle is not None and handle.popen.poll() is None
+        pid, _src, _conf = locate(spec, handle)
+        return pid is not None
     return True
 
 
@@ -417,7 +423,8 @@ def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, st
         if htype == "none":
             return True, "", None
         if htype == "process":
-            if handle is None or handle.popen.poll() is not None:
+            pid, _src, _conf = locate(spec, handle)
+            if pid is None:
                 return False, "进程不存在", None
             return True, "", None
         if htype == "port":
@@ -436,6 +443,13 @@ def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, st
                         last_active = float(payload["last_active"])
                 except Exception:  # noqa: BLE001 - 响应非 JSON/空体，不影响健康结论
                     pass
+                if spec.health_service:
+                    reported = payload.get("service") if isinstance(payload, dict) else None
+                    if (isinstance(reported, str) and reported.strip()
+                            and reported.strip() != spec.health_service):
+                        return (False,
+                                f"健康目标自报 service={reported}，非本服务",
+                                last_active)
                 if getattr(resp, "status", 200) < 400:
                     return True, "", last_active
                 return False, f"HTTP {resp.status}", last_active
@@ -444,3 +458,207 @@ def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, st
     except Exception as exc:  # noqa: BLE001
         return False, f"健康检查异常: {exc}", None
     return False, f"未知健康类型 {htype}", None
+
+
+# ---------------------------------------------------------------- 进程信息（Windows）
+def _health_port_of(spec: Spec) -> int | None:
+    """注册条声明的健康端口：port 型读字段，http 型从 url 解析。"""
+    if spec.health_type == "port":
+        return spec.health_port
+    if spec.health_type == "http":
+        _, port = parse_http_host_port(spec.health_url or "")
+        return port
+    return None
+
+
+def port_owner_pid(port: int) -> int | None:
+    """内核 TCP 监听表：返回监听该端口的 OwningPid。仅 Windows，失败返回 None。"""
+    if os.name != "nt" or not port:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        AF_INET = 2
+        TCP_TABLE_OWNER_PID_LISTENER = 3
+
+        class MIB_TCPROW_OWNER_PID(ctypes.Structure):
+            _fields_ = [
+                ("dwState", wintypes.DWORD),
+                ("dwLocalAddr", wintypes.DWORD),
+                ("dwLocalPort", wintypes.DWORD),
+                ("dwRemoteAddr", wintypes.DWORD),
+                ("dwRemotePort", wintypes.DWORD),
+                ("dwOwningPid", wintypes.DWORD),
+            ]
+
+        iphlpapi = ctypes.WinDLL("iphlpapi")
+        size = wintypes.DWORD(0)
+        iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size), False, AF_INET,
+                                     TCP_TABLE_OWNER_PID_LISTENER, 0)
+        if not size.value:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        ret = iphlpapi.GetExtendedTcpTable(buf, ctypes.byref(size), False, AF_INET,
+                                           TCP_TABLE_OWNER_PID_LISTENER, 0)
+        if ret != 0:
+            return None
+        count = ctypes.cast(buf, ctypes.POINTER(wintypes.DWORD)).contents.value
+        base = ctypes.addressof(buf) + ctypes.sizeof(wintypes.DWORD)
+        rows = ctypes.cast(base, ctypes.POINTER(MIB_TCPROW_OWNER_PID))
+        for i in range(count):
+            row = rows[i]
+            if socket.ntohs(row.dwLocalPort & 0xFFFF) == port:
+                return int(row.dwOwningPid)
+    except Exception:  # noqa: BLE001 - 权限/平台异常一律当"查不到"
+        return None
+    return None
+
+
+def process_create_time(pid: int) -> float | None:
+    """进程创建时间（Unix 秒）。仅 Windows；取不到返回 None。"""
+    if os.name != "nt" or pid <= 0:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return None
+        try:
+            creation = wintypes.FILETIME()
+            exit_t = wintypes.FILETIME()
+            kernel_t = wintypes.FILETIME()
+            user_t = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(h, ctypes.byref(creation),
+                                            ctypes.byref(exit_t),
+                                            ctypes.byref(kernel_t),
+                                            ctypes.byref(user_t)):
+                return None
+            value = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+            return value / 10_000_000 - 11_644_473_600
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def process_image_path(pid: int) -> str | None:
+    """进程完整映像路径。仅 Windows；权限不足返回 None。"""
+    if os.name != "nt" or pid <= 0:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return None
+        try:
+            size = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(h, 0, buf,
+                                                       ctypes.byref(size)):
+                return None
+            return str(buf.value)
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def find_processes(target: str, match: str = "name") -> list[int]:
+    """按 exe 名或完整路径枚举进程，返回 pid 列表。仅 Windows。"""
+    if os.name != "nt" or not target:
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        TH32CS_SNAPPROCESS = 0x00000002
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap == INVALID_HANDLE_VALUE:
+            return []
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+                return []
+            want = target.lower().replace("\\", "/")
+            out: list[int] = []
+            while True:
+                name = str(entry.szExeFile)
+                pid = int(entry.th32ProcessID)
+                if match == "path":
+                    path = process_image_path(pid)
+                    if path and path.lower().replace("\\", "/") == want:
+                        out.append(pid)
+                elif name.lower() == want:
+                    out.append(pid)
+                if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                    break
+            return out
+        finally:
+            kernel32.CloseHandle(snap)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def locate(spec: Spec,
+           handle: ProcessHandle | None = None) -> tuple[int | None, str, str]:
+    """定位实例 → (pid, 来源, 置信度)。
+
+    来源：handle / framework-pidfile / service-pidfile / port / process
+    置信度：confirmed / probable / unknown
+
+    与"谁拉起的"无关：句柄只是最快路径，缺了就走 pidfile / 端口 / 进程名。
+    """
+    # 1. 框架句柄（最强，但只覆盖本进程拉起）
+    if handle is not None and handle.popen.poll() is None:
+        return handle.pid, "handle", "confirmed"
+    port = _health_port_of(spec)
+    # 2. 框架 pids 记账
+    pid = read_pidfile(pidfile_path(spec))
+    if pid and pid_alive(pid) and (not port or port_listening("127.0.0.1", port)):
+        return pid, "framework-pidfile", "confirmed"
+    # 3. 服务/官方 pidfile
+    if spec.pidfile:
+        p = Path(spec.pidfile)
+        if not p.is_absolute():
+            p = spec.path / p
+        pid = read_pidfile(p)
+        if pid and pid_alive(pid) and (not port or port_listening("127.0.0.1", port)):
+            return pid, "service-pidfile", "probable"
+    # 4. 端口 → PID（内核事实，不依赖服务配合）
+    if port:
+        pid = port_owner_pid(port)
+        if pid:
+            return pid, "port", "probable"
+    # 5. 进程名/路径（最弱，同名多实例时不采用）
+    if spec.identity_process:
+        pids = find_processes(spec.identity_process, spec.identity_match)
+        if len(pids) == 1:
+            return pids[0], "process", "probable"
+    return None, "", "unknown"

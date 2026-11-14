@@ -101,7 +101,9 @@ class TestIdentify(unittest.TestCase):
 
     def _write_reg(self, extra: dict | None = None):
         reg = {
-            "path": str(self.home), "entry": "start.ps1", "mode": "on_demand",
+            "path": str(self.home), "mode": "on_demand",
+            "start": {"entry": "start.ps1"},
+            "stop": {"script": "stop.ps1"},
             "health": {"type": "http",
                        "url": f"http://127.0.0.1:{self.PORT}/health"},
         }
@@ -184,7 +186,7 @@ class TestIdentify(unittest.TestCase):
         import os
         pf = self.root / "ext.pid"
         pf.write_text(str(os.getpid()), encoding="ascii")
-        self._write_reg({"pidfile": str(pf)})
+        self._write_reg({"identity": {"pidfile": str(pf)}})
         self._reload()
         self.srv, _, _ = _stub(self.PORT, None)
         v, via, why = self.mgr.identify("svc")
@@ -209,8 +211,9 @@ class TestStopSafetyGate(unittest.TestCase):
             f"Set-Content -Path '{self.root / 'LEAKED.txt'}' -Value 'hit'\n",
             encoding="utf-8")
         (self.reg / "svc.json").write_text(json.dumps({
-            "path": str(self.home), "entry": "start.ps1", "mode": "on_demand",
-            "stop_script": "stop.ps1",
+            "path": str(self.home), "mode": "on_demand",
+            "start": {"entry": "start.ps1"},
+            "stop": {"script": "stop.ps1"},
             "health": {"type": "http",
                        "url": f"http://127.0.0.1:{self.PORT}/health"},
         }), encoding="utf-8")
@@ -227,19 +230,20 @@ class TestStopSafetyGate(unittest.TestCase):
         shutil.rmtree(self.root, ignore_errors=True)
 
     def test_stop_on_conflict_does_not_touch_foreign(self):
-        self.mgr.state["svc"].update(status="conflict", error="端口被占")
+        self.mgr.state["svc"].update(status="stopped", error="端口被占", port_foreign=True)
         ok, msg = self.mgr.stop("svc")
         self.assertTrue(ok, msg)
         self.assertEqual(self.cls.post_hits, 0, "框架把请求打到了外人服务上！")
         self.assertFalse((self.root / "LEAKED.txt").exists(),
-                         "conflict 下仍执行了 stop_script——安全闸失效")
+                         "端口被外人占时仍执行了 stop_script——安全闸失效")
         self.assertEqual(self.mgr.state["svc"]["status"], "stopped")
 
-    def test_start_on_conflict_marks_conflict_not_failed(self):
-        """端口被外人占时点启动：标 conflict（不是 failed），且不重复拉起。"""
+    def test_start_on_conflict_marks_stopped_with_error(self):
+        """端口被外人占时点启动：状态 stopped + 错误说明（不重复拉起）。"""
         ok, msg = self.mgr.start("svc")
         self.assertFalse(ok)
-        self.assertEqual(self.mgr.state["svc"]["status"], "conflict", msg)
+        self.assertEqual(self.mgr.state["svc"]["status"], "stopped", msg)
+        self.assertTrue(self.mgr.state["svc"].get("error"))
 
 
 class TestReconcile(unittest.TestCase):
@@ -255,7 +259,9 @@ class TestReconcile(unittest.TestCase):
         self.home.mkdir()
         (self.home / "start.ps1").write_text("# noop\n", encoding="utf-8")
         (self.reg / "svc.json").write_text(json.dumps({
-            "path": str(self.home), "entry": "start.ps1", "mode": "on_demand",
+            "path": str(self.home), "mode": "on_demand",
+            "start": {"entry": "start.ps1"},
+            "stop": {"script": "stop.ps1"},
             "health": {"type": "http",
                        "url": f"http://127.0.0.1:{self.PORT}/health"},
         }), encoding="utf-8")
@@ -278,11 +284,11 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(mgr.state["svc"]["status"], "running", str(out))
         self.assertIn("归位", out.get("svc", ""))
 
-    def test_reconcile_marks_foreign_as_conflict(self):
+    def test_reconcile_marks_foreign_as_stopped(self):
         self.srv, _, _ = _stub(self.PORT, "impostor")
         mgr = Manager(Scanner(self.reg), self.root / "order.json")
         out = mgr.reconcile()
-        self.assertEqual(mgr.state["svc"]["status"], "conflict", str(out))
+        self.assertEqual(mgr.state["svc"]["status"], "stopped", str(out))
         self.assertIn("他人", out.get("svc", ""))
 
     def test_reconcile_clears_stale_pidfile_when_absent(self):

@@ -1,178 +1,265 @@
 # -*- coding: utf-8 -*-
-r"""my-service · core/scanner.py — 注册中心（reg 唯一源）
+r"""my-service · core/scanner.py — 注册中心（reg/services 唯一源）
 
-发现机制：只扫 my-service\\reg\\*.json —— 框架的"花名册"。
-每个注册条声明服务的真实家（path）；entry/cwd/stop_script 等相对 path 解析。
-服务本体（源码/数据/官方脚本）严禁进入 my-service；reg 只是账册。
+发现机制：只扫 `reg\services\*.json`。每个条目声明服务的真实家（path），
+start/stop/health/identity 等相对 path 解析。
 
-铁律重申：
-- 注册 = 在 reg\\ 放一个 <服务名>.json
-- 注销 = 删除该文件（**停用**走面板开关：enabled/autostart 属运行态，见下）
-- 不改动第三方软件目录一个字节（some-service 便携目录零侵入）
+条目的六组（见 docs/design/registry.md）：
+    start / stop / health / identity / runtime / schedule
 
-声明与运行态分离（2026-09 起）：
-- reg\*.json 只放**声明**：path/entry/args/cwd/env/mode/health/url/display/description 等，
-  写一次就长期不变，进版本控制（换机器/给别人都有意义）。
-- **运行态**：enabled（启停）、autostart（自启）、idle_timeout_sec（空闲回收时长），
-  面板/宿主随时可改，落 data\service_runtime.json，不入库。
-- 读取时由 runtime_provider 合并：账本优先，注册条里的同名键只作**未迁移旧数据**的回落。
-- 目的：面板怎么点，git 工作区都不脏。
+不保留旧字段兼容层：旧结构（entry、stop_script、顶层 pidfile、detached、none）
+一律判 invalid，迁移依靠一次性改写注册条。
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # 空闲回收阈值边界（秒）：clamp 1 分钟 ~ 24 小时，防误配导致抖动或永不回收。
-# 单一事实源——Spec 解析时 clamp、面板改配置时校验，两处共用这组常量。
 IDLE_MIN_SEC = 60.0
 IDLE_MAX_SEC = 86400.0
+INTERVAL_MIN_SEC = 10.0
 
 
 class Spec:
-    """单个注册条目的解析结果。
+    """单个服务条目的解析结果。valid=False 时 error 携带原因，不参与编排。"""
 
-    valid=False 时 error 携带原因，前端以 invalid 展示，不参与编排。
-    """
-
-    # 运行态字段：面板/宿主随时改，不入库。生效值取自 data\service_runtime.json；
-    # 注册条里的同名键只作**未迁移旧数据**的回落（见 README「声明与运行态分离」）。
-    RUNTIME_KEYS = ("enabled", "autostart", "idle_timeout_sec")
-
-    def __init__(self, name: str, reg_path: Path, adapter_dir: Path | None = None,
-                 runtime: dict | None = None):
+    def __init__(self, name: str, reg_path: Path, adapter_dir: Path | None = None):
         self.folder = name                       # 服务名 = 注册文件名（去 .json）
-        self.reg_path = reg_path                 # reg\\<name>.json（只读声明；开关等运行态见 data\\service_runtime.json）
-        self.raw: dict = {}                      # 注册条原文（声明部分）
-        self.runtime: dict = {}                  # 本条运行态账面值（生效值来源）
+        self.reg_path = reg_path                 # reg\services\<name>.json
+        self.raw: dict = {}
         self.valid: bool = True
         self.error: str | None = None
-        self.path: Path = Path('.')              # 服务真实家（注册条 path 字段）
-        self.adapter_dir = adapter_dir           # my-service\adapters（可选转接层根）
+        self.path: Path = Path(".")
+        self.adapter_dir = adapter_dir
 
-        # ---- 声明字段（含运行态字段的缺省值）----
-        self.enabled: bool = True
+        # ---- 公共 ----
         self.display: str = name
         self.description: str = ""
+        self.mode: str = "managed"               # managed | on_demand | task
+        self.url: str | None = None
+
+        # ---- start ----
         self.entry: str = ""
         self.args: list[str] = []
         self.cwd: str = "."
-        self.mode: str = "managed"               # managed | detached | on_demand（按需）
-        self.idle_timeout: float = 600.0         # on_demand 空闲回收阈值（秒）
-        self.health_type: str = "none"           # none | port | http | process
+        self.env: dict[str, str] = {}
+        self.start_detach: bool = False          # true = 点火脚本，退场算正常
+
+        # ---- stop ----
+        self.stop_script: str | None = None
+        self.stop_grace: float = 10.0
+
+        # ---- health ----
+        self.health_type: str = "http"           # http | port | process
         self.health_port: int | None = None
         self.health_url: str | None = None
-        self.health_timeout: float = 20.0
-        self.env: dict[str, str] = {}
-        self.autostart: bool = False
-        self.url: str | None = None              # 服务自带网页，dashboard 一键跳转
-        self.stop_script: str | None = None
+        self.health_timeout: float = 30.0
+        self.health_service: str | None = None
+
+        # ---- identity ----
         self.pidfile: str | None = None
+        self.identity_process: str | None = None
+        self.identity_match: str = "name"        # name | path
+
+        # ---- runtime ----
+        self.enabled: bool = True
+        self.autostart: bool = False
+        self.archived: bool = False
+        self.order: float | None = None
+        self.idle_timeout: float = 600.0
+        self.run_timeout: float = 300.0
+        self.catch_up: bool = False
+
+        # ---- schedule（仅 task）----
+        self.schedule_type: str = ""
+        self.schedule_times: list[tuple[int, int]] = []
+        self.every_sec: float = 0.0
 
         try:
-            text = reg_path.read_text(encoding="utf-8-sig")
-            data = json.loads(text)
+            data = json.loads(reg_path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 raise ValueError("注册条根节点必须是 JSON 对象")
             self.raw = data
-        except Exception as exc:  # noqa: BLE001 - 任何坏注册条都要变成 invalid
+        except Exception as exc:  # noqa: BLE001
             self.valid = False
             self.error = f"注册条解析失败: {exc}"
             return
 
-        # ---- 声明 + 运行态合并：账本值覆盖注册条同名键（后者只作旧数据回落）----
-        self.runtime = {k: runtime[k] for k in self.RUNTIME_KEYS
-                        if isinstance(runtime, dict) and k in runtime}
-        view = {**data, **self.runtime}
+        self._parse(data)
 
-        def _get(key, default):
-            return view.get(key, default)
-
-        raw_path = _get("path", None)
-        if not isinstance(raw_path, str) or not raw_path.strip():
+    # ---------------------------------------------------------------- 解析
+    def _parse(self, data: dict) -> None:
+        # 旧结构直接拒绝（不保留兼容层）
+        legacy = [k for k in ("entry", "stop_script", "args", "cwd") if k in data]
+        if legacy:
             self.valid = False
-            self.error = "缺少 path 字段（服务真实目录）"
+            self.error = (f"旧版字段 {legacy} 已废弃，请改为 start/stop 分组")
             return
+
+        raw_path = data.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return self._invalid("缺少 path 字段（服务真实目录）")
         cand = Path(raw_path.strip())
         if not cand.is_absolute():
-            cand = (reg_path.parent / cand).resolve()
+            cand = (self.reg_path.parent / cand).resolve()
         self.path = cand.resolve()
         if not self.path.is_dir():
-            self.valid = False
-            self.error = f"path 不是存在的目录: {self.path}"
-            return
+            return self._invalid(f"path 不是存在的目录: {self.path}")
 
-        self.enabled = bool(_get("enabled", True))
-        self.display = str(_get("display", name))
-        self.description = str(_get("description", ""))
-        self.entry = str(_get("entry", "")).strip()
-        args = _get("args", [])
+        self.display = str(data.get("display") or self.folder)
+        self.description = str(data.get("description") or "")
+        self.mode = str(data.get("mode") or "managed").lower()
+
+        # start
+        start = data.get("start")
+        if not isinstance(start, dict):
+            return self._invalid("缺少 start 分组")
+        self.entry = str(start.get("entry") or "").strip()
+        args = start.get("args") or []
         self.args = [str(a) for a in args] if isinstance(args, list) else []
-        self.cwd = str(_get("cwd", "."))
-        self.mode = str(_get("mode", "managed")).lower()
-        self.autostart = bool(_get("autostart", False))
-        try:
-            self.idle_timeout = float(_get("idle_timeout_sec", 600.0))
-        except (TypeError, ValueError):
-            self.idle_timeout = 600.0
-        # clamp 1 分钟 ~ 24 小时，防误配导致抖动或永不回收
-        self.idle_timeout = max(IDLE_MIN_SEC, min(self.idle_timeout, IDLE_MAX_SEC))
+        self.cwd = str(start.get("cwd") or ".")
+        if isinstance(start.get("env"), dict):
+            self.env = {str(k): str(v) for k, v in start["env"].items()}
+        self.start_detach = bool(start.get("detach", False))
 
-        if isinstance(data.get("env"), dict):
-            self.env = {str(k): str(v) for k, v in data["env"].items()}
-        u = data.get("url")
-        if isinstance(u, str) and u.strip():
-            self.url = u.strip()
-        if isinstance(data.get("stop_script"), str) and data["stop_script"]:
-            self.stop_script = data["stop_script"]
-        if isinstance(data.get("pidfile"), str) and data["pidfile"]:
-            self.pidfile = data["pidfile"]
+        # stop
+        stop = data.get("stop")
+        if isinstance(stop, dict):
+            self.stop_script = str(stop.get("script") or "") or None
+            try:
+                self.stop_grace = float(stop.get("grace_sec", 10.0))
+            except (TypeError, ValueError):
+                self.stop_grace = 10.0
 
-        health = data.get("health") or {}
+        # health
+        health = data.get("health")
         if not isinstance(health, dict):
-            health = {}
-        self.health_type = str(health.get("type", "none")).lower()
+            return self._invalid("缺少 health 分组")
+        self.health_type = str(health.get("type") or "").lower()
         try:
             self.health_port = int(health["port"]) if "port" in health else None
         except (TypeError, ValueError):
             self.health_port = None
         self.health_url = health.get("url")
         try:
-            self.health_timeout = float(health.get("timeout_sec", 20.0))
+            self.health_timeout = float(health.get("timeout_sec", 30.0))
         except (TypeError, ValueError):
-            self.health_timeout = 20.0
+            self.health_timeout = 30.0
+        svc = health.get("service")
+        self.health_service = str(svc).strip() if isinstance(svc, str) and svc.strip() else None
 
-        # ---- 结构校验 ----
-        problems = []
-        if self.mode not in ("managed", "detached", "on_demand"):
-            problems.append(f"mode 仅支持 managed/detached/on_demand，得到 {self.mode!r}")
+        # identity
+        identity = data.get("identity")
+        if isinstance(identity, dict):
+            self.pidfile = str(identity.get("pidfile") or "") or None
+            self.identity_process = str(identity.get("process") or "") or None
+            self.identity_match = str(identity.get("match") or "name").lower()
+
+        # runtime
+        runtime = data.get("runtime")
+        if isinstance(runtime, dict):
+            self.enabled = bool(runtime.get("enabled", True))
+            self.autostart = bool(runtime.get("autostart", False))
+            self.archived = bool(runtime.get("archived", False))
+            if "order" in runtime:
+                try:
+                    self.order = float(runtime["order"])
+                except (TypeError, ValueError):
+                    self.order = None
+            try:
+                self.idle_timeout = float(runtime.get("idle_timeout_sec", 600.0))
+            except (TypeError, ValueError):
+                self.idle_timeout = 600.0
+            try:
+                self.run_timeout = float(runtime.get("run_timeout_sec", 300.0))
+            except (TypeError, ValueError):
+                self.run_timeout = 300.0
+            self.catch_up = bool(runtime.get("catch_up", False))
+
+        # schedule（仅 task）
+        schedule = data.get("schedule")
+        if isinstance(schedule, dict):
+            self.schedule_type = str(schedule.get("type") or "").lower()
+            at = schedule.get("at")
+            if isinstance(at, str):
+                at = [at]
+            if isinstance(at, list):
+                for t in at:
+                    parsed = _parse_hhmm(str(t))
+                    if parsed:
+                        self.schedule_times.append(parsed)
+            try:
+                self.every_sec = float(schedule.get("every_sec", 0.0))
+            except (TypeError, ValueError):
+                self.every_sec = 0.0
+
+        # url 缺省从 health.url 推导
+        u = data.get("url")
+        if isinstance(u, str) and u.strip():
+            self.url = u.strip()
+        elif self.health_url:
+            p = urlsplit(self.health_url)
+            if p.scheme and p.netloc:
+                self.url = f"{p.scheme}://{p.netloc}/"
+
+        self._validate()
+
+    # ---------------------------------------------------------------- 校验
+    def _validate(self) -> None:
+        problems: list[str] = []
+        if self.mode not in ("managed", "on_demand", "task"):
+            problems.append(f"mode 仅支持 managed/on_demand/task，得到 {self.mode!r}")
         if not self.entry:
-            problems.append("缺少 entry 字段")
-        if self.health_type not in ("none", "port", "http", "process"):
-            problems.append(f"health.type 未知: {self.health_type!r}")
-        elif self.health_type == "port" and self.health_port is None:
-            problems.append("health.type=port 需要 health.port")
+            problems.append("start.entry 不能为空")
+        elif not self.entry_abs.is_file():
+            problems.append(f"入口文件不存在: {self.entry_abs}")
+
+        if self.health_type not in ("http", "port", "process"):
+            problems.append(f"health.type 仅支持 http/port/process，得到 {self.health_type!r}")
         elif self.health_type == "http" and not self.health_url:
             problems.append("health.type=http 需要 health.url")
-        if self.mode == "detached":
-            if not self.stop_script and not self.pidfile:
-                problems.append("detached 模式需要 stop_script（或 pidfile）承担停止职责")
-            if self.health_type == "process":
-                problems.append("detached 不支持 process 型健康检查（无常驻进程句柄），请用 port/http")
-        if self.mode == "on_demand":
-            if self.health_type != "http":
-                problems.append("on_demand 模式需要 health.type=http（空闲回收依赖 /health 返回 last_active 字段）")
-            if self.autostart:
-                problems.append("on_demand 模式不允许 autostart:true（按需服务由点击拉起，不常驻）")
-        if not self.entry_abs.is_file():
-            problems.append(f"入口文件不存在: {self.entry_abs}")
+        elif self.health_type == "port" and self.health_port is None:
+            problems.append("health.type=port 需要 health.port")
+        elif self.health_type == "process" and not (self.pidfile or self.identity_process):
+            problems.append("health.type=process 需要 identity.pidfile 或 identity.process")
+
+        if self.mode == "task":
+            if not self.schedule_type:
+                problems.append("mode=task 需要 schedule")
+            elif self.schedule_type not in ("daily", "interval"):
+                problems.append(f"schedule.type 仅支持 daily/interval，得到 {self.schedule_type!r}")
+            elif self.schedule_type == "daily" and not self.schedule_times:
+                problems.append("daily 需要至少一个 at 时刻（HH:MM）")
+            elif self.schedule_type == "interval" and self.every_sec < INTERVAL_MIN_SEC:
+                problems.append(f"interval.every_sec 不能小于 {INTERVAL_MIN_SEC:.0f} 秒")
+            if self.start_detach:
+                problems.append("mode=task 不支持 start.detach")
+        else:
+            if self.start_detach and self.mode != "managed":
+                problems.append("start.detach 仅允许 mode=managed")
+            if self.mode == "on_demand":
+                if not self.stop_script:
+                    problems.append("mode=on_demand 需要 stop.script（否则无法回收）")
+                if self.start_detach:
+                    problems.append("mode=on_demand 不支持 start.detach")
+
+        if self.idle_timeout != 0 and not (IDLE_MIN_SEC <= self.idle_timeout <= IDLE_MAX_SEC):
+            problems.append(
+                f"runtime.idle_timeout_sec 需为 0 或 {int(IDLE_MIN_SEC)}~{int(IDLE_MAX_SEC)} 秒")
 
         if problems:
             self.valid = False
             self.error = "；".join(problems)
 
-    # ---- 相对 path 的解析；转接层（adapters\<svc>\）优先，官方/原生脚本回退 ----
+    def _invalid(self, msg: str) -> None:
+        self.valid = False
+        self.error = msg
+
+    # ---------------------------------------------------------------- 路径
     def _resolve(self, rel: str) -> Path:
+        r"""相对 path 解析；adapters\<svc>\ 优先，官方/原生脚本回退。"""
         if self.adapter_dir:
             cand = (self.adapter_dir / self.folder / rel).resolve()
             if cand.is_file():
@@ -193,31 +280,36 @@ class Spec:
             return None
         return self._resolve(self.stop_script)
 
+    @property
+    def is_task(self) -> bool:
+        return self.mode == "task"
+
+
+def _parse_hhmm(text: str) -> tuple[int, int] | None:
+    try:
+        hh, mm = text.strip().split(":")
+        h, m = int(hh), int(mm)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h, m
+    except (ValueError, AttributeError):
+        pass
+    return None
+
 
 class Scanner:
-    """定期重扫 reg\\*.json——注册中心是唯一发现源。"""
+    r"""扫描 reg\services\*.json —— 注册中心是唯一发现源。"""
 
-    def __init__(self, reg_dir: Path, runtime_provider=None):
-        """runtime_provider: 可选可调用对象，返回 {服务名: {运行态键: 值}}。
-
-        由 Manager 提供（data\\service_runtime.json 的内存态）；不传即纯声明解读，
-        运行态回落注册条同名键（未迁移旧数据、单测与脚本直调都走这条路）。
-        """
+    def __init__(self, reg_dir: Path):
         self.reg_dir = reg_dir.resolve()
-        self.adapter_dir = reg_dir.parent / "adapters"
-        self.runtime_provider = runtime_provider
+        self.adapter_dir = reg_dir.parent.parent / "adapters"
 
     def scan(self) -> dict[str, Spec]:
         specs: dict[str, Spec] = {}
         if not self.reg_dir.is_dir():
             return specs
-        runtime: dict = {}
-        if self.runtime_provider is not None:
-            try:
-                runtime = self.runtime_provider() or {}
-            except Exception:  # noqa: BLE001 - 运行态账本异常不该让整轮扫描失败
-                runtime = {}
         for f in sorted(self.reg_dir.glob("*.json")):
-            spec = Spec(f.stem, f, self.adapter_dir, runtime=runtime.get(f.stem))
+            spec = Spec(f.stem, f, self.adapter_dir)
+            if spec.archived:
+                continue
             specs[spec.folder] = spec
         return specs

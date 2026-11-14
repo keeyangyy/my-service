@@ -1,36 +1,42 @@
 # -*- coding: utf-8 -*-
-"""my-service · core/state.py
+"""my-service · core/state/manager.py
 
 Manager：把 Scanner（发现）+ Runner（进程原子操作）编成一个带状态机的服务管理器。
 
 状态机：stopped → starting → running → stopping → stopped
         任何阶段异常 → failed（附 error；failed 可 start 重入）
-观测即真相：monitor 线程每秒用健康检查/进程存活校正内存态，
-超时自动收敛，杜绝 早期内部版本 曾发生的 `_starting` 标记永久残留。
+
+职责按 mixin 拆分（同一实例，方法可互相调用）：
+  OrderMixin    面板拖拽顺序账本
+  RuntimeMixin  运行态账本
+  MonitorMixin  每秒观测收敛 + 空闲回收
+  ConfigMixin   面板可编辑项
+本文件只放生命周期主流程：发现、身份判定、启停、接管。
 """
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
 
-from . import audit, runner
-from .linkage import link_crons
-from .scanner import IDLE_MAX_SEC, IDLE_MIN_SEC, Scanner, Spec
+from .. import audit, runner
+from ..scanner import IDLE_MAX_SEC, IDLE_MIN_SEC, Scanner, Spec
+from ._common import _dur
+from .monitor import MonitorMixin
 
-TICK_SEC = 1.0
+RUNTIME_KEYS = (
+    "enabled", "autostart", "archived", "order",
+    "idle_timeout_sec", "run_timeout_sec", "catch_up",
+)
 
 
-def _dur(t0: float) -> int:
-    """距 t0 的毫秒数（登记簿 dur_ms 用）。"""
-    return int((time.time() - t0) * 1000)
-
-
-class Manager:
+class Manager(MonitorMixin):
     def __init__(self, scanner: Scanner, order_path: Path | None = None,
-                 cron_specs_provider=None, runtime_path: Path | None = None):
+                 cron_specs_provider=None, runtime_path: Path | None = None,
+                 settings: dict | None = None):
         """cron_specs_provider: 可选的可调用对象，返回 {任务名: CronSpec}。
 
         用于把定时任务按路径归属到服务（见 core/linkage.py）。不传即无关联，
@@ -41,13 +47,9 @@ class Manager:
         """
         self.scanner = scanner
         self.cron_specs_provider = cron_specs_provider
-        self.order_path = Path(order_path) if order_path else None
-        if runtime_path is not None:
-            self.runtime_path: Path | None = Path(runtime_path)
-        elif self.order_path is not None:
-            self.runtime_path = self.order_path.parent / "service_runtime.json"
-        else:
-            self.runtime_path = None
+        # order_path / runtime_path 仅为兼容旧调用保留：运行态与顺序已并入注册条
+        self.order_path = None
+        self.runtime_path = None
         self.specs: dict[str, Spec] = {}
         self.handles: dict[str, runner.ProcessHandle] = {}
         # svc -> 状态字典：status/started_at/error/fail_at
@@ -57,100 +59,24 @@ class Manager:
         self._user_stopping: set[str] = set()   # 区分"用户主动停"与"崩溃"
         self._pending_stop: dict[str, float] = {}  # stop 发起时刻，stopping 超时兜底
         self._idle_reaping: set[str] = set()    # on_demand 空闲回收进行中（防重复触发）
+        self.panel_last_seen: float = 0.0       # 最近一次面板心跳（/api/panel/ping）
+        self._wake = threading.Event()          # 写操作后立即唤醒 monitor
+        self.settings: dict = {"fast_sec": 1.0, "idle_sec": 10.0,
+                               "panel_grace_sec": 15.0,
+                               "audit_retention_days": 7.0}
+        self._last_prune: float = 0.0
+        if isinstance(settings, dict):
+            for key in ("fast_sec", "idle_sec", "panel_grace_sec",
+                        "audit_retention_days"):
+                if key in settings:
+                    try:
+                        self.settings[key] = float(settings[key])
+                    except (TypeError, ValueError):
+                        pass
         self.lock = threading.RLock()
-        self._load_order()
         self._load_runtime()
-        # Scanner 每轮扫描向 Manager 取运行态：声明（注册条）与运行态的合并点
-        self.scanner.runtime_provider = self.runtime_snapshot
         self.refresh()
-
-    # ------------------------------------------------------------ 顺序账本
-    def _load_order(self) -> None:
-        if not self.order_path:
-            return
-        try:
-            data = json.loads(self.order_path.read_text(encoding="utf-8-sig"))
-            if isinstance(data, list):
-                self._order = [str(n) for n in data]
-        except Exception:  # noqa: BLE001 - 缺失/损坏都退回字母序
-            self._order = []
-
-    def _save_order(self) -> None:
-        if not self.order_path:
-            return
-        try:
-            import tempfile
-            self.order_path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=str(self.order_path.parent), suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(self._order, ensure_ascii=False, indent=1) + "\n")
-            os.replace(tmp, self.order_path)
-        except OSError:
-            pass
-
-    # ------------------------------------------------------------ 运行态账本
-    def _load_runtime(self) -> None:
-        """读 data\\service_runtime.json；缺失/损坏都从零开始（回落注册条或字段缺省）。"""
-        if not self.runtime_path:
-            return
-        try:
-            data = json.loads(self.runtime_path.read_text(encoding="utf-8-sig"))
-            if isinstance(data, dict):
-                self._runtime = {str(k): v for k, v in data.items()
-                                 if isinstance(v, dict)}
-        except Exception:  # noqa: BLE001
-            self._runtime = {}
-
-    def _save_runtime(self) -> bool:
-        """原子写运行态账本（临时文件 + os.replace）。无 runtime_path 即纯内存，视为成功。"""
-        if not self.runtime_path:
-            return True
-        try:
-            import tempfile
-
-            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=str(self.runtime_path.parent), suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(self._runtime, ensure_ascii=False, indent=1) + "\n")
-            os.replace(tmp, self.runtime_path)
-            return True
-        except OSError:
-            return False
-
-    def runtime_snapshot(self) -> dict[str, dict]:
-        """运行态账面值快照（Scanner 每轮扫描时取用）。"""
-        with self.lock:
-            return {k: dict(v) for k, v in self._runtime.items()}
-
-    def _set_runtime(self, name: str, patch: dict) -> bool:
-        """只写运行态账本（白名单过滤，绝不碰注册条）。返回是否落盘成功。"""
-        with self.lock:
-            cur = dict(self._runtime.get(name) or {})
-            cur.update({k: v for k, v in patch.items() if k in Spec.RUNTIME_KEYS})
-            self._runtime[name] = cur
-            return self._save_runtime()
-
-    def _ordered_names(self) -> list[str]:
-        """按拖拽顺序返回服务名；未入册的新服务按字母序追加末尾（不打乱已有顺序）。"""
-        known = set(self.specs)
-        picked = [n for n in self._order if n in known]
-        picked += sorted(known - set(picked))
-        return picked
-
-    def set_order(self, names: list[str]) -> tuple[bool, str, str]:
-        """面板拖拽排序：只接受已注册服务名（去重），未提及的按字母序追加末尾。"""
-        with self.lock:
-            known = set(self.specs)
-            seen: set[str] = set()
-            picked: list[str] = []
-            for n in names:
-                if isinstance(n, str) and n in known and n not in seen:
-                    seen.add(n)
-                    picked.append(n)
-            picked += sorted(known - seen)
-            self._order = picked
-            self._save_order()
-            return True, "ok", "已排序"
+        self._load_order()
 
     # ------------------------------------------------------------ 发现
     def refresh(self) -> None:
@@ -163,8 +89,12 @@ class Manager:
                         self.state[name] = {"status": "invalid", "error": spec.error}
                         audit.emit("spec_invalid", ok=False, svc=name, note=spec.error)
                     else:
+                        now = time.time()
                         self.state[name] = {
-                            "status": "stopped", "started_at": None,
+                            "status": "stopped", "pid": None, "pid_source": "",
+                            "started_at": None, "started_source": "",
+                            "adopted_at": None, "first_seen_at": now,
+                            "last_active": None, "confidence": "unknown",
                             "error": None, "fail_at": None,
                         }
             for gone in [n for n in self.state if n not in specs]:
@@ -223,6 +153,11 @@ class Manager:
                     "description": spec.description,
                     "status": status,
                     "mode": spec.mode,
+                    "pid": st.get("pid"),
+                    "pid_source": st.get("pid_source") or "",
+                    "started_at": st.get("started_at"),
+                    "started_source": st.get("started_source") or "",
+                    "confidence": st.get("confidence") or "unknown",
                     "idle_timeout": spec.idle_timeout if spec.mode == "on_demand" else None,
                     "last_active": st.get("last_active"),
                     "port": self._health_port(spec),
@@ -230,25 +165,8 @@ class Manager:
                     "uptime_sec": uptime,
                     "autostart": spec.autostart,
                     "error": st.get("error"),
-                    "cron_names": self._linked_crons().get(name, []),
                 })
             return out
-
-    def _linked_crons(self) -> dict[str, list[str]]:
-        """按路径把定时任务归到服务名下（见 core/linkage.py）。
-
-        每次 snapshot 现算：注册条可能被增删改，缓存会失真；数量级很小（几十个），
-        不值得为此维护失效逻辑。
-        """
-        if not self.cron_specs_provider:
-            return {}
-        try:
-            cron_specs = self.cron_specs_provider() or {}
-        except Exception:  # noqa: BLE001 - 调度器异常不该拖垮面板
-            return {}
-        if not cron_specs:
-            return {}
-        return link_crons(self.specs, cron_specs)
 
     def get_spec(self, name: str) -> Spec | None:
         return self.specs.get(name)
@@ -317,6 +235,11 @@ class Manager:
                     return "mine", "health-service", f"响应体自报 service={claimed}"
                 return ("foreign", "health-service",
                         f"端口 {port} 上的程序自报 service={claimed}，非本服务")
+            if spec.identity_process:
+                pids = runner.find_processes(spec.identity_process, spec.identity_match)
+                if len(pids) == 1:
+                    return ("mine", "process",
+                            f"进程 {spec.identity_process} 唯一匹配 pid {pids[0]}")
             # 无 service 字段 → 身份不确认。按三态之"无字段退回旧行为"：
             #   注册条若声明了 pidfile，仍可继续核（④）；
             #   否则无据可依，保守判 unknown（不冒充成功，也不当作外人）
@@ -334,6 +257,9 @@ class Manager:
             return "mine", "declared-pidfile", f"注册条 pidfile {decl_pid} 存活且端口在监听"
 
         if spec.health_type == "process":
+            pid, pid_src, _conf = runner.locate(spec, handle)
+            if pid:
+                return "mine", pid_src, f"进程定位 pid={pid}（{pid_src}）"
             return "absent", "", "进程型且无存活凭证"
         return ("unknown", "", "有实例应答但无任何身份凭证可核") \
             if port else ("absent", "", "未运行")
@@ -410,7 +336,8 @@ class Manager:
                     self.adopt_external(name, f"启动接管：{reason}", via=via)
                     out[name] = f"归位（{via}）"
                 elif verdict == "foreign":
-                    st.update(status="conflict", error=reason, fail_at=time.time())
+                    st.update(status="stopped", error=reason, fail_at=time.time(),
+                              port_foreign=True)
                     audit.emit("identity_mismatch", ok=False, svc=name, note=reason)
                     out[name] = "端口被他人占用"
                 elif verdict == "unknown":
@@ -441,9 +368,16 @@ class Manager:
             st = self.state.get(name)
             if st is None:
                 return
+            spec = self.specs.get(name)
             if st["status"] != "running":
-                st.update(status="running", started_at=st.get("started_at") or time.time(),
-                          error=None, fail_at=None)
+                pid, src, conf = (runner.locate(spec) if spec else (None, "", "unknown"))
+                created = runner.process_create_time(pid) if pid else None
+                now = time.time()
+                st.update(status="running",
+                          started_at=created or st.get("started_at") or now,
+                          started_source="process" if created else "adopted",
+                          adopted_at=now, pid=pid, pid_source=src,
+                          confidence=conf, error=None, fail_at=None)
                 suffix = f"（{via}）" if via else ""
                 audit.emit(act, svc=name, note=reason + suffix)
 
@@ -480,7 +414,8 @@ class Manager:
                     return True, "已在运行（实例归位）"
                 if verdict == "foreign":
                     why = f"健康目标被占用：{reason}"
-                    st.update(status="conflict", error=why, fail_at=time.time())
+                    st.update(status="stopped", error=why, fail_at=time.time(),
+                              port_foreign=True)
                     audit.emit("reject_double", ok=False, svc=name, note=reason,
                                dur_ms=_dur(began))
                     return False, why
@@ -494,7 +429,9 @@ class Manager:
             self.handles[name] = handle
             # 发起不成一条事件：成败由 monitor 在 starting 收敛时落终态（含耗时）
             st.update(status="starting", started_at=handle.started_at, error=None,
-                      fail_at=None, start_began=began, start_via=via)
+                      fail_at=None, start_began=began, start_via=via,
+                      pid=handle.pid, pid_source="handle",
+                      started_source="framework", confidence="confirmed")
             st.pop("entry_note", None)      # 清掉上一轮遗留的入口脚本输出
             return True, "starting"
 
@@ -518,10 +455,11 @@ class Manager:
             # 安全闸：端口被外人占用（conflict）且我方无句柄时，只清状态、绝不收割。
             # 否则 stop_script（如 POST /api/shutdown）会打到陌生程序上——那是别人的服务，
             # 框架无权干涉。用户点"清除"的语义就是"把这个红点清掉"，不是杀别人。
-            if handle is None and st["status"] == "conflict":
+            if handle is None and st.get("port_foreign"):
                 verdict, _via, why = self.identify(name)
                 if verdict != "mine":
                     st.update(status="stopped", error=None, started_at=None)
+                    st.pop("port_foreign", None)
                     return True, f"端口占用方非本服务，仅清除告警（{why}）"
             self._user_stopping.add(name)
             self._pending_stop[name] = time.time()
@@ -537,6 +475,10 @@ class Manager:
                     runner.run_stop_script(spec)
                 if handle:
                     runner.stop_managed(handle)
+                else:
+                    pid, _src, conf = runner.locate(spec)
+                    if pid and conf in ("confirmed", "probable"):
+                        runner.kill_tree(pid)
             elif spec.stop_script_abs:
                 runner.run_stop_script(spec)
                 if handle:
@@ -565,70 +507,122 @@ class Manager:
             return ok, msg
         return self.start(name, via=via)
 
-    def _reap_idle(self, name: str) -> None:
-        """on_demand 空闲回收：条件复核后走正规 stop 流程（优雅停 + 状态回 stopped）。
 
-        回收前必须确认"要停的是本服务的实例"，两条信任来源：
+    def _load_order(self) -> None:
+        """按注册条里的 runtime.order 初始化顺序。"""
+        self._order = [
+            n for n in sorted(
+                self.specs,
+                key=lambda n: (
+                    self.specs[n].order if self.specs[n].order is not None else 1e9,
+                    n,
+                ),
+            )
+        ]
 
-        - **句柄在场** → 直接信任：那是本进程亲手拉起的，不可能是别人
-        - **句柄缺席**（宿主重启后的接管场景）→ 回退到身份判定，只有 mine 才回收
-
-        v0.11 的问题不在于"守不守句柄"，而在于判据只有"端口有人应答"——那既
-        认不出孤儿（宿主重启后句柄丢失 → 判成外人 → 永远不回收），也可能误把
-        占着同端口的别人的程序当成自家实例去停。现在统一按身份收口。
-        """
-        with self.lock:
-            st = self.state.get(name)
+    def _save_order(self) -> None:
+        """把当前顺序写成每个条目的 runtime.order（已经是目标值的跳过）。"""
+        for i, name in enumerate(self._order, 1):
             spec = self.specs.get(name)
-            if (st is None or spec is None or st["status"] != "running"
-                    or spec.mode != "on_demand" or name in self._idle_reaping):
-                return
-            if name not in self.handles:
-                # 无句柄：须先自证是本服务的实例，否则可能误停别人的进程
-                verdict, _via, _why = self.identify(name)
-                if verdict != "mine":
-                    return
-            self._idle_reaping.add(name)
-        try:
-            self.stop(name, act="idle_reclaim",
-                      reason=f"空闲超 {int(spec.idle_timeout)}s，按需服务自动回收")
-        finally:
-            with self.lock:
-                self._idle_reaping.discard(name)
+            if spec is None or spec.order == float(i):
+                continue
+            self._set_runtime(name, {"order": i})
+
+    def _ordered_names(self) -> list[str]:
+        known = set(self.specs)
+        picked = [n for n in self._order if n in known]
+        picked += sorted(known - set(picked))
+        return picked
+
+    def set_order(self, names: list[str]) -> tuple[bool, str, str]:
+        """只接受已注册服务名（去重），未提及的按字母序追加末尾。"""
+        with self.lock:
+            known = set(self.specs)
+            seen: set[str] = set()
+            picked: list[str] = []
+            for n in names:
+                if isinstance(n, str) and n in known and n not in seen:
+                    seen.add(n)
+                    picked.append(n)
+            picked += sorted(known - seen)
+            self._order = picked
+            self._save_order()
+            return True, "ok", "已排序"
+
+
+    def _load_runtime(self) -> None:
+        """运行态已并入注册条，无需独立加载。"""
+        self._runtime = {}
+
+    def _save_runtime(self) -> bool:
+        """兼容旧调用点：没有独立账本，视为成功。"""
+        return True
+
+    def runtime_snapshot(self) -> dict[str, dict]:
+        """当前条目的运行态快照（面板/调试用）。"""
+        out: dict[str, dict] = {}
+        for name, spec in self.specs.items():
+            out[name] = {
+                "enabled": spec.enabled,
+                "autostart": spec.autostart,
+                "archived": spec.archived,
+                "order": spec.order,
+                "idle_timeout_sec": spec.idle_timeout,
+                "run_timeout_sec": spec.run_timeout,
+                "catch_up": spec.catch_up,
+            }
+        return out
+
+    def _set_runtime(self, name: str, patch: dict) -> bool:
+        """把 patch 写回注册条的 runtime 组，并重新解析该条目。返回是否成功。"""
+        with self.lock:
+            spec = self.specs.get(name)
+            if spec is None:
+                return False
+            clean = {k: v for k, v in patch.items() if k in RUNTIME_KEYS}
+            if not clean:
+                return True
+            try:
+                data = json.loads(spec.reg_path.read_text(encoding="utf-8-sig"))
+                rt = data.get("runtime")
+                if not isinstance(rt, dict):
+                    rt = {}
+                rt.update(clean)
+                data["runtime"] = rt
+                fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+                os.replace(tmp, spec.reg_path)
+            except OSError:
+                return False
+            new_spec = Spec(name, spec.reg_path, spec.adapter_dir)
+            if new_spec.valid:
+                self.specs[name] = new_spec
+            return True
+
 
     def toggle_autostart(self, name: str, value: bool) -> tuple[bool, str]:
-        """面板自启开关：只改运行态账本（data\\service_runtime.json），注册条一个字节不动。"""
         with self.lock:
             spec = self.specs.get(name)
             if spec is None:
                 return False, f"未知服务 {name}"
             if spec.mode == "on_demand":
                 return False, "on_demand 模式按需启动，不支持设置自启"
-            value = bool(value)
-            if not self._set_runtime(name, {"autostart": value}):
-                return False, "写运行态账本失败"
-            spec.autostart = value
+            if not self._set_runtime(name, {"autostart": bool(value)}):
+                return False, "写注册条失败"
             return True, "ok"
 
     def update_config(self, name: str, patch: dict) -> tuple[bool, str, str]:
-        """面板设置：改服务的可编辑项。当前支持 `idle_timeout_sec`（运行态）。
-
-        只写 data\\service_runtime.json，注册条一个字节不动。安全网保留：范围校验
-        → 记账本 → 用新运行态重解析 Spec 校验，判无效则**回滚账本**并报错——绝不
-        留一个坏配置（否则服务直接变 invalid 不可用）。
-
-        返回 (ok, code, message)；code ∈ ok / not_found / invalid / io。
-        """
+        """当前支持 `idle_timeout_sec`（仅 on_demand）。返回 (ok, code, message)。"""
         with self.lock:
             spec = self.specs.get(name)
             if spec is None:
                 return False, "not_found", f"未知服务 {name}"
 
-            # 目前仅 on_demand 有可配项；常驻服务传此字段即 misuse
             if "idle_timeout_sec" in patch and spec.mode != "on_demand":
                 return False, "invalid", ("idle_timeout_sec 仅 on_demand 服务可配；"
                                           f"{name} 当前为 {spec.mode}")
-            patch = {k: v for k, v in patch.items() if k in Spec.RUNTIME_KEYS}
+            patch = {k: v for k, v in patch.items() if k in ("idle_timeout_sec",)}
             if not patch:
                 return False, "invalid", "没有需要修改的字段"
 
@@ -637,214 +631,17 @@ class Manager:
                     val = float(patch["idle_timeout_sec"])
                 except (TypeError, ValueError):
                     return False, "invalid", "idle_timeout_sec 需为数字"
-                # ★ 显式拒绝越界，不能让 Spec 的 clamp 悄悄吞掉：
-                #   否则账本留下 5、实际生效 60，账本与内存不一致且面板回弹无解释。
-                if val < IDLE_MIN_SEC or val > IDLE_MAX_SEC:
+                if val != 0 and not (IDLE_MIN_SEC <= val <= IDLE_MAX_SEC):
                     return False, "invalid", (
-                        f"idle_timeout_sec 需在 {int(IDLE_MIN_SEC)} ~ "
+                        f"idle_timeout_sec 需为 0 或 {int(IDLE_MIN_SEC)} ~ "
                         f"{int(IDLE_MAX_SEC)} 秒之间")
-                patch["idle_timeout_sec"] = int(val)   # 落盘统一整数，避免 900.0/900 混写
+                patch["idle_timeout_sec"] = int(val)
 
-            old_runtime = dict(self._runtime.get(name) or {})
+            old = {"idle_timeout_sec": spec.idle_timeout}
             if not self._set_runtime(name, patch):
-                return False, "io", "写运行态账本失败"
-
-            # ---- 写后校验：新运行态必须让注册条仍然合法，否则回滚账本 ----
-            new_spec = Spec(name, spec.reg_path, spec.adapter_dir,
-                            runtime=self._runtime.get(name))
-            if not new_spec.valid:
-                self._runtime[name] = old_runtime   # 回滚，不留坏配置
-                self._save_runtime()
-                return False, "invalid", (new_spec.error
-                                          or "新配置不合法，已回滚")
-            self.specs[name] = new_spec
+                return False, "io", "写注册条失败"
+            new_spec = self.specs.get(name)
+            if new_spec is None or not new_spec.valid:
+                self._set_runtime(name, old)        # 回滚，不留坏配置
+                return False, "invalid", (new_spec.error if new_spec else "新配置不合法")
             return True, "ok", "已保存"
-
-    # ------------------------------------------------------------ 监测循环
-    def monitor_loop(self) -> None:
-        """每秒校正一次观测态——唯一事实源在这里收敛。"""
-        while True:
-            try:
-                self._tick()
-            except Exception:  # noqa: BLE001 - 监测线程永不退出
-                pass
-            time.sleep(TICK_SEC)
-
-    def _tick(self) -> None:
-        with self.lock:
-            self.refresh()  # 接住新建/删除的 manifest
-            now = time.time()
-            for name, spec in list(self.specs.items()):
-                st = self.state[name]
-                status = st["status"]
-                handle = self.handles.get(name)
-
-                if status == "starting":
-                    began = st.get("start_began")
-                    dur = _dur(float(began)) if began else None
-                    via = str(st.get("start_via") or "api")
-                    alive = handle.popen.poll() is None if handle else False
-                    # 快速可达判定，不做完整 urlopen（无监听端口可能被代理/TUN拖成数秒，
-                    # 会卡住整个 monitor 循环）；running 后仍由复检兜底核对真健康
-                    healthy = runner.quick_alive(spec, handle)
-                    why = "" if healthy else "健康目标未就绪"
-                    timeout = spec.health_timeout
-                    elapsed = now - float(st.get("started_at") or now)
-                    if healthy:
-                        st["status"], st["error"] = ("running", None)
-                        st.pop("start_began", None)
-                        st.pop("start_via", None)
-                        st.pop("entry_note", None)   # 起来了就不必留失败线索
-                        audit.emit("start", svc=name, dur_ms=dur,
-                                   pid=handle.pid if handle else None,
-                                   note=f"{spec.mode} 健康就绪（{via}）")
-                        continue
-                    if spec.mode == "detached" and handle and not alive:
-                        # 点火器脚本退场 = 正常；摘句柄，继续只等健康就绪。
-                        # 但脚本说了什么必须留档：起不来的真相往往只在它的输出里
-                        # （如官方脚本凭一个被回收复用的 pid 喊 "already running"
-                        # 然后退出 0，框架这边只能看到 60 秒健康超时）。
-                        rc = handle.popen.returncode
-                        tail = runner.read_output_tail(handle.output_path)
-                        if tail:
-                            st["entry_note"] = f"入口脚本 rc={rc}：{tail}"
-                        self.handles.pop(name, None)
-                        runner.close_handle(handle)
-                        handle = None
-                    if spec.mode == "managed":
-                        if not alive:
-                            rc = handle.popen.returncode if handle else None
-                            self.handles.pop(name, None)
-                            if handle:
-                                runner.close_handle(handle)
-                            st.update(status="failed",
-                                      error=f"进程启动即退出 rc={rc}", fail_at=now)
-                            st.pop("start_began", None)
-                            st.pop("start_via", None)
-                            audit.emit("crash", ok=False, svc=name, dur_ms=dur,
-                                       note=f"进程启动即退出 rc={rc}（{via}）")
-                            continue
-                    if elapsed > timeout:
-                        # 关键修复点：超时必须收敛，不能像 早期内部版本 那样残留 starting
-                        note = (f"健康检查超时({timeout:.0f}s)"
-                                f"{('，' + why) if why else ''}（{via}）")
-                        extra = str(st.pop("entry_note", "") or "")
-                        if extra:
-                            note = f"{note} | {extra}"
-                        st.update(status="failed", error=note, fail_at=now)
-                        st.pop("start_began", None)
-                        st.pop("start_via", None)
-                        audit.emit("start", ok=False, svc=name, dur_ms=dur, note=note)
-
-                elif status == "failed" and spec.mode == "detached":
-                    # 假失败自愈：detached 型服务被外部拉起/升级慢未就绪时，
-                    # 只要健康探测通过就自动归位 running（现实中已活着就别让用户手动重启）
-                    if spec.health_type in ("port", "http"):
-                        alive, _w = runner.check_health(spec, None)
-                        if alive:
-                            st.update(status="running", started_at=now, error=None)
-                            audit.emit("health_flip", svc=name,
-                                       note="假失败自愈：健康探测通过，归位 running")
-
-                elif status == "running":
-                    if spec.mode == "detached":
-                        # 点火器型：运行中按**身份**复检（点火器早已退场，句柄不可作数）
-                        if handle and handle.popen.poll() is not None:
-                            self.handles.pop(name, None)
-                            runner.close_handle(handle)
-                        if (spec.health_type in ("port", "http")
-                                and now - float(st.get("last_check") or 0) >= 5):
-                            st["last_check"] = now
-                            verdict, _via, why = self.identify(name)
-                            if verdict == "foreign":
-                                # 端口被别的程序接手：不再冒充运行中
-                                st.update(status="conflict", error=why, fail_at=now)
-                                audit.emit("identity_mismatch", ok=False, svc=name, note=why)
-                            elif verdict == "unknown":
-                                st["error"] = why
-                                if not st.get("ident_noted"):
-                                    st["ident_noted"] = True
-                                    audit.emit("identity_unknown", svc=name, note=why)
-                            elif verdict == "absent":
-                                st.update(status="stopped", started_at=None,
-                                          error="健康检查失联，进程可能已被外部停止")
-                                audit.emit("health_flip", ok=False, svc=name,
-                                           note="健康失联：进程可能已被外部停止")
-                            # mine：一切正常，不动作
-                        continue
-                    if handle and handle.popen.poll() is not None:
-                        rc = handle.popen.returncode
-                        crashed = name not in self._user_stopping
-                        self.handles.pop(name, None)
-                        runner.close_handle(handle)
-                        if crashed:
-                            st.update(status="failed", error=f"进程意外退出 rc={rc}",
-                                      fail_at=now)
-                            audit.emit("crash", ok=False, svc=name,
-                                       note=f"进程意外退出 rc={rc}")
-                        else:
-                            st.update(status="stopped", started_at=None, error=None)
-                        continue
-                    if spec.health_type in ("port", "http") and now - float(st.get("last_check") or 0) >= 5:
-                        # running 态每 5 秒复检一次健康端口；不依赖 handle——
-                        # 外部归位实例（handle=None）也能被持续监控
-                        st["last_check"] = now
-                        if spec.mode == "on_demand":
-                            # 按需服务：复检顺带解析服务自报的 last_active，超时则空闲回收
-                            healthy, why, last_active = runner.check_health_ext(spec, handle)
-                            if last_active and last_active > 0:
-                                st["last_active"] = last_active
-                            if healthy and last_active and last_active > 0 \
-                                    and (now - last_active) > spec.idle_timeout:
-                                threading.Thread(
-                                    target=self._reap_idle, args=(name,), daemon=True).start()
-                        else:
-                            healthy, why = runner.check_health(spec, handle)
-                        if healthy:
-                            st.pop("flip_noted", None)   # 恢复后允许再记一次翻转
-                        if not healthy:
-                            if handle is None:
-                                # 外部归位实例（无句柄）：再核一次身份——
-                                #   仍是我的 → 真被我之外的因素停了，干净归位 stopped；
-                                #   变成外人 → 端口被接手，标 conflict（不冒充）；
-                                #   答不上来 → 保守记 error，不轻易抹成 stopped
-                                verdict, _via, iwhy = self.identify(name)
-                                if verdict == "foreign":
-                                    st.update(status="conflict", error=iwhy, fail_at=now)
-                                    audit.emit("identity_mismatch", ok=False,
-                                               svc=name, note=iwhy)
-                                elif verdict == "mine":
-                                    st.update(status="stopped", started_at=None, error=None)
-                                    audit.emit("health_flip", ok=False, svc=name,
-                                               note="本服务实例已失联，归位 stopped")
-                                else:
-                                    st["error"] = iwhy or why or "健康检查失败(复检)"
-                            else:
-                                st["error"] = why or "健康检查失败(复检)"
-                                # 状态未翻转（仍 running）：只记第一次，否则每 5 秒刷一条噪音
-                                if not st.get("flip_noted"):
-                                    st["flip_noted"] = True
-                                    audit.emit("health_flip", ok=False, svc=name,
-                                               note=why or "健康检查失败(复检)")
-
-                elif status == "stopped":
-                    # 外部/手动启动的实例：定期按**身份**探测，确认是本服务才归位 running。
-                    # 此前 stopped 无分支，手动拉起服务后面板永远停留在 stopped；
-                    # 且判据只是"端口有人应答"，会把占着同端口的别人的程序认成自家实例。
-                    if now - float(st.get("last_check") or 0) >= 5:
-                        st["last_check"] = now
-                        verdict, via, reason = self.identify(name)
-                        if verdict == "mine":
-                            # 本服务实例（外部/手动拉起的）归位——走 adopt_external（含埋点）
-                            self.adopt_external(
-                                name, f"检测到本服务实例：{reason}", via=via)
-                        elif verdict == "foreign":
-                            # 端口被别的程序占着：如实标注，不冒充、也不无权停它
-                            st.update(status="conflict", error=reason, fail_at=now)
-                            audit.emit("identity_mismatch", ok=False, svc=name, note=reason)
-                        # unknown / absent：保持 stopped，不动
-
-                elif status == "stopping":
-                    began = self._pending_stop.get(name)
-                    if began and now - began > runner._STOP_WAIT_SEC + 6:
-                        st.update(status="stopped", started_at=None)  # 兜底收敛

@@ -11,64 +11,21 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC_DIR))
 
 from core import api, audit, runner  # noqa: E402
+from core.host import HostController, VERSION  # noqa: E402
 from core.scanner import Scanner  # noqa: E402
 from core.scheduler import Scheduler  # noqa: E402
 from core.state import Manager  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
-SERVER_PY = SRC_DIR / "server.py"
-VERSION = "0.12.0"
-
-_DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-
-
-class HostController:
-    """宿主自身生命周期控制器——独立于服务列表的专属通道（规避自举悖论）。"""
-
-    def __init__(self, manager: Manager, logs_dir: Path, data_dir: Path):
-        self.manager = manager
-        self.logs_dir = logs_dir    # 记录：登记簿 host.jsonl / 异常栈 host.err.log
-        self.data_dir = data_dir    # 数据：host.pid 等运行态
-        self.started = time.time()
-        self.httpd = None   # serve_forever 前由 main 注入
-
-    def meta(self) -> dict:
-        return {
-            "ok": True, "pid": os.getpid(), "version": VERSION,
-            "uptime_sec": int(time.time() - self.started),
-            "started_at": datetime.fromtimestamp(
-                self.started, tz=timezone.utc).isoformat(),
-        }
-
-    def schedule(self, action: str) -> None:
-        threading.Timer(0.5, self._run, args=(action,)).start()
-
-    def _spawn_replacement(self) -> None:
-        subprocess.Popen(
-            [sys.executable, str(SERVER_PY)], cwd=str(SRC_DIR),
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, creationflags=_DETACH, close_fds=True,
-        )
-
-    def _run(self, action: str) -> None:
-        try:
-            if action == "restart":
-                self._spawn_replacement()   # 新进程会重试绑定，等本进程释放端口
-            audit.emit("host_stop", note=f"面板/API 发起 {action}（被管服务不受影响，继续运行）")
-        except Exception:  # noqa: BLE001
-            pass
-        os._exit(0)                          # 立即退出，释放 1236
 
 
 def load_config() -> dict:
@@ -127,20 +84,24 @@ def main() -> int:
         (data_dir / "host.pid").write_text(str(os.getpid()), encoding="ascii")
     except OSError:
         pass
-    scanner = Scanner((base / cfg["reg_dir"]).resolve())
-    manager = Manager(scanner, data_dir / "service_order.json")
+    reg_root = (base / cfg["reg_dir"]).resolve()
+    scanner = Scanner(reg_root / "services")
+    monitor_settings = dict(cfg.get("monitor") or {})
+    monitor_settings.setdefault("audit_retention_days",
+                                cfg.get("audit_retention_days", 7))
+    manager = Manager(scanner, settings=monitor_settings)
     # 定时任务注册目录（reg\cron\）：不存在则建空目录，用户一眼可见往哪放注册条
-    cron_dir = (base / cfg["reg_dir"] / "cron").resolve()
+    cron_dir = (reg_root / "tasks").resolve()
     cron_dir.mkdir(parents=True, exist_ok=True)
     scheduler = Scheduler(cron_dir, data_dir / "cron_state.json",
-                          data_dir / "cron_order.json")
-    # 把定时任务按路径归属到服务（面板"关联的定时任务"用）；lambda 保证每轮读最新
-    manager.cron_specs_provider = lambda: scheduler.specs
+                          tick_sec=float((cfg.get("scheduler") or {}).get("tick_sec", 10.0)))
+    # 定时任务与服务不再按路径绑定：任务独立展示、独立管理
     controller = HostController(manager, logs_dir, data_dir)
 
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
                       controller=controller, scheduler=scheduler,
-                        cors_local_only=bool(cfg.get("cors_local_only", True)))
+                      cors_local_only=bool(cfg.get("cors_local_only", True)),
+                      settings_path=CONFIG_PATH)
     controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]
@@ -171,23 +132,6 @@ def main() -> int:
     # 定时任务调度线程：同样在 host_start 之后（首条事件因果一致的同一约束）
     threading.Thread(target=scheduler.loop, daemon=True,
                      name="scheduler").start()
-
-    # 登记簿自动清理：启动时清一次，此后每小时复查（保留 config.audit_retention_days 天）
-    retention = float(cfg.get("audit_retention_days", 7))
-
-    def _audit_prune_loop() -> None:
-        while True:
-            try:
-                removed = audit.prune(retention)
-                if removed:
-                    print(f"[audit] 自动清理 {removed} 条超过 {retention:.0f} 天的事件",
-                          flush=True)
-            except Exception:  # noqa: BLE001 - 清理失败不影响宿主
-                pass
-            time.sleep(3600)
-
-    threading.Thread(target=_audit_prune_loop, daemon=True,
-                     name="audit-prune").start()
 
     # 延迟半拍先让 HTTP 就绪，再按 manifest 声明自动拉起
     # 防双开：自启前先判定是否已有实例在运行（外部/残留/手动），已在运行则跳过
