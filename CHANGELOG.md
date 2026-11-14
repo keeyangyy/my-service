@@ -2,6 +2,14 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.15.2（2026-11-15）
+
+### 修复
+
+- `process` 型服务的身份判定被 v0.15.1 的改动截断
+  - `_id_by_process` 在 process 分支前要求 `identity.process`，导致「process 型 + 仅 pidfile」（如网络监控）被判 `absent`
+  - 现在 process 型优先走 `locate()`（句柄 / pidfile / 进程名），其余类型才要求 `identity.process`
+
 ## v0.15.1（2026-11-15）
 
 ### 修复
