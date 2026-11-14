@@ -81,52 +81,64 @@ class Manager(MonitorMixin):
         with self.lock:
             specs = self.scanner.scan()
             self.specs = specs
-            for name, spec in specs.items():
-                if name not in self.state:
-                    if not spec.valid:
-                        self.state[name] = {"status": "invalid", "error": spec.error}
-                        audit.emit("spec_invalid", ok=False, svc=name, note=spec.error)
-                    else:
-                        now = time.time()
-                        self.state[name] = {
-                            "status": "stopped", "pid": None, "pid_source": "",
-                            "started_at": None, "started_source": "",
-                            "adopted_at": None, "first_seen_at": now,
-                            "last_active": None, "confidence": "unknown",
-                            "error": None, "fail_at": None,
-                        }
-            for gone in [n for n in self.state if n not in specs]:
-                # manifest 被删：无论进程是否存活都摘除条目
-                h = self.handles.pop(gone, None)
-                if h and h.popen.poll() is None:
-                    runner.stop_managed(h)   # 内部 finally 会清 pid 文件
-                    why = "注册条已移除，顺带收割其运行实例"
-                else:
-                    if h:
-                        runner.close_handle(h)
-                    why = "注册条已移除，条目摘除"
-                audit.emit("spec_invalid", svc=gone, note=why)
-                del self.state[gone]
-            stale = [n for n in self._order if n not in specs]
-            if stale:
-                self._order = [n for n in self._order if n in specs]
-                self._save_order()   # 注销服务的顺序条目一并清掉
-            # 端口冲突检查（跨服务）：http 型也要查——从 url 解析端口，
-            # 此前只认 health.type=="port" 的字段，三个 http 型服务一个都没查到
-            seen: dict[int, str] = {}
-            for name, spec in specs.items():
-                if not spec.valid:
-                    continue
-                port = self._health_port(spec)
-                if not port:
-                    continue
-                if port in seen and seen[port] != name:
-                    st = self.state[name]
-                    if not str(st.get("status", "")).startswith("invalid"):
-                        st["error"] = (f"健康端口 {port} 与 {seen[port]} 声明冲突"
-                                       "（两者不能同时运行）")
-                else:
-                    seen[port] = name
+            self._init_new_specs(specs)
+            self._drop_gone_specs(specs)
+            self._prune_order(specs)
+            self._check_port_conflicts(specs)
+
+    def _init_new_specs(self, specs: dict) -> None:
+        for name, spec in specs.items():
+            if name in self.state:
+                continue
+            if not spec.valid:
+                self.state[name] = {"status": "invalid", "error": spec.error}
+                audit.emit("spec_invalid", ok=False, svc=name, note=spec.error)
+                continue
+            now = time.time()
+            self.state[name] = {
+                "status": "stopped", "pid": None, "pid_source": "",
+                "started_at": None, "started_source": "",
+                "adopted_at": None, "first_seen_at": now,
+                "last_active": None, "confidence": "unknown",
+                "error": None, "fail_at": None,
+            }
+
+    def _drop_gone_specs(self, specs: dict) -> None:
+        # manifest 被删：无论进程是否存活都摘除条目
+        for gone in [n for n in self.state if n not in specs]:
+            h = self.handles.pop(gone, None)
+            if h and h.popen.poll() is None:
+                runner.stop_managed(h)   # 内部 finally 会清 pid 文件
+                why = "注册条已移除，顺带收割其运行实例"
+            else:
+                if h:
+                    runner.close_handle(h)
+                why = "注册条已移除，条目摘除"
+            audit.emit("spec_invalid", svc=gone, note=why)
+            del self.state[gone]
+
+    def _prune_order(self, specs: dict) -> None:
+        stale = [n for n in self._order if n not in specs]
+        if stale:
+            self._order = [n for n in self._order if n in specs]
+            self._save_order()   # 注销服务的顺序条目一并清掉
+
+    def _check_port_conflicts(self, specs: dict) -> None:
+        """跨服务健康端口冲突：http 型也要查——从 url 解析端口。"""
+        seen: dict[int, str] = {}
+        for name, spec in specs.items():
+            if not spec.valid:
+                continue
+            port = self._health_port(spec)
+            if not port:
+                continue
+            if port not in seen or seen[port] == name:
+                seen[port] = name
+                continue
+            st = self.state[name]
+            if not str(st.get("status", "")).startswith("invalid"):
+                st["error"] = (f"健康端口 {port} 与 {seen[port]} 声明冲突"
+                               "（两者不能同时运行）")
 
     # ------------------------------------------------------------ 查询
     def snapshot(self) -> list[dict]:
@@ -169,93 +181,107 @@ class Manager(MonitorMixin):
     def identify(self, name: str) -> tuple[str, str, str]:
         """判定健康目标上跑的是不是**本服务**：→ (结论, 依据, 说明)。
 
-        结论三态（不含"absent"，那是端口无监听的单独情形，见下）：
+        结论四态：mine / foreign / unknown / absent（端口无监听）。
+        证据按"产生时机"从强到弱：own-handle → own-pidfile → health-service
+        → declared-pidfile → process；每条证据都要求端口在监听（pid 会被系统回收）。
 
-          mine    确认是本服务的实例（可安全接管/回收/停止）
-          foreign 确认**不是**本服务（端口被别的程序占了，无权干涉）
-          unknown 端口有人应答但认不出身份（保守：不冒充成功，也不当作外人）
-          absent  端口无监听 / 无凭证（尚未运行）
-
-        依据来源按"信息产生时机"分，优先级从高到低（后两条按需探测）：
-
-          own-handle   本进程亲手拉起的句柄还在（最强，无需探测）
-          own-pidfile  框架 pid 凭证上的 pid 仍存活（宿主重启后的接管场景）
-          health-service  响应体自报的 service 字段 == 注册名（服务侧现成原料）
-          declared-pidfile 注册条声明的 pidfile 存活（商业软件靠它兜底）
-
-        **零额外进程**：只用 HTTP 探测（复用既有通道）与本地文件读取。
-        历史上曾用 netstat/tasklist/powershell 反向探测，代价是每轮起子进程、
-        数百毫秒、并在桌面弹出控制台窗口——故弃用。
+        零额外进程：只用 HTTP 探测与本地文件读取。
         """
         spec = self.specs.get(name)
         if spec is None or not spec.valid:
             return "absent", "", "未注册或注册条无效"
 
-        # 端口是否有监听——廉价 socket 预筛（毫秒级）。
-        # 必须先算：下面"凭证类"判据都要用它交叉验证。
-        # 为什么必须交叉：**pid 会被系统回收**。旧服务的进程早退了，但残留凭证里的
-        # pid 可能已被判给别的进程（"存活" ≠ "是本服务"）。只看 pid 存活会误判 mine。
+        # 廉价 socket 预筛（毫秒级）：下面凭证类判据都要用它交叉验证
         port = self._health_port(spec)
         port_up = bool(port) and runner.quick_alive(spec, None)
 
-        # ① 本进程亲手拉起的句柄：直接信任，无需任何探测
+        probes = (
+            lambda: self._id_by_handle(name),
+            lambda: self._id_by_own_pidfile(spec, port, port_up),
+            lambda: self._id_by_health(spec, name, port, port_up),
+            lambda: self._id_by_port_down(spec, port_up),
+            lambda: self._id_by_declared_pidfile(spec, port_up),
+            lambda: self._id_by_process(spec, name),
+        )
+        for probe in probes:
+            result = probe()
+            if result is not None:
+                return result
+        if port:
+            return "unknown", "", "有实例应答但无任何身份凭证可核"
+        return "absent", "", "未运行"
+
+    def _id_by_handle(self, name: str) -> tuple[str, str, str] | None:
+        """① 本进程亲手拉起的句柄：直接信任，无需任何探测。"""
         h = self.handles.get(name)
         if h is not None and h.popen.poll() is None:
             return "mine", "own-handle", f"本框架拉起的实例（pid {h.pid}）"
+        return None
 
-        # ② 框架 pid 凭证 **且端口在监听**，才认定是本服务实例。
-        # 宿主重启后句柄表为空，靠凭证接管；但绝不能凭一个存活的 pid 就冒充成功。
+    def _id_by_own_pidfile(self, spec: Spec, port: int | None,
+                           port_up: bool) -> tuple[str, str, str] | None:
+        """② 框架 pid 凭证 **且端口在监听** 才算；凭证存活但端口空着视为被复用。"""
         own_pid = runner.read_pidfile(runner.pidfile_path(spec))
-        if own_pid and runner.pid_alive(own_pid):
-            if port_up:
-                return "mine", "own-pidfile", f"框架 pid 凭证 {own_pid} 存活且端口在监听"
-            # 凭证存活但端口空着：旧进程已退、pid 已被别的进程复用 → 不认
-            return ("absent", "stale-pidfile",
-                    f"残留 pid 凭证 {own_pid} 的端口 {port} 无监听")
+        if not own_pid or not runner.pid_alive(own_pid):
+            return None
+        if port_up:
+            return "mine", "own-pidfile", f"框架 pid 凭证 {own_pid} 存活且端口在监听"
+        return ("absent", "stale-pidfile",
+                f"残留 pid 凭证 {own_pid} 的端口 {port} 无监听")
 
-        if spec.health_type == "http" and spec.health_url:
-            # 端口不通就没有身份可谈，直接判 absent
-            # （必须预筛——urlopen 在"连接被拒绝"时实测要 ~2s，socket 探测是毫秒级，
-            #   且不会在每 5 秒的 monitor 里拖垮 API）
-            if not port_up:
-                return "absent", "", "健康端口无监听"
-            # ③ 服务自报身份：复用既有 HTTP 通道，请求体里就有 service 字段
-            reachable, payload, why = runner.probe_http(spec)
-            if not reachable:
-                return "absent", "", why or "健康目标不可达"
-            claimed = (payload or {}).get("service")
-            if isinstance(claimed, str) and claimed.strip():
-                if claimed.strip() == self._service_name(spec, name):
-                    return "mine", "health-service", f"响应体自报 service={claimed}"
-                return ("foreign", "health-service",
-                        f"端口 {port} 上的程序自报 service={claimed}，非本服务")
-            if spec.identity_process:
-                pids = runner.find_processes(spec.identity_process, spec.identity_match)
-                if len(pids) == 1:
-                    return ("mine", "process",
-                            f"进程 {spec.identity_process} 唯一匹配 pid {pids[0]}")
-            # 无 service 字段 → 身份不确认。按三态之"无字段退回旧行为"：
-            #   注册条若声明了 pidfile，仍可继续核（④）；
-            #   否则无据可依，保守判 unknown（不冒充成功，也不当作外人）
-            if not spec.pidfile:
-                return ("unknown", "no-identity-field",
-                        f"端口 {port} 有应答但未自报 service，身份不确认")
-        elif spec.health_type == "port" and not port_up:
+    def _id_by_health(self, spec: Spec, name: str, port: int | None,
+                      port_up: bool) -> tuple[str, str, str] | None:
+        """③ 服务自报身份：复用既有 HTTP 通道，响应体里有 service 字段。"""
+        if spec.health_type != "http" or not spec.health_url:
+            return None
+        if not port_up:
+            return "absent", "", "健康端口无监听"
+        reachable, payload, why = runner.probe_http(spec)
+        if not reachable:
+            return "absent", "", why or "健康目标不可达"
+        claimed = (payload or {}).get("service")
+        if isinstance(claimed, str) and claimed.strip():
+            if claimed.strip() == self._service_name(spec, name):
+                return "mine", "health-service", f"响应体自报 service={claimed}"
+            return ("foreign", "health-service",
+                    f"端口 {port} 上的程序自报 service={claimed}，非本服务")
+        found = self._id_by_process_name(spec)
+        if found is not None:
+            return found
+        if not spec.pidfile:
+            return ("unknown", "no-identity-field",
+                    f"端口 {port} 有应答但未自报 service，身份不确认")
+        return None
+
+    def _id_by_process_name(self, spec: Spec) -> tuple[str, str, str] | None:
+        if not spec.identity_process:
+            return None
+        pids = runner.find_processes(spec.identity_process, spec.identity_match)
+        if len(pids) != 1:
+            return None
+        return ("mine", "process", f"进程 {spec.identity_process} 唯一匹配 pid {pids[0]}")
+
+    def _id_by_port_down(self, spec: Spec,
+                         port_up: bool) -> tuple[str, str, str] | None:
+        if spec.health_type == "port" and not port_up:
             return "absent", "", "端口无监听"
+        return None
 
-        # ④ 注册条声明的 pidfile（外部/商业软件兜底）——同样要求端口在监听
-        #    （商业软件自带的 pidfile 也可能过期残留，pid 同样可能被回收）
+    def _id_by_declared_pidfile(self, spec: Spec,
+                                port_up: bool) -> tuple[str, str, str] | None:
+        """④ 注册条声明的 pidfile（外部/商业软件兜底）——同样要求端口在监听。"""
         decl_pid = self._declared_pid(spec)
         if decl_pid and runner.pid_alive(decl_pid) and port_up:
             return "mine", "declared-pidfile", f"注册条 pidfile {decl_pid} 存活且端口在监听"
+        return None
 
-        if spec.health_type == "process":
-            pid, pid_src, _conf = runner.locate(spec, self.handles.get(name))
-            if pid:
-                return "mine", pid_src, f"进程定位 pid={pid}（{pid_src}）"
-            return "absent", "", "进程型且无存活凭证"
-        return ("unknown", "", "有实例应答但无任何身份凭证可核") \
-            if port else ("absent", "", "未运行")
+    def _id_by_process(self, spec: Spec, name: str) -> tuple[str, str, str] | None:
+        if spec.health_type != "process":
+            return None
+        pid, pid_src, _conf = runner.locate(spec, self.handles.get(name))
+        if pid:
+            return "mine", pid_src, f"进程定位 pid={pid}（{pid_src}）"
+        return "absent", "", "进程型且无存活凭证"
 
     @staticmethod
     def _service_name(spec: Spec, name: str) -> str:
@@ -431,8 +457,17 @@ class Manager(MonitorMixin):
     def stop(self, name: str, act: str = "stop", reason: str = "") -> tuple[bool, str]:
         """停止服务。act/reason 只影响登记簿文案（idle_reclaim 等复用本函数）。"""
         began = time.time()
-        # 阶段一（持锁）：标记 stopping 并把 handle 从登记表摘除——
-        # 此后 monitor 对该服务的 starting/running 分支因 handle 缺席而不再干预
+        early, spec, handle, was_pid = self._stop_begin(name, act, began)
+        if early is not None:
+            return early
+        ok, msg = self._stop_reap(spec, handle)
+        return self._stop_finish(name, was_pid, ok, msg, act, reason, began)
+
+    def _stop_begin(self, name: str, act: str, began: float):
+        """阶段一（持锁）：标记 stopping 并摘除 handle，之后 monitor 不再干预。
+
+        返回 (提前结果, spec, handle, was_pid)；提前结果非 None 时直接返回给调用方。
+        """
         with self.lock:
             spec = self.specs.get(name)
             st = self.state.get(name)
@@ -440,26 +475,26 @@ class Manager(MonitorMixin):
             if spec is None or st is None:
                 audit.emit(act, ok=False, svc=name, note=f"未知服务 {name}",
                            dur_ms=_dur(began))
-                return False, f"未知服务 {name}"
+                return (False, f"未知服务 {name}"), None, None, None
             if (st["status"] in ("stopped", "failed", "invalid")) and handle is None:
                 if not st["status"].startswith("invalid"):
                     st.update(status="stopped", error=None, started_at=None)
-                return True, "已停止"      # 本来就没跑，不记事件
-            # 安全闸：端口被外人占用（conflict）且我方无句柄时，只清状态、绝不收割。
-            # 否则 stop_script（如 POST /api/shutdown）会打到陌生程序上——那是别人的服务，
-            # 框架无权干涉。用户点"清除"的语义就是"把这个红点清掉"，不是杀别人。
+                return (True, "已停止"), None, None, None       # 本来就没跑，不记事件
+            # 安全闸：端口被外人占用且我方无句柄时，只清状态、绝不收割。
+            # 否则 stop_script（如 POST /api/shutdown）会打到陌生程序上。
             if handle is None and st.get("port_foreign"):
                 verdict, _via, why = self.identify(name)
                 if verdict != "mine":
                     st.update(status="stopped", error=None, started_at=None)
                     st.pop("port_foreign", None)
-                    return True, f"端口占用方非本服务，仅清除告警（{why}）"
+                    return (True, f"端口占用方非本服务，仅清除告警（{why}）"), None, None, None
             self._user_stopping.add(name)
             self._pending_stop[name] = time.time()
             st["status"] = "stopping"
-            was_pid = handle.pid if handle else None
+            return None, spec, handle, (handle.pid if handle else None)
 
-        # 阶段二（锁外）：阻塞式收割进程，不占用 RLock 妨碍其他请求
+    def _stop_reap(self, spec: Spec, handle: object) -> tuple[bool, str]:
+        """阶段二（锁外）：阻塞式收割进程，不占用 RLock 妨碍其他请求。"""
         ok, msg = True, "stopped"
         try:
             if spec.mode in ("managed", "on_demand"):
@@ -478,8 +513,11 @@ class Manager(MonitorMixin):
                     runner.stop_managed(handle)
         except Exception as exc:  # noqa: BLE001
             ok, msg = False, str(exc)
+        return ok, msg
 
-        # 阶段三（持锁）：收敛终态；服务可能已被 refresh 移除，判空防护
+    def _stop_finish(self, name: str, was_pid: int | None, ok: bool, msg: str,
+                     act: str, reason: str, began: float) -> tuple[bool, str]:
+        """阶段三（持锁）：收敛终态；服务可能已被 refresh 移除，判空防护。"""
         with self.lock:
             self._user_stopping.discard(name)
             self._pending_stop.pop(name, None)
