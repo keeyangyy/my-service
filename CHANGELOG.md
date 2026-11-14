@@ -27,9 +27,20 @@
   - 自启开关按 `/api/host` 的 `autostart` 渲染；计划任务模式只提示、不接管
   - 更新按钮两态：检查到新版本后转为「⬆ 升级到 vX」，再点即下载并自动重启生效
 - `examples/demo`：可运行的示例环境
-  - 一键复制源码到临时目录、用独立端口起实例，含 4 条示例注册条与 2 个示例服务
+  - 一键复制源码到临时目录、用独立端口起实例，含 6 条示例注册条（3 服务 + 3 任务）
 - README 增加控制台截图
   - `docs/guide/images/panel.png`，取自 demo 环境
+
+### 文档
+
+- 按读者分工：guide 讲怎么用，design 讲怎么实现
+  - 新增 `docs/design/api.md`：完整 REST API 清单、错误格式、`?via=cli` 来源标记
+  - `docs/guide/usage.md` 的 16 行接口表收敛为「常用接口」5 行，其余指向 design/api.md
+- 去掉「没有 X」这类读者看不出意义的表述（如「没有 `app/` 层」），改为直接描述现状；
+  同时删除「不再使用 reg/_archive/」等只剩内部历史价值的句子
+- 修正过期内容：`docs/design/cron.md` 的 `reg/cron/*.json` → `reg/tasks/*.json`；
+  `architecture.md`、`registry.md` 指向已删除 plan/ 的死链改为指向 CHANGELOG
+- README 面板截图重截：顶部栏新增自启开关与更新按钮，画面改到内容底部（1360×1180 → 1360×693）
 
 ### 重构
 

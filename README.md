@@ -56,12 +56,7 @@ pwsh -File .\examples\demo\start-demo.ps1          # 起在 http://127.0.0.1:124
 pwsh -File .\examples\demo\start-demo.ps1 -Stop    # 停掉并清理
 ```
 
-只想复制示例注册条过去也可以：
-
-```powershell
-Copy-Item .\examples\reg\services\example-web.json .\reg\services\
-Copy-Item .\examples\reg\tasks\example-task.json .\reg\tasks\
-```
+只想照着写注册条，看下面的「注册第一个服务」或 demo 里的 `examples\demo\reg\` 即可。
 
 常驻 / 停止：
 
@@ -77,7 +72,7 @@ pwsh -File .\run\restart.ps1
 pwsh -File .\tools\build-portable.ps1      # 产物：dist\my-service-<版本>.zip（约 0.5 MB）
 ```
 
-只打运行必需的文件，**不内置 Python**——目标机器需要 Python 3.10+。解压后双击 `run\start.ps1` 启动、`run\stop.ps1` 停止。包根就是仓库结构，**没有 `app/` 层**：
+只打运行必需的文件，依赖目标机器的 Python 3.10+。解压后双击 `run\start.ps1` 启动、`run\stop.ps1` 停止。包根的结构与仓库一致：
 
 ```
 my-service-x.y.z/
@@ -196,7 +191,7 @@ my-service/
 
 ## 安全边界
 
-控制面只绑回环地址、跨源写操作默认拒绝、**没有账户体系**——任何本机进程本就能直接调用接口，
+控制面只绑回环地址、跨源写操作默认拒绝、不设账户体系——本机进程本就能直接调用接口，
 这是刻意的取舍。不要把 `host` 改成 `0.0.0.0` 后仍不加认证。细节与漏洞报告方式见
 [SECURITY.md](https://github.com/keeyangyy/my-service/blob/master/SECURITY.md)。
 
@@ -211,7 +206,8 @@ my-service/
 | 定时任务：协议、调度语义、行内编辑 | [docs/design/cron.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cron.md) |
 | 面板分组、设置面板 | [docs/design/panel.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/panel.md) |
 | 控制面跨源（CORS）策略 | [docs/design/cors.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cors.md) |
-| 日常操作、REST API、快速上手 | [docs/guide/usage.md](docs/guide/usage.md) |
+| 控制面 REST API：接口清单、错误格式、来源标记 | [docs/design/api.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/api.md) |
+| 日常操作、常用接口、快速上手 | [docs/guide/usage.md](docs/guide/usage.md) |
 | 注册新服务、接入检查单 | [docs/guide/registration.md](docs/guide/registration.md) |
 | 历史排坑（冷启动慢 / 自启黑窗 / 会话绑定） | [docs/analysis/pitfalls.md](https://github.com/keeyangyy/my-service/blob/master/docs/analysis/pitfalls.md) |
 | 项目规则、提交与发版规范 | [AGENTS.md](https://github.com/keeyangyy/my-service/blob/master/AGENTS.md) |

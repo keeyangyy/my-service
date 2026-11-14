@@ -24,7 +24,8 @@
 | 定时任务协议与调度语义 | [docs/design/cron.md](docs/design/cron.md) |
 | 面板分组与设置项 | [docs/design/panel.md](docs/design/panel.md) |
 | 控制面跨源（CORS）策略 | [docs/design/cors.md](docs/design/cors.md) |
-| 日常操作与 REST API | [docs/guide/usage.md](docs/guide/usage.md) |
+| REST API 接口清单与约定 | [docs/design/api.md](docs/design/api.md) |
+| 日常操作与常用接口 | [docs/guide/usage.md](docs/guide/usage.md) |
 | 接入新服务的检查单 | [docs/guide/registration.md](docs/guide/registration.md) |
 | 历史踩坑（冷启动慢/自启黑窗/会话绑定） | [docs/analysis/pitfalls.md](docs/analysis/pitfalls.md) |
 | 公开发布规则（脱敏清单） | [CONTRIBUTING.md](CONTRIBUTING.md) |

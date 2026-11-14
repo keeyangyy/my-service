@@ -69,5 +69,3 @@
 | 暂时停用 | `runtime.enabled: false`（面板开关） |
 | 归档留档 | `runtime.archived: true`（扫描跳过，面板折叠） |
 | 彻底不要 | 删除注册条文件 |
-
-不再使用 `reg/_archive/` 目录。

@@ -1,6 +1,6 @@
 # 注册条协议（reg/services/*.json）
 
-> 状态：**已实现（后端）**（2026-11-14 重构，见 [plan](../../plan/20261114-registry-refactor.md)）
+> 状态：**已实现（后端）**（2026-11-14 重构，明细见 [CHANGELOG](../../CHANGELOG.md) 的 v0.13.0 条目）
 > 平台：当前仅 Windows（端口→PID、进程创建时间依赖 Win32 API）
 > 实现：`src/core/scanner.py`
 

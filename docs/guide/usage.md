@@ -9,30 +9,21 @@
 | Web Dashboard | `http://127.0.0.1:1236` |
 | 人的入口 | `run/start.ps1`、`run/stop.ps1`、`run/restart.ps1`（幂等）、`run/Dashboard.url`（首次启动时按本机 config 生成，双击开面板；不入库） |
 | 服务 CLI | `./src/svc.ps1 ls \| crons \| cron-run <名> \| events [name] [n] \| host-err [n] \| start \| stop \| restart <name>` |
-| REST API | 见下表 |
+| REST API | 见下节「常用接口」；完整接口表在仓库内 `docs/design/api.md` |
 
 > `svc.ps1 events` 读的是启停登记簿；服务业务日志请去服务家 `logs/`。
 
-## REST API
+## 常用接口
 
-| 方法 | 路径 | 说明 |
+写脚本时最常用的几个；完整清单（含设置、备份、升级）见仓库内 `docs/design/api.md`。
+
+| 方法 | 路径 | 用途 |
 |:--|:--|:--|
-| GET | `/health` | 宿主存活 |
-| GET | `/api/host` | 宿主 pid / uptime / version |
-| GET | `/api/services` | 服务列表（含状态、端口、关联任务） |
-| GET | `/api/services/{name}` | 单服务 |
-| GET | `/api/audit?n=&svc=&fail=1` | 启停登记簿 |
-| GET | `/api/host-err?n=` | 宿主异常栈 |
-| GET | `/api/crons` | 定时任务列表 |
-| POST | `/api/services/order` | `{"names":[...]}` 拖拽排序 |
-| POST | `/api/services/{svc}/start\|stop\|restart[?via=cli]` | 启停 |
-| POST | `/api/services/{svc}/config` | `{"idle_timeout_sec": N}`（仅 on_demand） |
-| POST | `/api/crons/order` | `{"names":[...]}` 拖拽排序 |
-| POST | `/api/crons/{name}/run[?via=cli]` | 手动触发 |
-| POST | `/api/crons/{name}/config` | `enabled` / `catch_up` / `timeout_sec` / `schedule` 任意组合 |
-| POST | `/api/config/{svc}` | `{"autostart": bool}` |
-| POST | `/api/audit/clear` | `{"svc":"名"}` 清该名事件 / `{}` 清全部 |
-| POST | `/api/host/stop\|restart` | 宿主自身生命周期 |
+| GET | `/api/services` | 拿全部服务与状态 |
+| POST | `/api/services/{名}/start\|stop\|restart` | 启停某个服务 |
+| POST | `/api/crons/{名}/run` | 手动跑一次定时任务 |
+| GET | `/api/audit?n=50` | 看最近发生了什么 |
+| POST | `/api/host/restart` | 改完代码后重载宿主 |
 
 ## 快速上手
 
@@ -45,7 +36,7 @@ start http://127.0.0.1:1236              # 打开面板
 ```
 
 自启是启动文件夹里的 `start-my-service.lnk`（目标 `pythonw.exe` + `src\server.py`），登录时不弹窗、不依赖 pwsh；面板右上角的「自启」开关等价。
-卸载用 `uninstall_autostart.ps1`（一并清理历史 vbs/cmd 与计划任务）。计划任务 / Nssm 等高级方式已从脚本移除，手工做法见仓库内 `docs/analysis/pitfalls.md`。
+卸载用 `uninstall_autostart.ps1`；需要计划任务 / Nssm 这类高级方式时，做法见仓库内 `docs/analysis/pitfalls.md`。
 
 ## 注意（AI / 自动化会话）
 
@@ -68,8 +59,8 @@ my-service-x.y.z\
 └── data\            ← 运行时数据（logs\ bak\ update\）
 ```
 
-- 包里**不带 Python**：目标机器要装 Python 3.10+；要连同解释器一起分发，打包时加 `-WithRuntime`
-- 包根就是代码根，**没有 `app/` 层**；`.lnk` 自启指向 `src\server.py`，升级只换代码目录
+- 依赖：目标机器需要 Python 3.10+；要连同解释器一起分发，打包时加 `-WithRuntime`
+- 包根就是代码根；`.lnk` 自启指向 `src\server.py`，升级只换代码目录
 - 升级：面板「检查更新」→ 点更新 → 自动下载并重启，重启瞬间替换 `src/ web/ run/ docs/`；旧代码留 `data\bak\code-prev\` 可回滚，`reg/ data/ config.json` 不动
 - 端口等配置改包根 `config.json`；想换数据位置就设置 `MY_SERVICE_HOME`
 - 包里只带用户向文档（本文件 + `registration.md` + 截图），架构/设计/排坑留在仓库
