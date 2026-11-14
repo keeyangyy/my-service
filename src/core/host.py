@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -51,8 +52,14 @@ class HostController:
                 / "Programs" / "Startup")
 
     @classmethod
+    def _startup_lnk_path(cls) -> Path | None:
+        """启动文件夹里的自启快捷方式（.lnk 指向 pythonw，登录时无窗口）。"""
+        base = cls._startup_dir()
+        return base / "start-my-service.lnk" if base else None
+
+    @classmethod
     def _startup_vbs_path(cls) -> Path | None:
-        """启动文件夹里的自启 vbs（wscript 无窗口执行，不会闪黑窗）。"""
+        """历史方案：wscript 拉起的 vbs（保留路径用于检测与清理）。"""
         base = cls._startup_dir()
         return base / "start-my-service.vbs" if base else None
 
@@ -64,11 +71,12 @@ class HostController:
 
     @staticmethod
     def _detect_autostart() -> str:
-        """探测本机自启方式：startup（启动文件夹 vbs/cmd）/ logon（计划任务）/ none。
+        """探测本机自启方式：startup（启动文件夹 lnk/vbs/cmd）/ logon（计划任务）/ none。
 
         构造时探测一次即可——自启项变化需要重装，不需要每秒查。
         """
-        for path in (HostController._startup_vbs_path(),
+        for path in (HostController._startup_lnk_path(),
+                     HostController._startup_vbs_path(),
                      HostController._startup_cmd_path()):
             if path is not None and path.is_file():
                 return "startup"
@@ -93,32 +101,59 @@ class HostController:
             return pythonw, script
         return Path(sys.executable), script
 
-    def _vbs_content(self) -> str:
-        """生成无窗口启动脚本：wscript 用 SW_HIDE(0) 拉起 pythonw。"""
+    @staticmethod
+    def _ps_quote(text: str) -> str:
+        """PowerShell 单引号字面量（内部单引号翻倍）。"""
+        return "'" + text.replace("'", "''") + "'"
+
+    def _write_lnk(self, lnk: Path) -> None:
+        """用系统自带的 powershell.exe 生成 .lnk（目标 pythonw.exe，登录时无窗口）。
+
+        pythonw 是 GUI 子系统、没有控制台，所以快捷方式不需要任何隐藏窗口技巧；
+        相比 vbs 少一层 wscript，用户右键属性就能看清目标。
+        """
         exe, script = self._autostart_launcher()
-        return (f"' my-service 开机自启（无窗口）\r\n"
-                f'CreateObject("WScript.Shell").Run """{exe}"" ""{script}""", 0, False\r\n')
+        ps = (
+            "$w = New-Object -ComObject WScript.Shell; "
+            f"$s = $w.CreateShortcut({self._ps_quote(str(lnk))}); "
+            f"$s.TargetPath = {self._ps_quote(str(exe))}; "
+            f"$s.Arguments = {self._ps_quote(chr(34) + str(script) + chr(34))}; "
+            f"$s.WorkingDirectory = {self._ps_quote(str(script.parent))}; "
+            f"$s.IconLocation = {self._ps_quote(str(exe) + ',0')}; "
+            "$s.Description = 'my-service 宿主（开机自启，无窗口）'; "
+            "$s.Save()"
+        )
+        # Windows 自带的 Windows PowerShell 5.1 在 PATH 里；被裁剪时退回裸名字再解析一次
+        ps_exe = shutil.which("powershell.exe") or "powershell.exe"
+        subprocess.run(
+            [ps_exe,
+             "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-Command", ps],
+            capture_output=True, timeout=30, check=True,
+        )
 
     def set_autostart(self, enabled: bool) -> tuple[bool, str]:
         """写/删启动文件夹自启项（面板开关用）→ (ok, 当前状态)。
 
-        写 `.vbs` 而不是 `.cmd`：wscript 无窗口执行，不会出现历史方案那种
-        "登录时闪一个 conhost 黑窗"。只处理启动文件夹（无需管理员权限）；
-        计划任务 / SYSTEM / Nssm 属于高级模式，仍走 run/install_autostart.ps1。
+        自启项是 `.lnk` 快捷方式，指向 pythonw.exe + src\\server.py：pythonw 无控制台，
+        登录时不会闪黑窗，也不依赖 pwsh/wscript 这类脚本宿主。
+        只处理启动文件夹（无需管理员权限）；计划任务 / SYSTEM / Nssm 属于高级模式，
+        仍走 run/install_autostart.ps1。
         """
-        vbs = self._startup_vbs_path()
-        legacy = self._startup_cmd_path()
-        if vbs is None:
+        lnk = self._startup_lnk_path()
+        if lnk is None:
             return False, "缺少 APPDATA 环境变量"
+        legacy = [p for p in (self._startup_vbs_path(),
+                              self._startup_cmd_path()) if p is not None]
         try:
             if enabled:
-                vbs.parent.mkdir(parents=True, exist_ok=True)
-                vbs.write_bytes(self._vbs_content().encode("gbk"))
+                lnk.parent.mkdir(parents=True, exist_ok=True)
+                self._write_lnk(lnk)
             else:
-                vbs.unlink(missing_ok=True)
-            if legacy is not None:
-                legacy.unlink(missing_ok=True)   # 清掉历史 cmd 方案，避免双启动
-        except OSError as exc:
+                lnk.unlink(missing_ok=True)
+            for path in legacy:
+                path.unlink(missing_ok=True)   # 清掉历史 vbs/cmd 方案，避免双启动
+        except (OSError, subprocess.SubprocessError) as exc:
             return False, f"写自启项失败: {exc}"
         self.autostart = "startup" if enabled else "none"
         return True, self.autostart

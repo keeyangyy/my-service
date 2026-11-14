@@ -1,11 +1,11 @@
-# my-service 自启卸载（启动文件夹 vbs / 历史 cmd / 计划任务一并清理）
+# my-service 自启卸载（.lnk 快捷方式 / 历史 vbs、cmd / 计划任务一并清理）
 #
 # 用法: .\run\uninstall_autostart.ps1
 $ErrorActionPreference = "SilentlyContinue"
 
 $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
 $found = $false
-foreach ($name in "start-my-service.vbs", "start-my-service.cmd") {
+foreach ($name in "start-my-service.lnk", "start-my-service.vbs", "start-my-service.cmd") {
     $path = Join-Path $startupDir $name
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Force
