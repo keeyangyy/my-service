@@ -18,84 +18,47 @@
 | 开机要手动一个个点 | 面板顶部一键开机自启（启动文件夹 `.lnk` → pythonw，无窗口） |
 | 不知道谁在跑、什么时候起的 | 结构化事件流 `data/logs/host.jsonl`，面板「事件」直接看 |
 
-## 特性
+## 下载即用
 
-| 能力 | 说明 |
+**不需要源码，也不需要克隆仓库。**
+
+1. 打开 [最新版本](https://github.com/keeyangyy/my-service/releases/latest)，下载 `my-service-<版本>.zip`。
+2. 解压到任意目录，比如 `D:/apps/my-service`（路径别选需要管理员权限的位置）。
+3. 启动：进入 `run\` 文件夹，**右键 `start.ps1` → 使用 PowerShell 运行**。
+   （Windows 默认双击 `.ps1` 是打开编辑器，不会执行。）
+   也可以用终端：`pwsh -File run\start.ps1`。
+4. 打开 <http://127.0.0.1:1236>；首次启动后 `run\` 下还会生成 `Dashboard.url`，双击即可开面板。
+
+运行要求：**Windows 10 / 11** + **Python 3.10+**（安装时勾选 Add Python to PATH）。
+当前发布包不自带解释器，目标机器需要能执行 `python`。
+
+停止与开机自启：
+
+```powershell
+pwsh -File .\run\stop.ps1                  # 停止宿主（被管服务不受影响）
+pwsh -File .\run\restart.ps1               # 重启宿主
+.\run\install_autostart.ps1                # 开机自启（面板顶部「自启」开关等价）
+.\run\uninstall_autostart.ps1              # 取消自启
+```
+
+升级：面板顶部 **⟳ 更新** → 检查到新版本后按钮变成 **⬆ 升级到 vX** → 点一下自动下载、
+替换 `src/ web/ run/ docs/` 并重启。`reg/`、`data/`、`config.json` 不动；旧代码留在
+`data/bak/code-prev/` 可回滚。
+
+## 用起来
+
+### 面板
+
+打开 <http://127.0.0.1:1236> 就是全部操作入口：
+
+| 位置 | 能做什么 |
 |:--|:--|
-| 注册即接入 | `reg/services/<名称>.json` 一个文件就是一个服务，改完刷新面板即生效，不用重启宿主 |
-| 四种形态 | `managed` 常驻托管、`detached` 只管外部进程、`on_demand` 点开即启+空闲回收、`task` 定时跑一次 |
-| 健康判定 | `http` 探测地址或 `port` 端口探测；失败按状态机收敛为 `failed`，不会永久卡在 `starting` |
-| 定时任务 | `reg/tasks/<名称>.json` 声明 `daily` / `interval` 等调度，宿主内调度器到点执行 |
-| 面板 | 分组卡片、拖拽排序、服务/任务详情、日志查看、顶部自启与更新开关、宿主自身重启与停止 |
-| 备份与保留 | 一键备份 `reg/` + `config.json` + `adapters/` 到 `data/bak/`，只留最近 N 份（默认 7） |
-| 跨源边界 | 默认只给本机来源的网页回 CORS 头，跨源写操作一律拒绝 |
-| 便携分发 | 打包只裁切运行必需文件（约 0.5 MB），目标机器装 Python 即可跑 |
+| 顶部栏 | 开机自启开关、检查更新、编排器设置、事件登记簿、重启宿主、停止宿主 |
+| 服务卡片 | 启动 / 停止、⚙ 设置（空闲回收时长、关联定时任务）、事件、点卡片打开服务页面 |
+| 定时任务行 | 启用开关、▶ 立即运行、⚙ 设置（时刻 / 间隔 / 超时 / 补跑）、事件 |
+| 分组 | 常驻服务与即用即走分两组，按住把手可拖拽排序，顺序会保存 |
 
-## 环境要求
-
-- Windows 10 / 11
-- Python 3.10+（开发与测试环境为 3.14）
-- PowerShell 7（`pwsh`）
-
-## 快速开始
-
-```powershell
-git clone <repo-url>
-cd C:\path\to\my-service
-pwsh -File .\run\start.ps1          # 启动宿主（后台隐藏窗口）
-start http://127.0.0.1:1236         # 打开面板
-```
-
-首次启动会按本机 `config.json` 生成 `run\Dashboard.url`（双击即可开面板；该文件不入库）。
-
-想先看效果，直接跑仓库自带的 demo：把源码复制到临时目录、用独立端口（1246）起实例，
-不动你本机的 `reg/` 与数据。
-
-```powershell
-pwsh -File .\examples\demo\start-demo.ps1          # 起在 http://127.0.0.1:1246
-pwsh -File .\examples\demo\start-demo.ps1 -Stop    # 停掉并清理
-```
-
-只想照着写注册条，看下面的「注册第一个服务」或 demo 里的 `examples\demo\reg\` 即可。
-
-常驻 / 停止：
-
-```powershell
-pwsh -File .\run\stop.ps1
-pwsh -File .\run\restart.ps1
-.\run\install_autostart.ps1         # 安装开机自启（启动文件夹 + .lnk，无窗口）
-```
-
-## 便携包（裁切打包）
-
-```powershell
-pwsh -File .\tools\build-portable.ps1      # 产物：dist\my-service-<版本>.zip（约 0.5 MB）
-```
-
-只打运行必需的文件，依赖目标机器的 Python 3.10+。解压后双击 `run\start.ps1` 启动、`run\stop.ps1` 停止。包根的结构与仓库一致：
-
-```
-my-service-x.y.z/
-├── src/  web/  run/          # 代码与入口（双击 run\start.ps1 启停）
-├── docs/guide/               # 使用说明（使用指南 / 注册指南 / 面板截图）
-├── README.md CHANGELOG.md LICENSE
-├── config.json               # 数据根配置
-├── reg/                      # 注册条（你手写；升级保留）
-├── data/                     # 运行时数据（升级保留）
-│   ├── logs/                 #   记录：只追加，随时可删
-│   ├── bak/                  #   备份（reg + config.json）
-│   └── update/               #   升级暂存
-└── VERSION.txt               # 打包标记（也是「支持一键升级」的判据）
-```
-
-- 依赖：目标机器需要 **Python 3.10+**；要连解释器一起分发就加 `-WithRuntime`（包根多一个 `runtime/`，约 +11 MB）
-- 首次启动会在 `run\` 生成 `Dashboard.url`
-- 开机自启：面板顶部「自启」开关，或 `run\install_autostart.ps1`（`.lnk` 指向 `src\server.py`，升级替换代码目录后不用重装）
-- 升级：面板「检查更新」→ 点更新 → 自动下载并重启，重启瞬间按清单替换 `src/ web/ run/ docs/` 与三个文档；旧的留在 `data/bak/code-prev/` 可回滚，`reg/ data/ config.json` 一律不动
-- 开发者向文档（架构、设计、排坑）只留在仓库，不进包
-- 自定义数据位置：设置环境变量 `MY_SERVICE_HOME` 指向任意目录
-
-## 注册第一个服务（三步）
+### 接入第一个服务（三步）
 
 1. 服务目录里补齐三件套：**启动入口**、**停止方式**、**健康判定**。
 2. 在 `reg\services\` 放一条注册条。
@@ -127,10 +90,35 @@ my-service-x.y.z/
 | `on_demand` | 点开面板时才启动，空闲超时自动停 | 偶尔看的仪表盘 |
 | `task` | 无进程，按 `schedule` 到点跑一次脚本 | 签到、快照、清理 |
 
-## 定时任务
+### 定时任务
 
-放在 `reg\tasks\<名称>.json`，调度类型与参数见 [docs/design/cron.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cron.md)；
-面板里可直接看上次结果、手动「立即运行」。
+放在 `reg\tasks\<名称>.json`，调度类型与参数见
+[docs/design/cron.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cron.md)；
+面板里可直接改时刻、看上次结果、手动「▶ 立即运行」。
+
+### 命令行
+
+```powershell
+.\src\svc.ps1 ls                    # 服务列表与状态
+.\src\svc.ps1 start <名>            # 启停单个服务
+.\src\svc.ps1 stop <名>
+.\src\svc.ps1 crons                 # 定时任务列表
+.\src\svc.ps1 cron-run <名>         # 手动跑一次任务
+.\src\svc.ps1 events [名] [条数]    # 看启停登记簿
+```
+
+### 数据在哪、哪些能删
+
+| 路径 | 性质 | 删了会怎样 |
+|:--|:--|:--|
+| `reg\services\`、`reg\tasks\` | 你手写的注册条 | 服务 / 任务从面板消失 |
+| `data\logs\` | 记录（登记簿、异常栈） | 无影响，下次启动重建 |
+| `data\bak\` | 备份（注册条 + 配置、升级前的旧代码） | 失去回滚点 |
+| `data\update\` | 升级暂存 | 未生效的升级丢失，重新下载即可 |
+| `data\cron_state.json` | 定时任务状态 | 任务重算下次触发时间 |
+
+`reg\` 是事实源，删了要重写；`data\` 可整体删除，代价是丢定时任务状态与备份。
+想把数据放到别处，设置环境变量 `MY_SERVICE_HOME` 指向目标目录。
 
 ## 目录结构
 
@@ -158,7 +146,7 @@ my-service/
 │   └── core/                  # api / state / scheduler / runner / scanner / audit / backup
 ├── web/                       # 前端静态资源（index.html / app.js / style.css / opening.html）
 ├── tools/
-│   ├── build-portable.ps1     # 便携包构建（裁切组装 + zip；-WithRuntime 可带解释器）
+│   ├── build-portable.ps1     # 发版打包（裁切组装 + zip）
 │   └── check_privacy.ps1      # 公开发布前的隐私检查
 ├── .github/workflows/
 │   ├── ci.yml                 # 检查：ruff / 单测 / 覆盖率 / 前端语法（PR 与发版共用）
@@ -178,7 +166,7 @@ my-service/
 
 ## 配置
 
-`config.json`（首次运行可选，缺省即内置默认值）：
+`config.json`（缺省即内置默认值，面板 ⚙ 设置也能改）：
 
 | 字段 | 默认 | 说明 |
 |:--|:--|:--|
@@ -190,18 +178,52 @@ my-service/
 | `scheduler.tick_sec` | `10` | 定时任务检查间隔 |
 | `backup.keep` | `7` | `data/bak/` 保留份数，`0` = 不自动清理 |
 
-这些都能在面板 ⚙ 设置里改，保存后立即生效并写回 `config.json`。
-
 ## 安全边界
 
 控制面只绑回环地址、跨源写操作默认拒绝、不设账户体系——本机进程本就能直接调用接口，
 这是刻意的取舍。不要把 `host` 改成 `0.0.0.0` 后仍不加认证。细节与漏洞报告方式见
 [SECURITY.md](https://github.com/keeyangyy/my-service/blob/master/SECURITY.md)。
 
+## 从源码运行（开发）
+
+```powershell
+git clone https://github.com/keeyangyy/my-service.git
+cd my-service
+pwsh -File .\run\start.ps1        # 启动宿主（127.0.0.1:1236）
+python -m unittest discover -s tests
+```
+
+源码工作区不支持面板一键升级（会提示改用 `git pull`），这是刻意区分：升级只对下载的发行包生效。
+
+想先看效果而不动本机数据，跑自带 demo——把源码复制到临时目录、用独立端口 1246 起实例：
+
+```powershell
+pwsh -File .\examples\demo\start-demo.ps1          # 起在 http://127.0.0.1:1246
+pwsh -File .\examples\demo\start-demo.ps1 -Stop    # 停掉并清理
+```
+
+## 打包与发版（维护者）
+
+打包由 CI 完成，日常不需要本地操作；手动打一个包用于验证时：
+
+```powershell
+pwsh -File .\tools\build-portable.ps1                 # 产物：dist\my-service-<版本>.zip
+pwsh -File .\tools\build-portable.ps1 -WithRuntime    # 连 Python 解释器一起打（约 +11 MB）
+```
+
+包里只放运行必需的文件（`src/ web/ run/ docs/guide/` + 三个文档 + `reg/`、`data/` 骨架），
+包根就是代码根，版本号写在 `VERSION.txt`（也是一键升级的判据）。
+
+发版由 `.github/workflows/release.yml` 执行：填版本号触发 → 校验版本与 CHANGELOG →
+复用 `ci.yml` 全量检查 → 打包 → 建 tag 与 Release → 上传 zip 与 `latest.json` → 发布后自检。
+失败会自动删掉 tag 与 Release。完整流程见 [AGENTS.md](https://github.com/keeyangyy/my-service/blob/master/AGENTS.md)。
+
 ## 文档
 
 | 想知道什么 | 文档 |
 |:--|:--|
+| 日常操作、终端用法、哪些目录能删 | [docs/guide/usage.md](docs/guide/usage.md) |
+| 注册新服务、接入检查单 | [docs/guide/registration.md](docs/guide/registration.md) |
 | 模块职责、依赖、线程、数据流、状态机、身份判定 | [docs/architecture.md](https://github.com/keeyangyy/my-service/blob/master/docs/architecture.md) |
 | 注册条字段、四种模式、健康地址选择 | [docs/design/registry.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/registry.md) |
 | 按需服务：点开即启、空闲回收 | [docs/design/on-demand.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/on-demand.md) |
@@ -210,21 +232,12 @@ my-service/
 | 面板分组、设置面板 | [docs/design/panel.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/panel.md) |
 | 控制面跨源（CORS）策略 | [docs/design/cors.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cors.md) |
 | 控制面 REST API：接口清单、错误格式、来源标记 | [docs/design/api.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/api.md) |
-| 日常操作、常用接口、快速上手 | [docs/guide/usage.md](docs/guide/usage.md) |
-| 注册新服务、接入检查单 | [docs/guide/registration.md](docs/guide/registration.md) |
 | 历史排坑（冷启动慢 / 自启黑窗 / 会话绑定） | [docs/analysis/pitfalls.md](https://github.com/keeyangyy/my-service/blob/master/docs/analysis/pitfalls.md) |
 | 项目规则、提交与发版规范 | [AGENTS.md](https://github.com/keeyangyy/my-service/blob/master/AGENTS.md) |
 | 跑 demo 体验完整链路 | [examples/demo/README.md](https://github.com/keeyangyy/my-service/blob/master/examples/demo/README.md) |
 
-## 开发与测试
-
-```powershell
-python -m unittest discover -s tests    # 全量单测
-pwsh -File .\tools\check_privacy.ps1    # 提交前隐私检查
-```
-
-项目规则（框架边界、运行态约定、改动流程）见 [AGENTS.md](https://github.com/keeyangyy/my-service/blob/master/AGENTS.md)；
-代码约定、提交规范与**公开发布规则（脱敏清单）**见 [CONTRIBUTING.md](https://github.com/keeyangyy/my-service/blob/master/CONTRIBUTING.md)。
+代码约定、提交规范与**公开发布规则（脱敏清单）**见
+[CONTRIBUTING.md](https://github.com/keeyangyy/my-service/blob/master/CONTRIBUTING.md)。
 
 ## 许可
 
