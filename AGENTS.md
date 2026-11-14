@@ -55,7 +55,10 @@
 
 1. 定位并复现（复杂问题先确认现象）。
 2. 改代码 / 文档，补单测。
-3. 跑 `python -m unittest discover -s tests` 与 `pwsh -File tools/check_privacy.ps1`。
+3. 本地检查三条全过：
+   - `ruff check src tests`（本地 ruff 必须是 **0.17.5**，与 CI 一致；版本不同规则集会漂，出现过 CI 红而本地绿）
+   - `python -m unittest discover -s tests`
+   - `pwsh -File tools/check_privacy.ps1`
 4. 更新 `CHANGELOG.md`。
 4. 更新 `CHANGELOG.md`。
 
