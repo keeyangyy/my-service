@@ -1,0 +1,202 @@
+name: release
+
+# 发版入口：网页或 gh workflow run 手动填版本号触发，检查通过后才建 tag 与 Release。
+# 时序（tag 只在代码全绿、包已构建之后出现）：
+#   preflight  校验版本一致性 / CHANGELOG 段落 / tag 未被占用（无副作用）
+#   → check     复用 ci.yml 的全量检查（ruff、单测、覆盖率、前端语法）
+#   → build     构建便携包并校验 latest.json 与 zip 的 sha256 一致
+#   → publish   建 annotated tag → 建 draft Release → 上传 zip + latest.json
+#               → 资产自检 → 转正为 Latest → 下载 latest.json 做发布后自检
+#   任何一步失败都会删掉 tag 与 Release（失败清理），所以不会出现「流程红了，tag 还留着」。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号 X.Y.Z（须与 src/core/host.py 的 VERSION 一致，不带 v 前缀）"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  preflight:
+    name: 版本校验
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 校验输入与仓库状态
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::请从 master 触发发版，当前 ref: $GITHUB_REF"; exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本号必须是 X.Y.Z（不带 v 前缀），收到: $VERSION"; exit 1
+          fi
+          CODE_VERSION=$(sed -n 's/^VERSION = "\([^"]*\)"$/\1/p' src/core/host.py)
+          if [ "$CODE_VERSION" != "$VERSION" ]; then
+            echo "::error::src/core/host.py 的 VERSION=$CODE_VERSION，与输入 $VERSION 不一致；先提交版本号再发版"; exit 1
+          fi
+          if ! grep -qE "^## v${VERSION}（" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md 缺少「## v$VERSION（日期）」段落，先把 Unreleased 折叠"; exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::本地已存在 tag v$VERSION"; exit 1
+          fi
+          if git ls-remote --exit-code origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::远端已存在 tag v$VERSION"; exit 1
+          fi
+          echo "版本 $VERSION 校验通过，目标提交 $GITHUB_SHA"
+
+  check:
+    name: 全量检查
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: 构建便携包
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 组装并校验产物
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $v = "${{ inputs.version }}"
+          & ./tools/build-portable.ps1 -Version $v -RepoSlug "${{ github.repository }}"
+
+          $zip = "dist/my-service-$v.zip"
+          if (-not (Test-Path -LiteralPath $zip)) { throw "缺少 $zip" }
+          $latest = Get-Content -Raw -LiteralPath "dist/latest.json" | ConvertFrom-Json
+          if ($latest.version -ne $v) { throw "latest.json 的 version 不符: $($latest.version)" }
+          $want = "https://github.com/${{ github.repository }}/releases/download/v$v/my-service-$v.zip"
+          if ($latest.url -ne $want) { throw "latest.json 的 url 不符: $($latest.url)" }
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
+          if ($latest.sha256 -ne $hash) { throw "latest.json 的 sha256 与实际包不一致" }
+          $sizeMb = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 2)
+          Write-Host "产物校验通过：$zip（$sizeMb MB，sha256 $hash）"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: 发布 Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable
+          path: dist
+
+      - name: 抽取 CHANGELOG 段落作发布说明
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - "$VERSION" > notes.md <<'PY'
+          import re, sys
+          version = sys.argv[1]
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(r"^## v" + re.escape(version) + r"（[^）]*）\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+          if not m:
+              sys.exit("CHANGELOG.md 找不到 v" + version + " 段落")
+          sys.stdout.write(m.group(1).strip() + "\n")
+          PY
+          test -s notes.md || { echo "::error::发布说明为空"; exit 1; }
+
+      - name: 建 annotated tag 并推送
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"
+
+      - name: 建草稿 Release 并上传资产
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "v$VERSION" --draft --verify-tag \
+            --title "v$VERSION" --notes-file notes.md
+          gh release upload "v$VERSION" "dist/my-service-$VERSION.zip" "dist/latest.json" --clobber
+
+      - name: 资产自检（转正前）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release view "v$VERSION" --json assets --jq '.assets[] | "\(.name) \(.size)"' > assets.txt
+          cat assets.txt
+          for f in "my-service-$VERSION.zip" "latest.json"; do
+            awk -v n="$f" '$1 == n && $2 + 0 > 0 { ok = 1 } END { exit !ok }' assets.txt \
+              || { echo "::error::资产缺失或大小为 0: $f"; exit 1; }
+          done
+
+      - name: 转为正式 Release
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: gh release edit "v$VERSION" --draft=false --latest
+
+      - name: 发布后自检
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/latest.json"
+          rm -f latest-remote.json
+          for i in $(seq 1 12); do
+            if curl -fsSL "$URL" -o latest-remote.json; then break; fi
+            echo "latest.json 暂不可用（第 $i 次），10 秒后重试"
+            sleep 10
+          done
+          test -s latest-remote.json || { echo "::error::latest.json 下载失败"; exit 1; }
+          got=$(python3 -c 'import json;print(json.load(open("latest-remote.json"))["version"])')
+          test "$got" = "$VERSION" || { echo "::error::latest.json 版本 $got != $VERSION"; exit 1; }
+          want=$(python3 -c 'import json;print(json.load(open("dist/latest.json"))["sha256"])')
+          gotsha=$(python3 -c 'import json;print(json.load(open("latest-remote.json"))["sha256"])')
+          test "$gotsha" = "$want" || { echo "::error::latest.json sha256 与产物不一致"; exit 1; }
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')
+          test "$tag" = "v$VERSION" || { echo "::error::Latest 指向 $tag，不是 v$VERSION"; exit 1; }
+          echo "发布自检通过：Latest = v$VERSION，latest.json 可下载且 sha256 一致"
+
+      - name: 失败清理（删掉 tag 与草稿，不留半成品）
+        if: failure() && steps.publish.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release delete "v$VERSION" --cleanup-tag --yes || true
+          git push origin ":refs/tags/v$VERSION" || true
+          echo "已清理 tag 与 Release：v$VERSION"

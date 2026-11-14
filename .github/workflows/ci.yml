@@ -4,6 +4,8 @@ on:
   push:
     branches: [master]
   pull_request:
+  # 发版流水线复用同一套检查（release.yml 的 check job）
+  workflow_call:
 
 permissions:
   contents: read

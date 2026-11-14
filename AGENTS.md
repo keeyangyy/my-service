@@ -74,17 +74,40 @@
 
 ## 发版流程
 
+**tag 与 Release 一律由 `.github/workflows/release.yml` 生成，不手工打 tag。** 手工推 tag 会跳过检查，
+出现「流程红了 tag 还在」「有 tag 没 Release」「Release 没资产」三种半成品状态。
+
+### 人工准备（3 步）
+
 1. `CHANGELOG.md`：把 Unreleased 折叠为 `## vX.Y.Z（日期）`，补齐本期遗漏条目。
 2. 改 `src/core/host.py` 的 `VERSION`（SemVer：新功能/重构 → MINOR+1，修复 → PATCH+1）。
-3. 全量单测绿后提交：`release: 发布 vX.Y.Z`；body 首行「更新内容（自 <上一版本> 以来）：」，小节依次为 `破坏性变更` / `新增功能` / `重构 / 性能` / `修复` / `升级说明` / `注意`。
-4. 打 Annotated Tag 并推送：`git tag -a vX.Y.Z -m "<一句话摘要>"` → `git push origin master` → `git push origin vX.Y.Z`。
-5. **创建 GitHub Release（不可省）**：tag 只是 git 对象，Release 才是仓库页面上那一栏；只推 tag 会得到"有 tag、没 Release"。
-   ```powershell
-   gh release create vX.Y.Z --title 'vX.Y.Z' --notes-file <CHANGELOG 中该版本段落> -R <owner>/<repo>
-   ```
-6. 发布后自检：
-   - `gh release list` 里新版本为 `Latest`
-   - `gh api repos/<owner>/<repo>` 的 `license` 已被识别
-   - 仓库网页上 README 图片能正常显示
-   - `git ls-remote --tags origin` 与本地 tag 一致
+3. 提交并推送：`release: 发布 vX.Y.Z`；body 首行「更新内容（自 <上一版本> 以来）：」，小节依次为
+   `破坏性变更` / `新增功能` / `重构 / 性能` / `修复` / `升级说明` / `注意`。
+
+### 触发流水线（1 条命令）
+
+```powershell
+gh workflow run release.yml -f version=X.Y.Z
+gh run watch    # 盯到结束
+```
+
+也可以在仓库 Actions 页面点 `release` → Run workflow 填版本号。
+
+### 流水线做什么
+
+| 阶段 | 内容 |
+|:--|:--|
+| preflight | 必须是 master；版本号形状；与 `VERSION` 一致；CHANGELOG 有该段落；本地与远端都无重名 tag |
+| check | 复用 `ci.yml`（ruff / 单测 / 覆盖率 / 前端语法），与 PR 检查同一套 |
+| build | `windows-latest` 打包，并校验 `latest.json` 的 `version` / `url` / `sha256` 与 zip 一致 |
+| publish | 建 annotated tag → 建 **草稿** Release → 上传 zip + `latest.json` → 资产自检 → 转正为 Latest → 从 `releases/latest/download/latest.json` 下载回来核对 sha256 |
+
+任何一步失败都会 `gh release delete --cleanup-tag` 并删远端 tag，不留半成品；修好后重新触发即可。
+
+### 发布说明与自检
+
+- 发布说明取自 CHANGELOG 该版本段落，所以第 1 步的质量直接决定 Release 页面内容。
+- 流水线最后的自检等价于人工核对：`Latest` 指向新版本、`latest.json` 可下载且 sha256 与产物一致、
+  面板「检查更新」才能真正工作（该接口读的就是 `releases/latest/download/latest.json`）。
+- 仍需人工确认：`gh api repos/<owner>/<repo>` 的 `license` 已被识别、仓库网页 README 图片正常显示。
 

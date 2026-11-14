@@ -160,6 +160,9 @@ my-service/
 ├── tools/
 │   ├── build-portable.ps1     # 便携包构建（裁切组装 + zip；-WithRuntime 可带解释器）
 │   └── check_privacy.ps1      # 公开发布前的隐私检查
+├── .github/workflows/
+│   ├── ci.yml                 # 检查：ruff / 单测 / 覆盖率 / 前端语法（PR 与发版共用）
+│   └── release.yml            # 发版：校验 → 检查 → 打包 → 建 tag 与 Release → 自检
 ├── examples/                  # 示例注册条 + 可运行 demo（examples/demo）
 ├── tests/                     # 单元测试
 ├── docs/                      # 文档

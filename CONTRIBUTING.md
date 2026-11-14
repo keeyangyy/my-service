@@ -62,7 +62,8 @@ pwsh -File .\tools\check_privacy.ps1
 ```
 
 脚本扫描已跟踪文件里的用户目录明文、盘符绝对路径、常见凭据形态与私有服务名清单，
-有命中就非零退出。CI 建立后会作为必过项。
+有命中就非零退出。**这一步不在 CI 里跑**（私有名词清单是本机的 `tools/privacy-deny.txt`，不入库），
+提交前必须本地执行一次。
 
 ## PR 流程
 
@@ -70,3 +71,10 @@ pwsh -File .\tools\check_privacy.ps1
 2. 改动 + 单测 + `check_privacy.ps1` 全绿
 3. PR 描述写清：改了什么、为什么、怎么验证的
 4. 涉及接口/配置字段变更时，同步更新 `docs/` 与 `examples/`
+
+## 发版
+
+发版由维护者触发，`tag` 与 `Release` 都由 `.github/workflows/release.yml` 生成，**不接受手工推 tag 的 PR**。
+流程见 [AGENTS.md](AGENTS.md) 的「发版流程」；要点是先把 `CHANGELOG.md` 的 `Unreleased` 折叠成
+`## vX.Y.Z（日期）`、同步 `src/core/host.py` 的 `VERSION`，再触发流水线。Release 的正文直接取
+`CHANGELOG.md` 里该版本的段落，所以条目写清楚对用户最直接。
