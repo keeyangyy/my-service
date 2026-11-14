@@ -1,0 +1,28 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{js,css,html,json,md,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.{ps1,psm1}]
+indent_style = space
+indent_size = 4
+
+[*.cs]
+indent_style = space
+indent_size = 4
+
+# 例外：Windows 批处理必须是 GBK + CRLF（编辑器通常无法声明确切编码，
+# 用 EditorConfig 表达不了，改动 .bat/.cmd 时请手工确认）。
+[*.{bat,cmd}]
+end_of_line = crlf

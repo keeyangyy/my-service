@@ -63,6 +63,7 @@
     setTick: document.getElementById("set-tick"),
     setAudit: document.getElementById("set-audit"),
     setBackup: document.getElementById("set-backup"),
+    setBackupKeep: document.getElementById("set-backup-keep"),
     backupInfo: document.getElementById("backup-info"),
     setSave: document.getElementById("set-save"),
     setCancel: document.getElementById("set-cancel")
@@ -193,11 +194,13 @@
       var data = await res.json();
       var m = data.monitor || {};
       var s = data.scheduler || {};
+      var b = data.backup || {};
       els.setFast.value = m.fast_sec != null ? m.fast_sec : 1;
       els.setIdle.value = m.idle_sec != null ? m.idle_sec : 10;
       els.setGrace.value = m.panel_grace_sec != null ? m.panel_grace_sec : 15;
       els.setTick.value = s.tick_sec != null ? s.tick_sec : 10;
       els.setAudit.value = m.audit_retention_days != null ? m.audit_retention_days : 7;
+      els.setBackupKeep.value = b.keep != null ? b.keep : 7;
       els.settingsModal.hidden = false;
       refreshBackupInfo();
     } catch (e) {
@@ -213,7 +216,8 @@
         panel_grace_sec: Number(els.setGrace.value),
         audit_retention_days: Number(els.setAudit.value)
       },
-      scheduler: { tick_sec: Number(els.setTick.value) }
+      scheduler: { tick_sec: Number(els.setTick.value) },
+      backup: { keep: Number(els.setBackupKeep.value) }
     };
     try {
       var res = await api("POST", "/api/settings", body);
@@ -255,7 +259,9 @@
       if (!res.ok || data.ok === false) {
         throw new Error(data.error || ("HTTP " + res.status));
       }
-      toast("已备份 " + data.files + " 个文件 → bak/" + data.name, "ok");
+      var pruned = Array.isArray(data.pruned) ? data.pruned.length : 0;
+      toast("已备份 " + data.files + " 个文件 → bak/" + data.name
+            + (pruned ? "，清理旧备份 " + pruned + " 份" : ""), "ok");
       refreshBackupInfo();
     } catch (e) {
       toast("备份失败：" + e.message, "err");

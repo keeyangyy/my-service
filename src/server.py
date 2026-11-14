@@ -35,6 +35,7 @@ def load_config() -> dict:
         "reg_dir": "reg",
         "audit_retention_days": 7,   # 登记簿事件保留天数（0 = 永不自动清理）
         "cors_local_only": True,     # 仅本机来源的网页可获得跨源许可（关掉=回到无 CORS 的历史行为）
+        "backup": {"keep": 7},       # bak/ 保留份数（0 = 不自动清理）
     }
     if CONFIG_PATH.is_file():
         try:
@@ -49,7 +50,7 @@ def load_config() -> dict:
 def _setup_host_logging(base: Path) -> tuple[Path, Path]:
     """宿主自身的日志边界（被管服务的输出零接管，见 core/audit.py 顶部说明）。
 
-    返回 (logs_dir, data_dir)——**记录与数据分开**（见 C:/path/to\\README.md 核心字段）：
+    返回 (logs_dir, data_dir)——**记录与数据分开**（见项目 README 核心字段）：
     - logs\\  记录类：只追加、可随时删，删了不影响下次运行
     - data\\  数据类：运行态/状态/账本，删了行为会变
 
@@ -90,6 +91,9 @@ def main() -> int:
     monitor_settings.setdefault("audit_retention_days",
                                 cfg.get("audit_retention_days", 7))
     manager = Manager(scanner, settings=monitor_settings)
+    # 备份保留策略：bak/ 只留最近 keep 份（0 = 不自动清理）
+    backup_settings = dict(cfg.get("backup") or {})
+    backup_settings.setdefault("keep", 7)
     # 定时任务注册目录（reg\cron\）：不存在则建空目录，用户一眼可见往哪放注册条
     cron_dir = (reg_root / "tasks").resolve()
     cron_dir.mkdir(parents=True, exist_ok=True)
@@ -101,7 +105,8 @@ def main() -> int:
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
                       controller=controller, scheduler=scheduler,
                       cors_local_only=bool(cfg.get("cors_local_only", True)),
-                      settings_path=CONFIG_PATH)
+                      settings_path=CONFIG_PATH,
+                      backup_settings=backup_settings)
     controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]

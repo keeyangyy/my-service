@@ -7,7 +7,7 @@
 | 层 | 入口 |
 |:--|:--|
 | Web Dashboard | `http://127.0.0.1:1236` |
-| 人的入口 | `run/start.ps1`、`run/stop.ps1`、`run/restart.ps1`（幂等）、`run/Dashboard.url`（双击开面板） |
+| 人的入口 | `run/start.ps1`、`run/stop.ps1`、`run/restart.ps1`（幂等）、`run/Dashboard.url`（首次启动时按本机 config 生成，双击开面板；不入库） |
 | 服务 CLI | `./src/svc.ps1 ls \| crons \| cron-run <名> \| events [name] [n] \| host-err [n] \| start \| stop \| restart <name>` |
 | REST API | 见下表 |
 
@@ -38,7 +38,7 @@
 
 ```powershell
 cd C:\path\to\my-service
-# 图形入口：直接打开 run/ 文件夹，运行 start.ps1，或双击 Dashboard.url
+# 图形入口：直接打开 run/ 文件夹，运行 start.ps1，或双击 Dashboard.url（首次 start 时自动生成）
 pwsh -File .\run\start.ps1               # 命令行起宿主
 start http://127.0.0.1:1236              # 打开面板
 .\run\install_autostart.ps1              # 安装自启（默认 Startup 启动文件夹方案）

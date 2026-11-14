@@ -1,6 +1,6 @@
 # my-service 宿主启停脚本（pwsh）
 # 用法: (内部引擎，用户请使用 run\start.ps1 等)
-#       .\ctl.ps1 [-Action] start|stop|restart
+#       .\ctl.ps1 [-Action] start|stop|status|restart|shortcut
 param([Parameter(Position = 0)][string]$Action = "start")
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +27,26 @@ function Get-HostPid {
         Select-Object -First 1 -ExpandProperty ProcessId
 }
 
+function New-DashboardShortcut {
+    # 生成 run\Dashboard.url：URL 取自本机 config.json 的 host/port。
+    # 刻意不写 IconFile——图标交给系统按 http 协议默认处理：
+    # 既不会指向别人机器上的程序路径，也不把本机安装的软件清单带进仓库。
+    $shortcut = Join-Path $base "run\Dashboard.url"
+    $bindHost = "127.0.0.1"
+    $port = 1236
+    $cfgPath = Join-Path $base "config.json"
+    if (Test-Path -LiteralPath $cfgPath) {
+        try {
+            $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+            if ($cfg.host) { $bindHost = [string]$cfg.host }
+            if ($cfg.port) { $port = [int]$cfg.port }
+        } catch { }
+    }
+    $content = "[InternetShortcut]`r`nURL=http://${bindHost}:${port}`r`n"
+    [IO.File]::WriteAllText($shortcut, $content, [Text.Encoding]::ASCII)
+    Write-Host "已生成面板快捷方式: $shortcut"
+}
+
 switch ($Action.ToLower()) {
     "start" {
         if ($existing = Get-HostPid) { Write-Host "已在运行 pid=$existing"; exit 0 }
@@ -35,6 +55,10 @@ switch ($Action.ToLower()) {
             -WorkingDirectory (Join-Path $base "src") -WindowStyle Hidden
         Start-Sleep -Milliseconds 900
         if ($pid2 = Get-HostPid) { Write-Host "started pid=$pid2" } else { Write-Host "FAILED — 查看 logs\host.err.log 或 logs\host.jsonl"; exit 1 }
+        # 每台机器各自生成面板快捷方式；用户自定义过就不覆盖
+        if (-not (Test-Path -LiteralPath (Join-Path $base "run\Dashboard.url"))) {
+            New-DashboardShortcut
+        }
     }
     "stop" {
         if ($p = Get-HostPid) {
@@ -47,5 +71,6 @@ switch ($Action.ToLower()) {
     "restart" {
         & $PSCommandPath stop; Start-Sleep -Milliseconds 600; & $PSCommandPath start
     }
-    default { Write-Host "用法: ctl.ps1 start|stop|status|restart"; exit 1 }
+    "shortcut" { New-DashboardShortcut }
+    default { Write-Host "用法: ctl.ps1 start|stop|status|restart|shortcut"; exit 1 }
 }

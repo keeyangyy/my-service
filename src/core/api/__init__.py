@@ -27,7 +27,7 @@ _is_write_path = is_write_path
 
 def make_handler(manager, host=None, scheduler=None,
                  cors_local_only: bool = True,
-                 settings_path=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None, scheduler: core.scheduler.Scheduler|None
+                 settings_path=None, backup_settings=None):  # noqa: ANN001 - manager: core.state.Manager, host: HostController|None, scheduler: core.scheduler.Scheduler|None
     class Handler(BaseHTTPRequestHandler):
         server_version = "my-service"
         protocol_version = "HTTP/1.1"
@@ -85,6 +85,14 @@ def make_handler(manager, host=None, scheduler=None,
         def log_message(self, fmt, *args):  # noqa: A003 - 静默访问日志
             pass
 
+        def _backup_keep(self) -> int:
+            """当前备份保留份数（0 = 不自动清理），非法值回落到默认 7。"""
+            try:
+                return int((backup_settings or {}).get("keep",
+                                                       backup.DEFAULT_KEEP))
+            except (TypeError, ValueError):
+                return backup.DEFAULT_KEEP
+
         # ---------------------------------------------------------- 预检
         def do_OPTIONS(self):  # noqa: N802
             """CORS 预检：只有本机来源的页面才拿到跨源许可，其余明确拒绝。
@@ -125,6 +133,7 @@ def make_handler(manager, host=None, scheduler=None,
                     "ok": True,
                     "monitor": dict(getattr(manager, "settings", {}) or {}),
                     "scheduler": {"tick_sec": getattr(scheduler, "tick_sec", 10.0)},
+                    "backup": {"keep": self._backup_keep()},
                 })
 
             if path == "/api/backups":
@@ -212,18 +221,21 @@ def make_handler(manager, host=None, scheduler=None,
                     return self._json(501, {"ok": False,
                                             "error": "未配置备份根目录"})
                 try:
-                    info = backup.create_backup(Path(settings_path).parent)
+                    info = backup.create_backup(Path(settings_path).parent,
+                                                keep=self._backup_keep())
                 except OSError as exc:
                     return self._json(500, {"ok": False, "error": f"备份失败：{exc}"})
                 return self._json(200, {"ok": True, **info})
 
-            # POST /api/settings  {"monitor": {...}, "scheduler": {...}}
+            # POST /api/settings  {"monitor": {...}, "scheduler": {...}, "backup": {...}}
             if len(parts) == 2 and parts[0] == "api" and parts[1] == "settings":
                 mon = body.get("monitor")
                 sch = body.get("scheduler")
-                if not isinstance(mon, dict) and not isinstance(sch, dict):
+                bkp = body.get("backup")
+                if not isinstance(mon, dict) and not isinstance(sch, dict) \
+                        and not isinstance(bkp, dict):
                     return self._json(400, {"ok": False,
-                                            "error": "需要 monitor 或 scheduler 对象"})
+                                            "error": "需要 monitor / scheduler / backup 对象"})
                 if isinstance(mon, dict):
                     for key in ("fast_sec", "idle_sec", "panel_grace_sec",
                                 "audit_retention_days"):
@@ -248,6 +260,21 @@ def make_handler(manager, host=None, scheduler=None,
                     except (TypeError, ValueError):
                         return self._json(400, {"ok": False,
                                                 "error": "tick_sec 需为数字"})
+                if isinstance(bkp, dict) and "keep" in bkp:
+                    try:
+                        keep = int(float(bkp["keep"]))
+                    except (TypeError, ValueError):
+                        return self._json(400, {"ok": False,
+                                                "error": "备份保留份数需为数字"})
+                    if not (0 <= keep <= 365):
+                        return self._json(400, {
+                            "ok": False,
+                            "error": "备份保留份数需在 0 ~ 365 之间（0 = 不自动清理）"})
+                    if backup_settings is not None:
+                        backup_settings["keep"] = keep
+                        # 立即按新策略收敛一次，保存后 bak/ 里马上只剩 keep 份
+                        backup.prune_backups(Path(settings_path).parent, keep) \
+                            if settings_path else None
                 if settings_path:
                     try:
                         sp = Path(settings_path)
@@ -262,6 +289,10 @@ def make_handler(manager, host=None, scheduler=None,
                         cfg["scheduler"] = {
                             **cfg.get("scheduler", {}),
                             "tick_sec": getattr(scheduler, "tick_sec", 10.0),
+                        }
+                        cfg["backup"] = {
+                            **cfg.get("backup", {}),
+                            "keep": self._backup_keep(),
                         }
                         sp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
                                       encoding="utf-8")
@@ -421,7 +452,8 @@ def _tail_file(path: Path, name: str, n: int) -> dict:
 
 
 def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,
-          cors_local_only: bool = True, settings_path=None):  # noqa: ANN001
+          cors_local_only: bool = True, settings_path=None,
+          backup_settings=None):  # noqa: ANN001
     """绑定监听。controller 为 HostController（提供 meta/schedule），
     scheduler 为定时任务调度器（提供 snapshot/run_now）。
 
@@ -432,7 +464,8 @@ def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,
     """
     import time
     handler = make_handler(manager, controller, scheduler, cors_local_only,
-                           settings_path=settings_path)
+                           settings_path=settings_path,
+                           backup_settings=backup_settings)
     last_err: OSError | None = None
     for _ in range(40):
         try:

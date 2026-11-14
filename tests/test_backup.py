@@ -62,6 +62,27 @@ class TestBackup(unittest.TestCase):
         self.assertGreaterEqual(items[0]["name"], items[1]["name"])
         self.assertGreater(items[0]["size"], 0)
 
+    def test_prune_keeps_latest(self):
+        for name in ("20260101-000000", "20260102-000000", "20260103-000000"):
+            (self.root / "bak" / name).mkdir(parents=True)
+        removed = backup.prune_backups(self.root, keep=2)
+        self.assertEqual(removed, ["20260101-000000"])
+        self.assertEqual([p.name for p in backup._backup_dirs(self.root)],
+                         ["20260103-000000", "20260102-000000"])
+
+    def test_prune_zero_keeps_all(self):
+        for name in ("20260101-000000", "20260102-000000"):
+            (self.root / "bak" / name).mkdir(parents=True)
+        self.assertEqual(backup.prune_backups(self.root, keep=0), [])
+        self.assertEqual(len(backup._backup_dirs(self.root)), 2)
+
+    def test_create_backup_prunes_over_limit(self):
+        first = backup.create_backup(self.root, keep=1)
+        second = backup.create_backup(self.root, keep=1)
+        self.assertEqual(second["pruned"], [first["name"]])
+        names = [p.name for p in backup._backup_dirs(self.root)]
+        self.assertEqual(names, [second["name"]])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -14,14 +14,14 @@
 
 ```json
 // 常驻（永不自动回收）
-{ "path": "C:/path/to/xxx", "mode": "managed",
+{ "path": "C:/path/to/your-service", "mode": "managed",
   "start": { "entry": "src/server.py" },
   "health": { "type": "http", "url": "http://127.0.0.1:33510/health" } }
 ```
 
 ```json
 // 按需（点开才起、超时回收）
-{ "path": "C:/path/to/xxx", "mode": "on_demand",
+{ "path": "C:/path/to/your-service", "mode": "on_demand",
   "start": { "entry": "src/server.py" },
   "stop": { "script": "run/stop.ps1" },
   "health": { "type": "http", "url": "http://127.0.0.1:33510/health" },
@@ -30,7 +30,7 @@
 
 ```json
 // 定时任务（间隔最小 10 秒）
-{ "path": "C:/path/to/xxx", "mode": "task",
+{ "path": "C:/path/to/your-service", "mode": "task",
   "start": { "entry": "src/run_all.py", "args": ["--site", "example"] },
   "schedule": { "type": "daily", "at": ["09:30"] },
   "runtime": { "run_timeout_sec": 300 } }

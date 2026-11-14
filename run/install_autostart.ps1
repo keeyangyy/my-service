@@ -24,6 +24,8 @@ switch ($Mode.ToLower()) {
         [IO.File]::WriteAllText($cmdPath, $content, [Text.Encoding]::GetEncoding(936))
         Write-Host "✓ 已安装启动文件夹自启: $cmdPath"
         Write-Host "  注销重新登录即可验证；卸载: uninstall_autostart.ps1"
+        # 顺带生成面板快捷方式（URL 取自本机 config.json；不写 IconFile，可跨机器）
+        & (Join-Path $base "src\ctl.ps1") shortcut
     }
     "logon" {
         # 计划任务根目录写入需要管理员令牌；未提权时经 gsudo 自动重跑自身

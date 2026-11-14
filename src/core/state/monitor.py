@@ -131,7 +131,7 @@ class MonitorMixin:
                                        note=f"进程启动即退出 rc={rc}（{via}）")
                             continue
                     if elapsed > timeout:
-                        # 关键修复点：超时必须收敛，不能像 早期内部版本 那样残留 starting
+                        # 关键修复点：超时必须收敛，不能像早期版本那样残留 starting
                         note = (f"健康检查超时({timeout:.0f}s)"
                                 f"{('，' + why) if why else ''}（{via}）")
                         extra = str(st.pop("entry_note", "") or "")

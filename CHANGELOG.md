@@ -33,6 +33,7 @@
 - 面板心跳：`/api/panel/ping`（脚本调用不算活跃）
 - scheduler：默认 10s，可配置；`interval.every_sec` 下限 10 秒
 - 新增 `GET/POST /api/settings`（monitor 间隔、scheduler tick，写回 `config.json`）
+- 备份保留策略：`bak/` 只留最近 N 份（`backup.keep`，默认 7，0 = 不自动清理）；设置弹窗可改，保存后立即收敛一次
 - 前端轮询：可见 1s / 隐藏 10s
 
 ### 面板
@@ -110,7 +111,7 @@
 
 ## v0.11.0（2026-09-24）
 
-目录结构对齐 `C:\path\to\README.md` 三档模型，并把「声明 / 数据 / 记录」彻底分层：
+目录结构对齐项目库 README 三档模型，并把「声明 / 数据 / 记录」彻底分层：
 **升完整档**（run/src/data/logs）+ 注册条瘦身（声明与运行态分离）。
 
 ### 组织模式（entry → run）
@@ -196,7 +197,7 @@
 - 判据是**文件系统路径**：cron 注册条的 `path` 落在哪个已注册服务的 `path`
   之下（或相等）就归属它；服务目录嵌套时取最长匹配
 - 为什么不用名字前缀：路径是物理事实，改名不破坏关联，前缀只是巧合
-- `is_under` 按路径分量比较，`D:\svc\ab` 不会被误判为在 `D:\svc\a` 之下
+- `is_under` 按路径分量比较，`C:/path/to/svc/ab` 不会被误判为在 `C:/path/to/svc/a` 之下
 - 匹配不到即「无关联」，任务继续在定时任务区独立显示；快照为服务附加 `cron_names`
 
 ### 定时任务设置面板分区（修信息架构）
@@ -404,7 +405,7 @@
 
 ### 破坏性变更
 - **框架不再收集被管服务的 stdout/stderr**：`runner.start_process` 一律 `DEVNULL`。服务日志由服务自己写（它家 `logs\`），纳管与否不改变其日志形态。
-  → 接入要求变硬：常驻服务必须自写文件日志且自轮转（规范与 python 片段见 `C:\path\to\README.md`「日志合规」）
+  → 接入要求变硬：常驻服务必须自写文件日志且自轮转（规范与 python 片段见项目库 README「日志合规」）
 - **框架不再向服务目录写任何文件**：被管进程 pid 记账从 `<服务 path>\logs\service.pid` 迁到 `my-service\logs\pids\<服务名>.pid`
 - **接口换血**：`GET /api/logs/{svc}`、`GET /api/host-log` 移除，新增 `GET /api/audit?n=&svc=&fail=1`（登记簿）与 `GET /api/host-err?n=`（宿主异常栈）；`POST /api/services/{svc}/start` 支持 `?via=` 记来源
 - **宿主日志文件改名**：`logs\service.log` → `logs\host.jsonl`（结构化事件流）+ `logs\host.err.log`（异常栈）+ `logs\host.pid`
@@ -427,21 +428,21 @@
 - `reg\some-service.json` 的 `path` 已指向 `C:/path/to/your-service`，README 样例同步（旧文档仍写便携目录，改 `path` 即换日志落点，属高频踩坑点）
 
 ### 已知遗留（明确不在本次范围）
-- detached 软件的本体日志留在程序自家（some-service 真日志 = `%LOCALAPPDATA%\SomeService\some-service.log`，38 MB 无轮转），框架不代理读取
-- 官方 `some-service\start.ps1` 将本体输出重定向到 TEMP 随机文件后删除，那份输出注定丢失
+- detached 软件的本体日志留在程序自家（某商业软件真日志 = `%LOCALAPPDATA%\<vendor>\<app>.log`，38 MB 无轮转），框架不代理读取
+- 官方 `start.ps1` 将本体输出重定向到 TEMP 随机文件后删除，那份输出注定丢失
 
 ---
 
 ## v0.1（2026-08-30）
 
-首个正式版本。本机服务管理框架（早期内部版本 的整体重写版），纯 Python 标准库 + 原生 JS 零依赖，`127.0.0.1:1236`。
+首个正式版本。本机服务管理框架（早期内部版本的整体重写版），纯 Python 标准库 + 原生 JS 零依赖，`127.0.0.1:1236`。
 
 ### 框架内核
 - 四模块分层：`scanner`（注册中心扫描）/ `runner`（进程原子操作）/ `state`（状态机 Manager）/ `api`（REST + 静态托管）
-- 状态机 `stopped → starting → running → stopping → failed`，monitor 线程每秒以健康探测校正并**强制超时收敛**（根治 早期内部版本 的 `starting` 永久残留类问题）
+- 状态机 `stopped → starting → running → stopping → failed`，monitor 线程每秒以健康探测校正并**强制超时收敛**（根治早期版本 `starting` 永久残留类问题）
 - 两种托管模式：`managed`（框架 Popen 本体 + `taskkill /T` 树杀）/ `detached`（点火器型：官方启停脚本，死活只信健康探测）
 - **防双开**（`external_alive` 统一判定）：port/http 走健康探测、process 走 pidfile 存活判据；冷启动检测到已有实例即拒绝重复拉起；自启遇已在运行则**跳过并归位 running**；detached 假失败（实例活着但超时）自动自愈
-- **路径安全**：注册条 `path` 钉死服务真实家（cwd 敏感软件防漂移空库——some-service 实弹教训）；`adapters\<svc>\` 可选转接层（相对路径优先命中，官方脚本回退）
+- **路径安全**：注册条 `path` 钉死服务真实家（cwd 敏感软件防漂移空库——某商业软件实弹教训）；`adapters\<svc>\` 可选转接层（相对路径优先命中，官方脚本回退）
 - 原子写注册条（临时文件 + `os.replace`）；日志句柄全生命周期回收
 
 ### 注册中心
@@ -460,7 +461,7 @@
 - 宿主 restart 无缝：detached 重建 + **端口重试绑定**（新旧进程交接零竞态，实测 pid 更替全程不断服）
 
 ### 接入实例
-- `reg\some-service.json`：AI agent 通信网关（8090），detached 直指官方脚本零副本；健康探测地址用 `localhost`（IPv6 监听面教训）
+- `reg\some-service.json`：某网关（8090），detached 直指官方脚本零副本；健康探测地址用 `localhost`（IPv6 监听面教训）
 
 ---
 生成自 v0.1 前的 17 次提交（`779f6d6` → `13c2f33`）。

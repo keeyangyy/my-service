@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 r"""my-service · tests/test_entry_output.py — detached 入口脚本输出的可见性回归
 
-背景（线上真事）：官方 start.ps1 凭 `%LOCALAPPDATA%\SomeService\some-service.pid` 里一个
+背景（线上真事）：官方 start.ps1 凭 `%LOCALAPPDATA%\<vendor>\<app>.pid` 里一个
 **已被系统回收复用**的 pid 就宣布 "SomeService is already running" 然后 exit 0——
 真进程根本没起。框架这边因为入口输出一律 DEVNULL，只能记下"健康检查超时(60s)"，
 真实原因彻底丢失，排查绕了远路。

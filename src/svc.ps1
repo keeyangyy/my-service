@@ -20,7 +20,7 @@ function Invoke-Api([string]$Method, [string]$Path, $Body = $null) {
     $args_ = @{ Method = $Method; Uri = "$Base$Path"; TimeoutSec = 8 }
     if ($null -ne $Body) { $args_.Body = ($Body | ConvertTo-Json); $args_.ContentType = "application/json" }
     try { Invoke-RestMethod @args_ }
-    catch { Write-Host "[连接失败] 先运行 C:\path\to\my-service\run\start.ps1 启动宿主 ($($_.Exception.Message))"; exit 1 }
+    catch { Write-Host "[连接失败] 先运行 run\start.ps1 启动宿主 ($($_.Exception.Message))"; exit 1 }
 }
 
 function Show-Events([string]$Svc, [int]$Count) {

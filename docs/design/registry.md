@@ -173,7 +173,7 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
 
 ```json
 {
-  "path": "C:/path/to/xxx",
+  "path": "C:/path/to/your-service",
   "mode": "managed",
   "start":  { "entry": "bin/server.exe" },
   "health": { "type": "port", "port": 33510 },
@@ -185,7 +185,7 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
 
 ```json
 {
-  "path": "C:/path/to/xxx",
+  "path": "C:/path/to/your-service",
   "mode": "managed",
   "start":    { "entry": "agent.exe" },
   "health":   { "type": "process" },
@@ -203,7 +203,7 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
   "start":  { "entry": "start.ps1", "detach": true, "env": { "SOME-SERVICE_NO_WAIT": "1" } },
   "stop":   { "script": "stop.ps1" },
   "health": { "type": "http", "url": "http://localhost:8090/health", "timeout_sec": 60 },
-  "identity": { "pidfile": "C:/Users/<user>/AppData/Local/SomeService/some-service.pid" }
+  "identity": { "pidfile": "C:/Users/<user>/AppData/Local/<vendor>/<app>.pid" }
 }
 ```
 

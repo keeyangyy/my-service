@@ -28,11 +28,11 @@ _STOP_SCRIPT_WAIT = 15.0  # stop_script 同步执行的兜底超时
 
 # 健康探测强制禁用代理：localhost 服务不该走系统代理（clash 等）。
 # 否则宿主进程若残留 http_proxy 环境变量，urllib 默认读代理会对本机端口
-# 探测失败（URLError），导致 some-service 等被误判 stopped/failed。
+# 探测失败（URLError），导致某些服务被误判 stopped/failed。
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 # 健康探测的 User-Agent——供服务侧识别"机器流量"并对其静默访问日志
-# （规范见 C:\path\to\README.md「日志合规」：/health 不该灌进业务日志）
+# （规范见项目 README「日志合规」：/health 不该灌进业务日志）
 HEALTH_UA = "my-service-health"
 
 

@@ -17,6 +17,12 @@ __pycache__/
 
 bak/
 
+# 面板快捷方式：每台机器按本机 config.json 生成，不入库
+run/Dashboard.url
+
+# 隐私检查的私有名词清单（本机专用，不入库）
+tools/privacy-deny.txt
+
 # 实例配置（本地保留，不入库）
 /reg/
 /config.json
