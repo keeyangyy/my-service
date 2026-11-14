@@ -42,7 +42,7 @@ start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File 
 - **黑窗仍在**：`-WindowStyle Hidden` 只隐藏 pwsh，管不住 `start` 自身开的 cmd 窗口，实机能感知到闪一下。
 - 计划任务方案（S4U / SYSTEM-AtStartup / nssm 服务）保留为 `install_autostart.ps1` 的 `-Mode` 备选。
 
-**无窗口阶段（2026-11-14 起）——vbs + pythonw**：`start /min` 的窗口根治不了，改为启动文件夹放 `.vbs`：
+**无窗口阶段（2026-11-14，已被下一节取代）——vbs + pythonw**：`start /min` 的窗口根治不了，改为启动文件夹放 `.vbs`：
 
 ```vbs
 ' my-service 开机自启（无窗口）
@@ -54,7 +54,22 @@ CreateObject("WScript.Shell").Run """<pythonw.exe>"" ""<app>\src\server.py""", 0
 - 面板「设置 → 开机自启」直接写/删该 vbs（`HostController.set_autostart`）；旧 cmd 自动清理，避免双启动
 - 卸载 = 删除该 vbs（`uninstall_autostart.ps1` 一并清理计划任务）
 
-**精简（2026-11-14）——只保留一种**：日常只用启动文件夹 vbs，故删除 `install_autostart.ps1` 里的 Logon / Boot / Nssm 三个分支。三种高级模式的历史用法留档于此，需要时手工执行：
+**快捷方式阶段（2026-11-14 起，现行）——.lnk + pythonw**：vbs 其实是多余的一层。
+
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start-my-service.lnk
+  TargetPath       : <pythonw.exe>            （便携包用 runtime\pythonw.exe）
+  Arguments        : "<app>\src\server.py"
+  WorkingDirectory : <app>\src
+```
+
+- **黑窗的真正原因是 cmd/conhost**，`pythonw.exe` 是 GUI 子系统、本身没有控制台 → 登录时无黑窗，不需要 `SW_HIDE` 技巧
+- 少一层 `wscript`：脚本宿主是杀软重点关照的对象，`.lnk` 由系统外壳直接解析；用户右键属性就能看清目标与参数
+- 写 lnk 借助系统自带 `powershell.exe` + `WScript.Shell` COM（**只在安装时用一次**，登录执行时不依赖任何脚本宿主）
+- 面板「设置 → 开机自启」写/删该 lnk；启用时顺带清理历史 vbs/cmd，避免双启动
+- 代价与 vbs 相同：存的是绝对路径，包目录搬家后需重装自启
+
+**精简（2026-11-14）——只保留一种**：日常只用启动文件夹自启，故删除 `install_autostart.ps1` 里的 Logon / Boot / Nssm 三个分支。三种高级模式的历史用法留档于此，需要时手工执行：
 
 ```powershell
 # Logon：登录触发、S4U 后台无窗（需管理员 / gsudo）
@@ -70,8 +85,8 @@ Register-ScheduledTask -TaskName StartMyService -Action $act `
 #   与 -Principal (New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest)
 
 # Nssm：注册为 Windows 服务
-nssm install MyService "C:\path\to\runtime\pythonw.exe" "C:\path\to\app\src\server.py"
-nssm set MyService AppDirectory "C:\path\to\app\src"
+nssm install MyService "C:\path\to\runtime\pythonw.exe" "C:\path\to\src\server.py"
+nssm set MyService AppDirectory "C:\path\to\src"
 ```
 
 ## AI/自动化会话改代码后如何重载宿主（实测 2026-09-08）

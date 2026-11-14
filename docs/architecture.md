@@ -62,7 +62,7 @@ scanner ← runner ← state ← api ← server
   ├─ 已在运行 → 归位 running（不重复拉起）
   └─ 未运行   → runner 拉起 → starting
   → 唤醒 monitor → 健康通过 running / 超时 failed
-  → audit.emit → logs/host.jsonl
+  → audit.emit → data/logs/host.jsonl
 ```
 
 ## 状态机（六态）
@@ -174,8 +174,8 @@ ttl_start = max(进程创建时间, 接管时刻) + 首次接入宽限（一个�
 | `data/pids/<服务>.pid` | 框架拉起的 PID | 瞬态 |
 | `data/cron_state.json` | 任务上次/下次运行 | 瞬态 |
 | `data/entry-out/<服务>.out` | 仅点火脚本输出（失败诊断） | 瞬态 |
-| `logs/host.jsonl` | 登记簿 | 记录 |
-| `logs/host.err.log` | 宿主异常栈 | 记录 |
+| `data/logs/host.jsonl` | 登记簿 | 记录 |
+| `data/logs/host.err.log` | 宿主异常栈 | 记录 |
 
 ## 实施状态
 

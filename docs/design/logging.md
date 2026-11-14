@@ -12,8 +12,8 @@
 
 | 流 | 文件 | 作者 | 内容 |
 |:--|:--|:--|:--|
-| 控制面 | `my-service/logs/host.jsonl` | 框架 | 状态变化事件，一行一条 |
-| 宿主自身 | `my-service/logs/host.err.log` | 框架 | 未捕获异常栈 |
+| 控制面 | `my-service/data/logs/host.jsonl` | 框架 | 状态变化事件，一行一条 |
+| 宿主自身 | `my-service/data/logs/host.err.log` | 框架 | 未捕获异常栈 |
 | 数据面 | `<服务 path>/logs/service.log` | 服务本人 | 业务日志，格式与轮转自定 |
 
 ## 入口输出（entry-out）

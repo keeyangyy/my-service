@@ -9,12 +9,12 @@
 
 - **服务散在各处**：每个服务一个目录、一套启停命令 → 在 `reg/` 放一条 JSON 就接入，面板与 CLI 统一操作。
 - **忘记关、端口被占**：内置健康探测与状态机，能收敛「启动中」这类卡死状态，按需服务空闲自动回收。
-- **开机要手动一个个点**：面板一键「开机自启」（启动文件夹 + vbs，无窗口），不用跑脚本。
-- **谁在跑、什么时候起的**：控制面写结构化登记簿 `logs/host.jsonl`，面板「事件」直接看。
+- **开机要手动一个个点**：面板一键「开机自启」（启动文件夹 + `.lnk` 快捷方式 → pythonw，无窗口），不用跑脚本。
+- **谁在跑、什么时候起的**：控制面写结构化登记簿 `data/logs/host.jsonl`，面板「事件」直接看。
 
 ## 界面
 
-![控制台主面板](docs/images/panel.png)
+![控制台主面板](docs/guide/images/panel.png)
 
 ## 特性
 
@@ -25,7 +25,7 @@
 | 健康判定 | `http` 探测地址或 `port` 端口探测；失败按状态机收敛为 `failed`，不会永久卡在 `starting` |
 | 定时任务 | `reg/tasks/<名称>.json` 声明 `daily` / `interval` 等调度，宿主内调度器到点执行 |
 | 面板 | 分组卡片、拖拽排序、服务/任务详情、日志查看、设置弹窗、宿主自身重启与停止 |
-| 备份与保留 | 一键备份 `reg/` + `config.json` + `adapters/` 到 `bak/`，只留最近 N 份（默认 7） |
+| 备份与保留 | 一键备份 `reg/` + `config.json` + `adapters/` 到 `data/bak/`，只留最近 N 份（默认 7） |
 | 跨源边界 | 默认只给本机来源的网页回 CORS 头，跨源写操作一律拒绝 |
 | 零依赖 | Python 标准库 + 原生 JS，克隆即可跑 |
 
@@ -66,7 +66,7 @@ Copy-Item .\examples\reg\tasks\example-task.json .\reg\tasks\
 ```powershell
 pwsh -File .\run\stop.ps1
 pwsh -File .\run\restart.ps1
-.\run\install_autostart.ps1         # 安装开机自启（启动文件夹 + vbs，无窗口）
+.\run\install_autostart.ps1         # 安装开机自启（启动文件夹 + .lnk，无窗口）
 ```
 
 ## 便携包（免装 Python）
@@ -75,21 +75,28 @@ pwsh -File .\run\restart.ps1
 pwsh -File .\tools\build-portable.ps1      # 产物：dist\my-service-<版本>.zip（约 11 MB）
 ```
 
-解压后双击 `start.cmd`（后台无窗口），`stop.cmd` 停止。包结构：
+解压后双击 `start.cmd`（后台无窗口），`stop.cmd` 停止。包根就是仓库结构，**没有 `app/` 层**：
 
 ```
 my-service-x.y.z/
-├── runtime/                # 内嵌 Python 3.12（升级不动）
-├── app/                    # 代码 + 文档（升级只替换这里）
-├── data/ logs/ reg/ bak/   # 运行态与注册条（升级保留）
-├── config.json             # 数据根配置
-├── start.cmd / stop.cmd    # 稳定入口（不依赖 pwsh）
+├── runtime/                  # 内嵌 Python 3.12（升级不动）
+├── src/  web/  run/          # 代码与入口
+├── docs/guide/               # 使用说明（使用指南 / 注册指南 / 面板截图）
+├── README.md CHANGELOG.md LICENSE
+├── config.json               # 数据根配置
+├── reg/                      # 注册条（你手写；升级保留）
+├── data/                     # 运行时数据（升级保留）
+│   ├── logs/                 #   记录：只追加，随时可删
+│   ├── bak/                  #   备份（reg + config.json）
+│   └── update/               #   升级暂存
+├── start.cmd / stop.cmd      # 稳定入口（不依赖 pwsh）
 └── VERSION.txt
 ```
 
 - 首次 `start.cmd` 会在包根生成 `Dashboard.url`
-- 开机自启：面板 ⚙ 设置里勾选，或 `app\run\install_autostart.ps1`（vbs 直接指向 `app\src\server.py`，升级替换 `app/` 后不用重装）
-- 升级：替换 `app/` 即可，`data/ logs/ reg/ config.json` 不动
+- 开机自启：面板 ⚙ 设置里勾选，或 `run\install_autostart.ps1`（`.lnk` 指向 `src\server.py`，升级替换代码目录后不用重装）
+- 升级：面板「检查更新」→ 下载校验后重启，`src/ web/ run/ docs/` 与三个文档按清单替换，旧的留在 `data/bak/code-prev/` 可回滚；`reg/ data/ config.json` 一律不动
+- 开发者向文档（架构、设计、排坑）只留在仓库，不进包
 - 自定义数据位置：设置环境变量 `MY_SERVICE_HOME` 指向任意目录
 
 ## 注册第一个服务（三步）
@@ -98,7 +105,7 @@ my-service-x.y.z/
 2. 在 `reg\services\` 放一条注册条。
 3. 刷新面板 —— 服务出现，无需重启宿主。
 
-最小注册条（完整字段见 [docs/design/registry.md](docs/design/registry.md)）：
+最小注册条（完整字段见 [docs/design/registry.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/registry.md)）：
 
 ```json
 {
@@ -126,7 +133,7 @@ my-service-x.y.z/
 
 ## 定时任务
 
-放在 `reg\tasks\<名称>.json`，调度类型与参数见 [docs/design/cron.md](docs/design/cron.md)；
+放在 `reg\tasks\<名称>.json`，调度类型与参数见 [docs/design/cron.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cron.md)；
 面板里可直接看上次结果、手动「立即运行」。
 
 ## 目录结构
@@ -139,14 +146,15 @@ my-service/
 │   ├── services/<名称>.json   # 服务注册条（唯一发现源）
 │   └── tasks/<名称>.json      # 定时任务注册条
 ├── adapters/                  # 可选转接层：<名称>/ 下放薄适配脚本，自动优先命中
-├── run/                       # 人的入口（双击 start/stop；详见 run/README.md）
-│   ├── README.md              # 入口说明：哪个能双击、哪个是给脚本用的
+├── run/                       # 人的入口（双击 start/stop）
 │   ├── start.ps1 / stop.ps1 / restart.ps1
 │   ├── install_autostart.ps1 / uninstall_autostart.ps1
 │   └── Dashboard.url          # 首次启动时按本机配置生成（不入库）
-├── logs/                      # 记录：host.jsonl 登记簿、host.err.log（不入库）
-├── data/                      # 数据：host.pid、pids/、cron_state.json（不入库）
-├── bak/                       # 实例配置备份，保留最近 N 份（不入库）
+├── data/                      # 运行时数据（整目录不入库，本项目约定）
+│   ├── logs/                  #   记录：host.jsonl 登记簿、host.err.log 异常栈
+│   ├── bak/                   #   备份：实例配置 + 升级前的旧代码（code-prev）
+│   ├── update/                #   升级暂存：code.new / pending.json
+│   └── pids/ host.pid cron_state.json entry-out/
 ├── src/
 │   ├── server.py              # 组装入口（config → Scanner → Manager → Scheduler → HTTP）
 │   ├── service_cli.py         # 启停引擎（run/*.ps1 与便携包 cmd 的底层）
@@ -159,8 +167,11 @@ my-service/
 │   └── check_privacy.ps1      # 公开发布前的隐私检查
 ├── examples/                  # 示例注册条 + 可运行 demo（examples/demo）
 ├── tests/                     # 单元测试
-├── docs/                      # 设计与使用文档
-│   └── images/                # 面板截图（README 引用）
+├── docs/                      # 文档
+│   ├── guide/                 # 用户向：使用指南 / 注册指南（+ images/ 面板截图，进便携包）
+│   ├── design/                # 开发者向：注册条 / 定时任务 / 日志 / CORS 设计
+│   ├── analysis/              # 排坑记录：历史踩坑与方案演进
+│   └── architecture.md        # 模块职责与数据流
 ├── AGENTS.md                  # 项目规则入口（框架边界 / 提交与发版规范）
 ├── CONTRIBUTING.md            # 贡献指南与公开发布规则（脱敏清单）
 ├── SECURITY.md                # 威胁模型与漏洞报告
@@ -179,7 +190,7 @@ my-service/
 | `cors_local_only` | `true` | 仅本机来源网页可获得跨源许可 |
 | `monitor.fast_sec` / `idle_sec` / `panel_grace_sec` | `1` / `10` / `15` | 面板可见/隐藏时的刷新间隔、活跃宽限 |
 | `scheduler.tick_sec` | `10` | 定时任务检查间隔 |
-| `backup.keep` | `7` | `bak/` 保留份数，`0` = 不自动清理 |
+| `backup.keep` | `7` | `data/bak/` 保留份数，`0` = 不自动清理 |
 
 这些都能在面板 ⚙ 设置里改，保存后立即生效并写回 `config.json`。
 
@@ -187,24 +198,24 @@ my-service/
 
 控制面只绑回环地址、跨源写操作默认拒绝、**没有账户体系**——任何本机进程本就能直接调用接口，
 这是刻意的取舍。不要把 `host` 改成 `0.0.0.0` 后仍不加认证。细节与漏洞报告方式见
-[SECURITY.md](SECURITY.md)。
+[SECURITY.md](https://github.com/keeyangyy/my-service/blob/master/SECURITY.md)。
 
 ## 文档
 
 | 想知道什么 | 文档 |
 |:--|:--|
-| 模块职责、依赖、线程、数据流、状态机、身份判定 | [docs/architecture.md](docs/architecture.md) |
-| 注册条字段、四种模式、健康地址选择 | [docs/design/registry.md](docs/design/registry.md) |
-| 按需服务：点开即启、空闲回收 | [docs/design/on-demand.md](docs/design/on-demand.md) |
-| 日志边界、登记簿事件字典 | [docs/design/logging.md](docs/design/logging.md) |
-| 定时任务：协议、调度语义、行内编辑 | [docs/design/cron.md](docs/design/cron.md) |
-| 面板分组、设置面板 | [docs/design/panel.md](docs/design/panel.md) |
-| 控制面跨源（CORS）策略 | [docs/design/cors.md](docs/design/cors.md) |
+| 模块职责、依赖、线程、数据流、状态机、身份判定 | [docs/architecture.md](https://github.com/keeyangyy/my-service/blob/master/docs/architecture.md) |
+| 注册条字段、四种模式、健康地址选择 | [docs/design/registry.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/registry.md) |
+| 按需服务：点开即启、空闲回收 | [docs/design/on-demand.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/on-demand.md) |
+| 日志边界、登记簿事件字典 | [docs/design/logging.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/logging.md) |
+| 定时任务：协议、调度语义、行内编辑 | [docs/design/cron.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cron.md) |
+| 面板分组、设置面板 | [docs/design/panel.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/panel.md) |
+| 控制面跨源（CORS）策略 | [docs/design/cors.md](https://github.com/keeyangyy/my-service/blob/master/docs/design/cors.md) |
 | 日常操作、REST API、快速上手 | [docs/guide/usage.md](docs/guide/usage.md) |
 | 注册新服务、接入检查单 | [docs/guide/registration.md](docs/guide/registration.md) |
-| 历史排坑（冷启动慢 / 自启黑窗 / 会话绑定） | [docs/analysis/pitfalls.md](docs/analysis/pitfalls.md) |
-| 项目规则、提交与发版规范 | [AGENTS.md](AGENTS.md) |
-| 跑 demo 体验完整链路 | [examples/demo/README.md](examples/demo/README.md) |
+| 历史排坑（冷启动慢 / 自启黑窗 / 会话绑定） | [docs/analysis/pitfalls.md](https://github.com/keeyangyy/my-service/blob/master/docs/analysis/pitfalls.md) |
+| 项目规则、提交与发版规范 | [AGENTS.md](https://github.com/keeyangyy/my-service/blob/master/AGENTS.md) |
+| 跑 demo 体验完整链路 | [examples/demo/README.md](https://github.com/keeyangyy/my-service/blob/master/examples/demo/README.md) |
 
 ## 开发与测试
 
@@ -213,8 +224,8 @@ python -m unittest discover -s tests    # 全量单测
 pwsh -File .\tools\check_privacy.ps1    # 提交前隐私检查
 ```
 
-项目规则（框架边界、运行态约定、改动流程）见 [AGENTS.md](AGENTS.md)；
-代码约定、提交规范与**公开发布规则（脱敏清单）**见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+项目规则（框架边界、运行态约定、改动流程）见 [AGENTS.md](https://github.com/keeyangyy/my-service/blob/master/AGENTS.md)；
+代码约定、提交规范与**公开发布规则（脱敏清单）**见 [CONTRIBUTING.md](https://github.com/keeyangyy/my-service/blob/master/CONTRIBUTING.md)。
 
 ## 许可
 

@@ -41,10 +41,11 @@ cd C:\path\to\my-service
 # 图形入口：直接打开 run/ 文件夹，运行 start.ps1，或双击 Dashboard.url（首次 start 时自动生成）
 pwsh -File .\run\start.ps1               # 命令行起宿主
 start http://127.0.0.1:1236              # 打开面板
-.\run\install_autostart.ps1              # 安装自启（默认 Startup 启动文件夹方案）
+.\run\install_autostart.ps1              # 安装开机自启（启动文件夹 .lnk → pythonw，无窗口）
 ```
 
-`install_autostart.ps1` 可用 `-Mode Logon/Boot` 切换到计划任务方案；卸载用 `uninstall_autostart.ps1`（同时清理计划任务，双保险）。
+自启是启动文件夹里的 `start-my-service.lnk`（目标 `pythonw.exe` + `src\server.py`），登录时不弹窗、不依赖 pwsh；面板 ⚙ 设置里的开关等价。
+卸载用 `uninstall_autostart.ps1`（一并清理历史 vbs/cmd 与计划任务）。计划任务 / Nssm 等高级方式已从脚本移除，手工做法见仓库内 `docs/analysis/pitfalls.md`。
 
 ## 注意（AI / 自动化会话）
 
@@ -54,4 +55,33 @@ agent 启动的宿主会随会话结束消失（Windows Job Object 连带清理�
 - agent 改完代码后用 `POST /api/host/restart`（等价面板 `⟳ 重启`）重载，新进程由旧宿主派生，能跨会话存活；
 - 禁止 agent 用 `python src/server.py` 后台直跑方式长期托管宿主。
 
-完整背景见 [analysis/pitfalls.md](../analysis/pitfalls.md#ai自动化会话改代码后如何重载宿主实测-2026-09-08)。
+完整背景见仓库（不在便携包内）`docs/analysis/pitfalls.md` 的「AI/自动化会话改代码后如何重载宿主」一节。
+
+## 便携包（免装 Python）
+
+```
+my-service-x.y.z\
+├── start.cmd        ← 双击启动（后台无窗口）
+├── stop.cmd         ← 停止
+├── runtime\         ← 内嵌 Python 3.12，不用另装
+├── src\ web\ run\ docs\guide\
+├── reg\             ← 注册条（你手写）
+└── data\            ← 运行时数据（logs\ bak\ update\）
+```
+
+- 包根就是代码根，**没有 `app/` 层**；`.lnk` 自启指向 `src\server.py`，升级只换代码目录
+- 升级：面板「检查更新」→ 下载校验 → 重启；`src/ web/ run/ docs/` 按清单替换，旧的留在 `data\bak\code-prev\` 可回滚，`reg/ data/ config.json` 不动
+- 端口等配置改包根 `config.json`；想换数据位置就设置 `MY_SERVICE_HOME`
+- 包里只带用户向文档（本文件 + `registration.md` + 截图），架构/设计/排坑留在仓库
+
+## 目录与数据：哪些能删
+
+| 路径 | 性质 | 删了会怎样 |
+|:--|:--|:--|
+| `reg\services\`、`reg\tasks\` | 你手写的注册条 | 服务 / 任务从面板消失 |
+| `data\logs\` | 记录（登记簿 host.jsonl、异常栈 host.err.log） | 无影响，下次启动重建 |
+| `data\bak\` | 备份（reg + config.json、升级前的旧代码） | 失去回滚点 |
+| `data\update\` | 升级暂存 | 未生效的升级丢失，重新下载即可 |
+| `data\cron_state.json` | 定时任务状态 | 任务重算下次触发时间 |
+
+`data/` 整个删掉 = 丢 cron 状态与备份（服务注册条在 `reg/`，不受影响）；`reg/` 是事实源，删了要重写。

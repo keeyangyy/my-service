@@ -19,7 +19,7 @@ python -m unittest discover -s tests   # 全量单测
 ```
 
 - 面板：<http://127.0.0.1:1236>
-- 日常排查：`logs/host.jsonl`（登记簿）、`logs/host.err.log`（异常栈）
+- 日常排查：`data/logs/host.jsonl`（登记簿）、`data/logs/host.err.log`（异常栈）
 - 首次 `start` 会按本机 `config.json` 生成 `run/Dashboard.url`（不入库）
 
 ## 代码约定
@@ -50,7 +50,7 @@ docs(readme): 补齐快速开始与安全边界
 | 真实用户名、主机名、内网 IP | `<user>`、`<host>`、`127.0.0.1` |
 | 你实际接入的第三方服务/软件名（尤其是小众商业软件） | `your-service`、`some-service`、`<vendor>/<app>` |
 | token / cookie / 密钥 / 账号密码 / `.env` | 环境变量名或占位符，永远不要写值 |
-| `reg/`、`data/`、`logs/`、`bak/`、`config.json` | 已由 `.gitignore` 排除，不要 `git add -f` |
+| `reg/`、`data/`（含 logs/、bak/）、`config.json` | 已由 `.gitignore` 排除，不要 `git add -f` |
 | 本机浏览器/软件安装路径（如快捷方式的 `IconFile`） | 交给系统默认处理，或按本机生成 |
 
 新增示例、文档、测试时请直接用泛化名——**不要**先写真实名再回头改，历史里会留下痕迹。

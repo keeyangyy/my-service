@@ -69,7 +69,7 @@ PID 来源：handle / framework-pidfile / service-pidfile / port / process
 | scheduler 间隔 | 10 秒 | 定时任务检查频率 |
 | 事件保留天数 | 7 天 | `audit_retention_days`，0 = 永不清理 |
 | 备份保留份数 | 7 份 | `backup.keep`，0 = 不自动清理；保存后立即收敛一次 |
-| 备份 | — | 立即备份 `reg/` + `config.json` + `adapters/` 到 `bak/`（不进 git） |
+| 备份 | — | 立即备份 `reg/` + `config.json` + `adapters/` 到 `data/bak/`（不进 git） |
 
 写入 `config.json`，重启后仍生效。
 

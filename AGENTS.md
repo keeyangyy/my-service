@@ -8,10 +8,10 @@
 
 - **框架边界**：`src/` 只放框架代码，永不出现任何被管服务的业务源码。
 - **注册条是唯一发现源**：服务通过 `reg/services/<名称>.json` 接入，不要在代码里硬编码服务名单。
-- **日志与数据分离**：`logs/` 只追加、可随时删；`data/` 是运行态账本（pid/状态/顺序），删了行为会变。健康探测不写访问日志。
+- **运行时数据统一在 `data/` 下**：`data/logs/` 只追加、可随时删；`data/` 其余是运行态账本与备份（pid/状态/顺序/bak），删了行为会变。健康探测不写访问日志。
 - **零第三方依赖**：Python 标准库 + 原生 JS。不要把 `requirements.txt` / `package.json` 带进主流程。
 - **只绑回环**：控制面默认 `127.0.0.1`。要改 `host` 必须同时加认证手段，否则不要改。
-- **公开仓库禁止出现**：本机绝对路径、用户名、真实被管服务名、token/cookie/密钥、`reg/` `data/` `logs/` `bak/` `config.json`（均已在 `.gitignore`）。
+- **公开仓库禁止出现**：本机绝对路径、用户名、真实被管服务名、token/cookie/密钥、`reg/` `data/` `config.json`（均已在 `.gitignore`）。
 - **提交前必须**：`python -m unittest discover -s tests` 与 `pwsh -File tools/check_privacy.ps1` 双绿。
 
 ## 按需读取
@@ -34,7 +34,7 @@
 
 - 截图、演示图、示例数据**只能来自 demo 环境**：`pwsh -File examples/demo/start-demo.ps1`（独立端口 1246、独立 `demo-reg`），不要拿本机真实实例截图。
 - 截图前先核对页面连的是哪个实例：看顶栏端口与注册服务名，或查 `/api/services`。
-- 图片放 `docs/images/`，README 只放必要的一张主面板图。
+- 图片放 `docs/guide/images/`（便携包只带 `docs/guide/`，图片必须跟它在同一子树），README 只放必要的一张主面板图。
 - 入库前逐张看过：不得出现真实服务名、本机路径、用户名、真实软件名。
 
 ## 代码约定
@@ -59,7 +59,6 @@
    - `ruff check src tests`（本地 ruff 必须是 **0.17.5**，与 CI 一致；版本不同规则集会漂，出现过 CI 红而本地绿）
    - `python -m unittest discover -s tests`
    - `pwsh -File tools/check_privacy.ps1`
-4. 更新 `CHANGELOG.md`。
 4. 更新 `CHANGELOG.md`。
 
 ## 提交规范
