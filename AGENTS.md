@@ -74,5 +74,14 @@
 1. `CHANGELOG.md`：把 Unreleased 折叠为 `## vX.Y.Z（日期）`，补齐本期遗漏条目。
 2. 改 `src/core/host.py` 的 `VERSION`（SemVer：新功能/重构 → MINOR+1，修复 → PATCH+1）。
 3. 全量单测绿后提交：`release: 发布 vX.Y.Z`；body 首行「更新内容（自 <上一版本> 以来）：」，小节依次为 `破坏性变更` / `新增功能` / `重构 / 性能` / `修复` / `升级说明` / `注意`。
-4. 打 Annotated Tag：`git tag -a vX.Y.Z -m "<一句话摘要>"`，随后推送 master 与 tag。
+4. 打 Annotated Tag 并推送：`git tag -a vX.Y.Z -m "<一句话摘要>"` → `git push origin master` → `git push origin vX.Y.Z`。
+5. **创建 GitHub Release（不可省）**：tag 只是 git 对象，Release 才是仓库页面上那一栏；只推 tag 会得到"有 tag、没 Release"。
+   ```powershell
+   gh release create vX.Y.Z --title 'vX.Y.Z' --notes-file <CHANGELOG 中该版本段落> -R <owner>/<repo>
+   ```
+6. 发布后自检：
+   - `gh release list` 里新版本为 `Latest`
+   - `gh api repos/<owner>/<repo>` 的 `license` 已被识别
+   - 仓库网页上 README 图片能正常显示
+   - `git ls-remote --tags origin` 与本地 tag 一致
 
