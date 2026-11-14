@@ -69,18 +69,17 @@ pwsh -File .\run\restart.ps1
 .\run\install_autostart.ps1         # 安装开机自启（启动文件夹 + .lnk，无窗口）
 ```
 
-## 便携包（免装 Python）
+## 便携包（裁切打包）
 
 ```powershell
-pwsh -File .\tools\build-portable.ps1      # 产物：dist\my-service-<版本>.zip（约 11 MB）
+pwsh -File .\tools\build-portable.ps1      # 产物：dist\my-service-<版本>.zip（约 0.5 MB）
 ```
 
-解压后双击 `start.cmd`（后台无窗口），`stop.cmd` 停止。包根就是仓库结构，**没有 `app/` 层**：
+只打运行必需的文件，**不内置 Python**——目标机器需要 Python 3.10+。解压后双击 `run\start.ps1` 启动、`run\stop.ps1` 停止。包根就是仓库结构，**没有 `app/` 层**：
 
 ```
 my-service-x.y.z/
-├── runtime/                  # 内嵌 Python 3.12（升级不动）
-├── src/  web/  run/          # 代码与入口
+├── src/  web/  run/          # 代码与入口（双击 run\start.ps1 启停）
 ├── docs/guide/               # 使用说明（使用指南 / 注册指南 / 面板截图）
 ├── README.md CHANGELOG.md LICENSE
 ├── config.json               # 数据根配置
@@ -89,13 +88,13 @@ my-service-x.y.z/
 │   ├── logs/                 #   记录：只追加，随时可删
 │   ├── bak/                  #   备份（reg + config.json）
 │   └── update/               #   升级暂存
-├── start.cmd / stop.cmd      # 稳定入口（不依赖 pwsh）
-└── VERSION.txt
+└── VERSION.txt               # 打包标记（也是「支持一键升级」的判据）
 ```
 
-- 首次 `start.cmd` 会在包根生成 `Dashboard.url`
+- 依赖：目标机器需要 **Python 3.10+**；要连解释器一起分发就加 `-WithRuntime`（包根多一个 `runtime/`，约 +11 MB）
+- 首次启动会在 `run\` 生成 `Dashboard.url`
 - 开机自启：面板 ⚙ 设置里勾选，或 `run\install_autostart.ps1`（`.lnk` 指向 `src\server.py`，升级替换代码目录后不用重装）
-- 升级：面板「检查更新」→ 下载校验后重启，`src/ web/ run/ docs/` 与三个文档按清单替换，旧的留在 `data/bak/code-prev/` 可回滚；`reg/ data/ config.json` 一律不动
+- 升级：面板「检查更新」→ 点更新 → 自动下载并重启，重启瞬间按清单替换 `src/ web/ run/ docs/` 与三个文档；旧的留在 `data/bak/code-prev/` 可回滚，`reg/ data/ config.json` 一律不动
 - 开发者向文档（架构、设计、排坑）只留在仓库，不进包
 - 自定义数据位置：设置环境变量 `MY_SERVICE_HOME` 指向任意目录
 
@@ -157,13 +156,12 @@ my-service/
 │   └── pids/ host.pid cron_state.json entry-out/
 ├── src/
 │   ├── server.py              # 组装入口（config → Scanner → Manager → Scheduler → HTTP）
-│   ├── service_cli.py         # 启停引擎（run/*.ps1 与便携包 cmd 的底层）
+│   ├── service_cli.py         # 启停引擎（run/*.ps1 的底层，含升级落地）
 │   ├── svc.ps1                # 终端 / AI 会话用的服务管理 CLI
 │   └── core/                  # api / state / scheduler / runner / scanner / audit / backup
 ├── web/                       # 前端静态资源（index.html / app.js / style.css / opening.html）
 ├── tools/
-│   ├── build-portable.ps1     # 便携包构建（runtime 缓存 + 组装 + zip）
-│   ├── portable/              # 包根启动器模板（start.cmd / stop.cmd）
+│   ├── build-portable.ps1     # 便携包构建（裁切组装 + zip；-WithRuntime 可带解释器）
 │   └── check_privacy.ps1      # 公开发布前的隐私检查
 ├── examples/                  # 示例注册条 + 可运行 demo（examples/demo）
 ├── tests/                     # 单元测试

@@ -50,7 +50,7 @@ CreateObject("WScript.Shell").Run """<pythonw.exe>"" ""<app>\src\server.py""", 0
 ```
 
 - `wscript` 以 SW_HIDE(0) 启动 `pythonw.exe`（GUI 子系统，本身无控制台）→ 登录时**完全无黑窗**
-- 不依赖 pwsh；便携包用 `runtime\pythonw.exe`，源码模式用系统同名 pythonw
+- 不依赖 pwsh；解释器优先包内 `runtime\pythonw.exe`（`-WithRuntime` 打包时），否则用系统同名 pythonw
 - 面板「设置 → 开机自启」直接写/删该 vbs（`HostController.set_autostart`）；旧 cmd 自动清理，避免双启动
 - 卸载 = 删除该 vbs（`uninstall_autostart.ps1` 一并清理计划任务）
 
@@ -58,7 +58,7 @@ CreateObject("WScript.Shell").Run """<pythonw.exe>"" ""<app>\src\server.py""", 0
 
 ```
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start-my-service.lnk
-  TargetPath       : <pythonw.exe>            （便携包用 runtime\pythonw.exe）
+  TargetPath       : <pythonw.exe>            （优先包内 runtime\pythonw.exe，否则系统 pythonw）
   Arguments        : "<app>\src\server.py"
   WorkingDirectory : <app>\src
 ```

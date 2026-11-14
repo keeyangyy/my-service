@@ -57,20 +57,20 @@ agent 启动的宿主会随会话结束消失（Windows Job Object 连带清理�
 
 完整背景见仓库（不在便携包内）`docs/analysis/pitfalls.md` 的「AI/自动化会话改代码后如何重载宿主」一节。
 
-## 便携包（免装 Python）
+## 便携包（裁切打包）
 
 ```
 my-service-x.y.z\
-├── start.cmd        ← 双击启动（后台无窗口）
-├── stop.cmd         ← 停止
-├── runtime\         ← 内嵌 Python 3.12，不用另装
+├── run\start.ps1    ← 双击启动（需要系统 Python 3.10+）
+├── run\stop.ps1     ← 停止
 ├── src\ web\ run\ docs\guide\
 ├── reg\             ← 注册条（你手写）
 └── data\            ← 运行时数据（logs\ bak\ update\）
 ```
 
+- 包里**不带 Python**：目标机器要装 Python 3.10+；要连同解释器一起分发，打包时加 `-WithRuntime`
 - 包根就是代码根，**没有 `app/` 层**；`.lnk` 自启指向 `src\server.py`，升级只换代码目录
-- 升级：面板「检查更新」→ 下载校验 → 重启；`src/ web/ run/ docs/` 按清单替换，旧的留在 `data\bak\code-prev\` 可回滚，`reg/ data/ config.json` 不动
+- 升级：面板「检查更新」→ 点更新 → 自动下载并重启，重启瞬间替换 `src/ web/ run/ docs/`；旧代码留 `data\bak\code-prev\` 可回滚，`reg/ data/ config.json` 不动
 - 端口等配置改包根 `config.json`；想换数据位置就设置 `MY_SERVICE_HOME`
 - 包里只带用户向文档（本文件 + `registration.md` + 截图），架构/设计/排坑留在仓库
 

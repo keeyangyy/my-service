@@ -14,10 +14,10 @@
 
 ### 新增功能
 
-- 便携包（免装 Python）
-  - `tools/build-portable.ps1` 生成 `dist/my-service-<版本>.zip`（约 11 MB）
-  - 结构：**包根 = 仓库结构**（`src/` `web/` `run/` `docs/guide/`）+ 内嵌 `runtime/`（Python 3.12）+ `reg/`（注册条）+ `data/`（logs/bak/update）
-  - 包根 `start.cmd` / `stop.cmd`，不依赖 pwsh
+- 便携包（裁切打包，不内置 Python）
+  - `tools/build-portable.ps1` 生成 `dist/my-service-<版本>.zip`（约 0.5 MB）
+  - 结构：**包根 = 仓库结构**（`src/` `web/` `run/` `docs/guide/`）+ `reg/`（注册条）+ `data/`（logs/bak/update）+ `VERSION.txt`
+  - 入口就是 `run/start.ps1` / `run/stop.ps1`（系统 Python 3.10+）；`-WithRuntime` 可选内嵌解释器
 - 面板 header 显示自启状态（启动文件夹 / 计划任务 / 未设）
 - `examples/demo`：可运行的示例环境
   - 一键复制源码到临时目录、用独立端口起实例，含 4 条示例注册条与 2 个示例服务
@@ -27,15 +27,16 @@
 ### 重构
 
 - 代码根与数据根（home）分离
-  - `src/server.py` 新增 `_resolve_home`：`MY_SERVICE_HOME` → 便携包（上一级有 `runtime/python.exe`）→ 源码模式
-  - `src/ctl.ps1` / `src/svc.ps1` / `run/install_autostart.ps1` 同步支持；便携包自动使用 `runtime/python.exe`
-  - 面板快捷方式：源码模式放 `run/`，便携包放包根
+  - `src/server.py` 新增 `_resolve_home`：`MY_SERVICE_HOME` → 否则 = 代码根（包根与代码根同级）
+  - `src/svc.ps1` / `run/install_autostart.ps1` 同步；解释器优先包内 `runtime/python.exe`（`-WithRuntime` 时）
+  - 面板快捷方式统一放 `run/Dashboard.url`（每台机器生成，升级替换 `run/` 后自动重建）
 - 运行时数据统一收进 `data/`（本项目约定：`logs/`、`bak/` 都不再位于顶层）
   - 日志落 `data/logs/`、备份落 `data/bak/`、升级暂存 `data/update/`；`.gitignore` 一行 `data/` 收口
 - 便携包结构改为「包根 = 仓库结构」，删除 `app/` 层
-  - `tools/build-portable.ps1` 直接组装 `src/ web/ run/` + 三个文档 + `runtime/`，数据骨架只建 `data/logs`、`data/bak`、`reg/services`、`reg/tasks`
+  - `tools/build-portable.ps1` 直接组装 `src/ web/ run/` + 三个文档，数据骨架只建 `data/logs`、`data/bak`、`reg/services`、`reg/tasks`
   - 文档只带用户向的 `docs/guide/`（含 `images/panel.png`），架构/设计/排坑留在仓库
-  - 升级按清单替换 `src/ web/ run/ docs/` + 三个文档：新代码由 `start.cmd` 调 `src/service_cli.py update-apply` 就位，旧代码留 `data/bak/code-prev/` 可回滚
+  - 升级按清单替换 `src/ web/ run/ docs/` + 三个文档：面板点更新 → 前端自动重启 → 旧宿主派生 `service_cli.py apply-update-and-start`，等旧进程退出后替换代码再起新宿主，旧代码留 `data/bak/code-prev/` 可回滚
+  - 「是否支持一键升级」改用包根 `VERSION.txt` 判据（不再依赖 `runtime/`），源码工作区一律拒绝
 - 开机自启改用启动文件夹 `.lnk` 快捷方式（取代 `vbs`）
   - 目标 `pythonw.exe` + `src/server.py`，pythonw 无控制台 → 登录无窗口；少一层 `wscript`，右键属性即可查看
   - `.lnk` 用系统自带 `powershell.exe` + `WScript.Shell` 生成（只在安装时用），面板开关与 `run/install_autostart.ps1` 行为一致，并清理历史 vbs/cmd
