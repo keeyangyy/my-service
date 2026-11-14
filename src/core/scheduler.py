@@ -578,7 +578,7 @@ class Scheduler:
                 return None, "every_sec 需 >= 10 秒"
         return sched, ""
 
-    def _commit_patch(self, name: str, spec: "CronSpec", runtime_patch: dict,
+    def _commit_patch(self, name: str, spec: CronSpec, runtime_patch: dict,
                       schedule_patch: dict | None) -> tuple[bool, str, str]:
         """写回注册条并重解析；新配置无效则回滚。"""
         old_runtime = dict(spec.raw.get("runtime") or {})

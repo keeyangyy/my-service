@@ -403,49 +403,68 @@ def read_pidfile(path: Path) -> int | None:
         return None
 
 
+def _health_process(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, str, float | None]:
+    pid, _src, _conf = locate(spec, handle)
+    if pid is None:
+        return False, "进程不存在", None
+    return True, "", None
+
+
+def _last_active_of(payload: object) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    reported = payload.get("last_active")
+    return float(reported) if isinstance(reported, (int, float)) else None
+
+
+def _service_mismatch(spec: Spec, payload: object) -> bool:
+    """响应体自报的 service 与注册条声明不符；无声明或无字段时不算不符。"""
+    if not spec.health_service or not isinstance(payload, dict):
+        return False
+    reported = payload.get("service")
+    if not isinstance(reported, str):
+        return False
+    text = reported.strip()
+    return bool(text) and text != spec.health_service
+
+
+def _health_http(spec: Spec) -> tuple[bool, str, float | None]:
+    assert spec.health_url
+    req = urllib.request.Request(spec.health_url, headers={"User-Agent": HEALTH_UA})
+    with _NO_PROXY_OPENER.open(req, timeout=2.5) as resp:
+        payload: object = None
+        try:
+            payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception:  # noqa: BLE001 - 响应非 JSON/空体，不影响健康结论
+            payload = None
+        last_active = _last_active_of(payload)
+        if _service_mismatch(spec, payload):
+            reported = payload.get("service")
+            return (False, f"健康目标自报 service={reported}，非本服务", last_active)
+        if getattr(resp, "status", 200) < 400:
+            return True, "", last_active
+        return False, f"HTTP {resp.status}", last_active
+
+
 def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, str, float | None]:
     """返回 (通过?, 说明, last_active?)。
 
-    http 型健康响应体是 JSON 且带数字字段 last_active 时解析出来——
-    供 on_demand 模式空闲回收用（服务自报"最近一次业务请求"时间戳；
-    框架自身的探测不算活动，协议见 README）。解析失败/无字段不影响健康结论。
+    http 型健康响应体是 JSON 且带数字字段 last_active 时解析出来——供 on_demand
+    模式空闲回收用（服务自报"最近一次业务请求"时间戳；框架自身的探测不算活动）。
+    解析失败/无字段不影响健康结论。
     """
     htype = spec.health_type
     try:
         if htype == "none":
             return True, "", None
         if htype == "process":
-            pid, _src, _conf = locate(spec, handle)
-            if pid is None:
-                return False, "进程不存在", None
-            return True, "", None
+            return _health_process(spec, handle)
         if htype == "port":
             assert spec.health_port is not None
             with socket.create_connection(("127.0.0.1", spec.health_port), timeout=1.5):
                 return True, "", None
         if htype == "http":
-            assert spec.health_url
-            req = urllib.request.Request(spec.health_url,
-                                        headers={"User-Agent": HEALTH_UA})
-            with _NO_PROXY_OPENER.open(req, timeout=2.5) as resp:
-                last_active: float | None = None
-                try:
-                    payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
-                    reported = payload.get("last_active") if isinstance(payload, dict) else None
-                    if isinstance(reported, (int, float)):
-                        last_active = float(reported)
-                except Exception:  # noqa: BLE001 - 响应非 JSON/空体，不影响健康结论
-                    pass
-                if spec.health_service:
-                    reported = payload.get("service") if isinstance(payload, dict) else None
-                    if (isinstance(reported, str) and reported.strip()
-                            and reported.strip() != spec.health_service):
-                        return (False,
-                                f"健康目标自报 service={reported}，非本服务",
-                                last_active)
-                if getattr(resp, "status", 200) < 400:
-                    return True, "", last_active
-                return False, f"HTTP {resp.status}", last_active
+            return _health_http(spec)
     except OSError as exc:
         return False, f"健康检查未通过: {exc.__class__.__name__}: {exc}", None
     except Exception as exc:  # noqa: BLE001

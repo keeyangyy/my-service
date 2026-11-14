@@ -252,7 +252,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _is(parts: list[str], *expect: str) -> bool:
-        return len(parts) == len(expect) and all(a == b for a, b in zip(parts, expect))
+        return len(parts) == len(expect) and all(
+            a == b for a, b in zip(parts, expect, strict=True))
 
     def _post_backup(self, parts: list[str], body: dict) -> bool:
         """POST /api/backup —— 立即备份 reg/ + config.json + adapters/。"""
