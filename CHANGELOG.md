@@ -11,6 +11,10 @@
   - `src/svc.ps1` 改为从 `config.json` 读 host/port
 - PowerShell 脚本的 `$home` 与内置只读变量 `$HOME` 冲突（变量名大小写不敏感）
   - 统一改名 `$dataRoot`（ctl.ps1 / svc.ps1 / install_autostart.ps1）
+- 开关开机自启后提示“设置失败”，实际已生效
+  - 成功回调里调了不存在的 `refresh()`（应调 `poll`），抛 ReferenceError 被 catch 捕获后回滚了开关
+- 源码工作区点「检查更新」每次都报 502（拉 GitHub 的 `latest.json` 必然 404）
+  - `/api/update/check` 改为先判断部署标记，源码工作区直接返回「请用 git pull」
 
 ### 新增功能
 
@@ -18,7 +22,10 @@
   - `tools/build-portable.ps1` 生成 `dist/my-service-<版本>.zip`（约 0.5 MB）
   - 结构：**包根 = 仓库结构**（`src/` `web/` `run/` `docs/guide/`）+ `reg/`（注册条）+ `data/`（logs/bak/update）+ `VERSION.txt`
   - 入口就是 `run/start.ps1` / `run/stop.ps1`（系统 Python 3.10+）；`-WithRuntime` 可选内嵌解释器
-- 面板 header 显示自启状态（启动文件夹 / 计划任务 / 未设）
+- 顶部栏提供开机自启开关与「检查更新」按钮
+  - 从设置弹窗移出：自启是高频开关，更新要能一眼看到有没有新版本
+  - 自启开关按 `/api/host` 的 `autostart` 渲染；计划任务模式只提示、不接管
+  - 更新按钮两态：检查到新版本后转为「⬆ 升级到 vX」，再点即下载并自动重启生效
 - `examples/demo`：可运行的示例环境
   - 一键复制源码到临时目录、用独立端口起实例，含 4 条示例注册条与 2 个示例服务
 - README 增加控制台截图
