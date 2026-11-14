@@ -16,8 +16,8 @@
   //   schedule 是"账本缺失时的默认计划"——面板改的时刻只进账本，不写这里
   "path": "C:/path/to/your-service",      // ★ 脚本所在真实家（与服务注册条同语义）
   "enabled": true,                          // 运行态：false = 暂停调度（面板显示已停用）
-  "display": "your-service 签到",
-  "description": "your-service 每日签到",
+  "display": "示例：每日签到",
+  "description": "示例：每日签到",
   "entry": "run_all.py",                    // 相对 path；支持 .py/.ps1/.cmd/.bat/.exe
   "args": ["--site", "example"],
   "cwd": ".",

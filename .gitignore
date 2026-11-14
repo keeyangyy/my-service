@@ -16,3 +16,7 @@ __pycache__/
 *.tmp
 
 bak/
+
+# 实例配置（本地保留，不入库）
+/reg/
+/config.json

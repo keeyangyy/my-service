@@ -25,13 +25,13 @@
 {
   "path": "C:/path/to/your-service",
   "display": "your-service",          // 缺省 = 服务名
-  "description": "your-service 积分仪表盘",
+  "description": "示例：积分仪表盘",
   "mode": "on_demand",
-  "url": "http://127.0.0.1:33503/",      // 缺省从 health.url 推导
+  "url": "http://127.0.0.1:33510/",      // 缺省从 health.url 推导
 
   "start":    { "entry": "src/server.py" },
   "stop":     { "script": "run/stop.ps1" },
-  "health":   { "type": "http", "url": "http://127.0.0.1:33503/health" },
+  "health":   { "type": "http", "url": "http://127.0.0.1:33510/health" },
   "identity": { "pidfile": "data/server.pid" },
 
   "runtime":  { "enabled": true, "autostart": false, "idle_timeout_sec": 600 }
@@ -162,7 +162,7 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
   "mode": "on_demand",
   "start":    { "entry": "src/server.py" },
   "stop":     { "script": "run/stop.ps1" },
-  "health":   { "type": "http", "url": "http://127.0.0.1:33503/health",
+  "health":   { "type": "http", "url": "http://127.0.0.1:33510/health",
                 "service": "your-service" },
   "identity": { "pidfile": "data/server.pid" },
   "runtime":  { "enabled": true, "autostart": false, "idle_timeout_sec": 600 }
