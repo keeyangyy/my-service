@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import audit
 
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 
 # ---------------------------------------------------------------- CORS / 外站门禁
 # 背景：控制面绑定 127.0.0.1，本机任何程序（curl/脚本/服务）本来就能直接调用，

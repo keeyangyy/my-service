@@ -42,21 +42,21 @@ my-service\                    # 完整档（见 C:\path\to\README.md）
 │   ├─ service_runtime.json   # 服务运行态：enabled/autostart/idle_timeout_sec（见注册条协议）
 │   ├─ cron_runtime.json      # 任务运行态：enabled/timeout_sec/catch_up/schedule
 │   └─ pids\<服务名>.pid       # 被管服务 pid——框架记账留在框架家
-└─ src\                       # 实现细节 + 程序化接口
-    ├─ server.py              # 组装入口（含 HostController 自管理）
-    ├─ ctl.ps1                # 内部引擎（run\ 入口的底层，勿直接调用）
-    ├─ svc.ps1                # 服务管理 CLI（带参数：终端/AI 会话/脚本用，非双击入口）
-    ├─ core\
-    │   ├─ scanner.py         # 扫描 reg\*.json（注册中心唯一源）
-    │   ├─ audit.py           # 启停登记簿（host.jsonl 的唯一作者）
-    │   ├─ runner.py          # 进程原子操作：启动/树杀/健康检查/一次性执行（输出不接管）
-    │   ├─ scheduler.py       # 定时任务调度器（reg\cron\ 唯一源，与 monitor 并列线程）
-    │   ├─ linkage.py         # 服务与定时任务的路径归属判定（面板关联展示用）
-    │   ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛 + 注册条配置行内编辑
-    │   └─ api.py             # REST API + web 静态托管
-    ├─ web\                   # Dashboard + 启动中转页（原生 JS 零依赖）
-    │   ├─ index.html / app.js / style.css  # 管理面板
-    │   └─ opening.html       # 点 ↗ 的中转页（秒开转圈 → 启动 → 就绪后跳转）
+├─ src\                       # 实现细节 + 程序化接口
+│   ├─ server.py              # 组装入口（含 HostController 自管理）
+│   ├─ ctl.ps1                # 内部引擎（run\ 入口的底层，勿直接调用）
+│   ├─ svc.ps1                # 服务管理 CLI（带参数：终端/AI 会话/脚本用，非双击入口）
+│   └─ core\
+│       ├─ scanner.py         # 扫描 reg\*.json（注册中心唯一源）
+│       ├─ audit.py           # 启停登记簿（host.jsonl 的唯一作者）
+│       ├─ runner.py          # 进程原子操作：启动/树杀/健康检查/一次性执行（输出不接管）
+│       ├─ scheduler.py       # 定时任务调度器（reg\cron\ 唯一源，与 monitor 并列线程）
+│       ├─ linkage.py         # 服务与定时任务的路径归属判定（面板关联展示用）
+│       ├─ state.py           # Manager：状态机 + monitor 秒级观测收敛 + 注册条配置行内编辑
+│       └─ api.py             # REST API + web 静态托管
+└─ web\                       # ★ 前端静态：Dashboard + 启动中转页（原生 JS 零依赖）
+    ├─ index.html / app.js / style.css  # 管理面板
+    └─ opening.html           # 点 ↗ 的中转页（秒开转圈 → 启动 → 就绪后跳转）
 ```
 
 ## 转接层（adapters\，可选）

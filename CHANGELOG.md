@@ -2,6 +2,13 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/server.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## Unreleased（结构统一 2026-11-14）
+
+### 结构
+
+- 前端 `src/web/` 迁至顶层 `web/`（与 `src/` 平级），`src/core/api.py` 的 `WEB_DIR` 相应上提一级
+- README 目录树同步
+
 ## v0.12.0（2026-10-08）
 
 框架学会回答"**这个端口上跑的是不是我的服务**"。此前它只会问"端口有人应答吗"，
