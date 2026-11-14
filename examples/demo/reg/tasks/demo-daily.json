@@ -1,0 +1,12 @@
+{
+  "path": "{{WORKDIR}}/services",
+  "display": "示例日报任务",
+  "description": "每天 09:30 跑一次的示例任务（演示 daily 调度）",
+  "mode": "task",
+  "start": {
+    "entry": "demo_task.py",
+    "args": ["--note", "demo daily report", "--log", "{{WORKDIR}}/data/demo-daily.log"]
+  },
+  "schedule": { "type": "daily", "at": ["09:30"] },
+  "runtime": { "enabled": true, "catch_up": false, "run_timeout_sec": 120 }
+}

@@ -21,6 +21,8 @@ pwsh -File .\examples\demo\start-demo.ps1 -Stop      # 停止 demo 宿主与示�
 | `demo-worker` | `managed` + `autostart` | 宿主启动时自动拉起，端口探测健康 |
 | `demo-offline` | `managed` | 未启动的 `stopped` 态与错误信息 |
 | `demo-heartbeat` | `task` | 每 30 秒跑一次脚本，面板可看结果与「立即运行」 |
+| `demo-daily` | `task` | `daily` 调度：每天 09:30 跑一次 |
+| `demo-cleanup` | `task` | `interval` 调度：每 5 分钟跑一次 |
 
 示例服务本体在 `services/demo_app.py`（带健康端点的极小 HTTP 面板）与
 `services/demo_task.py`（追加一行日志）。
