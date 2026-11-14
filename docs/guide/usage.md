@@ -44,7 +44,7 @@ start http://127.0.0.1:1236              # 打开面板
 .\run\install_autostart.ps1              # 安装开机自启（启动文件夹 .lnk → pythonw，无窗口）
 ```
 
-自启是启动文件夹里的 `start-my-service.lnk`（目标 `pythonw.exe` + `src\server.py`），登录时不弹窗、不依赖 pwsh；面板 ⚙ 设置里的开关等价。
+自启是启动文件夹里的 `start-my-service.lnk`（目标 `pythonw.exe` + `src\server.py`），登录时不弹窗、不依赖 pwsh；面板右上角的「自启」开关等价。
 卸载用 `uninstall_autostart.ps1`（一并清理历史 vbs/cmd 与计划任务）。计划任务 / Nssm 等高级方式已从脚本移除，手工做法见仓库内 `docs/analysis/pitfalls.md`。
 
 ## 注意（AI / 自动化会话）
