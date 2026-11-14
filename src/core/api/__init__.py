@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .. import audit, backup
+from .. import audit, backup, update
 from .cors import is_local_origin, is_write_path, origin_host, origin_of
 from .static import load as load_static
 
@@ -129,6 +129,7 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/audit": self._get_audit,
             "/api/host-err": self._get_host_err,
             "/api/crons": self._get_crons,
+            "/api/update/check": self._get_update_check,
         }
         handler = routes.get(path)
         if handler is not None:
@@ -193,6 +194,16 @@ class _Handler(BaseHTTPRequestHandler):
         crons = self.scheduler.snapshot() if self.scheduler else []
         return self._json(200, {"crons": crons})
 
+    def _get_update_check(self, parsed) -> None:  # noqa: ANN001
+        """GET /api/update/check —— 拉 GitHub Release 的 latest.json 对比版本。"""
+        from ..host import VERSION
+        try:
+            info = update.check(VERSION)
+        except Exception as exc:  # noqa: BLE001 - 网络/格式异常统一报 502
+            self._json(502, {"ok": False, "error": f"检查更新失败: {exc}"})
+            return
+        self._json(200, info)
+
     def _get_services(self, path: str) -> None:
         parts = [p for p in path.split("/") if p]
         if len(parts) == 2:
@@ -223,12 +234,14 @@ class _Handler(BaseHTTPRequestHandler):
             or self._post_service_order(parts, body)
             or self._post_service_config(parts, body)
             or self._post_service_action(parts, body, parsed)
+            or self._post_host_autostart(parts, body)
             or self._post_host_action(parts)
             or self._post_audit_clear(parts, body)
             or self._post_crons_order(parts, body)
             or self._post_cron_run(parts, parsed)
             or self._post_cron_config(parts, body)
             or self._post_autostart(parts, body)
+            or self._post_update_apply(parts, body)
         )
         if not matched:
             self._json(404, {"ok": False, "error": "not found"})
@@ -408,6 +421,28 @@ class _Handler(BaseHTTPRequestHandler):
                    {"ok": ok, "message": msg, "status": status_now})
         return True
 
+    def _post_host_autostart(self, parts: list[str], body: dict) -> bool:
+        """POST /api/host/autostart {"enabled": bool} —— 启动文件夹自启开关。
+
+        只做"启动文件夹"这一种（无需管理员权限）；计划任务 / SYSTEM / Nssm
+        仍走 run/install_autostart.ps1。必须排在 /api/host/{stop|restart} 之前。
+        """
+        if not self._is(parts, "api", "host", "autostart"):
+            return False
+        if self.host is None:
+            self._json(501, {"ok": False, "error": "宿主自管理不可用"})
+            return True
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            self._json(400, {"ok": False, "error": '需要布尔字段 "enabled"'})
+            return True
+        ok, info = self.host.set_autostart(enabled)
+        if not ok:
+            self._json(500, {"ok": False, "error": info})
+            return True
+        self._json(200, {"ok": True, "autostart": info})
+        return True
+
     def _post_host_action(self, parts: list[str]) -> bool:
         """POST /api/host/{stop|restart} —— 宿主自身生命周期（专属通道）。"""
         if not (len(parts) == 3 and parts[0] == "api" and parts[1] == "host"):
@@ -486,6 +521,20 @@ class _Handler(BaseHTTPRequestHandler):
         ok, code, msg = self.scheduler.update_config(parts[2], patch)
         http_code = {"ok": 200, "not_found": 404, "invalid": 400, "io": 500}.get(code, 500)
         self._json(http_code, {"ok": ok, "message": msg, "error": None if ok else msg})
+        return True
+
+    def _post_update_apply(self, parts: list[str], body: dict) -> bool:
+        """POST /api/update/apply {version,url,sha256} —— 下载暂存，重启后由 launcher 替换。"""
+        if not self._is(parts, "api", "update", "apply"):
+            return False
+        home = getattr(self.host, "home", None)
+        app_dir = getattr(self.host, "app_dir", None)
+        if self.host is None or home is None or app_dir is None or home == app_dir:
+            self._json(400, {"ok": False,
+                             "error": "源码模式不支持一键升级，请用 git pull"})
+            return True
+        result = update.apply(home, body)
+        self._json(200 if result.get("ok") else 500, result)
         return True
 
     def _post_autostart(self, parts: list[str], body: dict) -> bool:

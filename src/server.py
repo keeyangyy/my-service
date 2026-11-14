@@ -117,7 +117,7 @@ def main() -> int:
     scheduler = Scheduler(cron_dir, data_dir / "cron_state.json",
                           tick_sec=float((cfg.get("scheduler") or {}).get("tick_sec", 10.0)))
     # 定时任务与服务不再按路径绑定：任务独立展示、独立管理
-    controller = HostController(manager, logs_dir, data_dir)
+    controller = HostController(manager, logs_dir, data_dir, app_dir=app, home=home)
 
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
                       controller=controller, scheduler=scheduler,

@@ -65,6 +65,11 @@
     setTick: document.getElementById("set-tick"),
     setAudit: document.getElementById("set-audit"),
     setBackup: document.getElementById("set-backup"),
+    setAutostart: document.getElementById("set-autostart"),
+    autostartHint: document.getElementById("autostart-hint"),
+    updateInfo: document.getElementById("update-info"),
+    checkUpdate: document.getElementById("btn-check-update"),
+    applyUpdate: document.getElementById("btn-apply-update"),
     setBackupKeep: document.getElementById("set-backup-keep"),
     backupInfo: document.getElementById("backup-info"),
     setSave: document.getElementById("set-save"),
@@ -80,6 +85,7 @@
   var dragState = null;
   var hostAction = null;   // null | "restart" | "stop"：宿主自操作进行中
   var hostPid = 0;         // 用于判定 restart 后是否已换新进程
+  var latestInfo = null;   // /api/update/check 的结果（升级按钮用）
 
   // ===== 工具函数 =====
   function fmtUptime(sec) {
@@ -203,6 +209,16 @@
       els.setTick.value = s.tick_sec != null ? s.tick_sec : 10;
       els.setAudit.value = m.audit_retention_days != null ? m.audit_retention_days : 7;
       els.setBackupKeep.value = b.keep != null ? b.keep : 7;
+      var h = await fetchHost();
+      els.setAutostart.checked = h.autostart === "startup";
+      els.autostartHint.textContent = h.autostart === "startup"
+        ? "已在启动文件夹注册（无需管理员权限）"
+        : (h.autostart === "logon"
+            ? "当前为计划任务自启（高级模式）；此开关只控制启动文件夹方案"
+            : "当前未启用");
+      els.updateInfo.textContent = "当前 v" + h.version;
+      els.applyUpdate.hidden = true;
+      latestInfo = null;
       els.settingsModal.hidden = false;
       refreshBackupInfo();
     } catch (e) {
@@ -269,6 +285,77 @@
       toast("备份失败：" + e.message, "err");
     } finally {
       els.setBackup.disabled = false;
+    }
+  }
+
+  // ===== 开机自启（启动文件夹方案；计划任务等高级模式仍走 run/install_autostart.ps1）=====
+  async function toggleAutostart() {
+    var enabled = els.setAutostart.checked;
+    els.setAutostart.disabled = true;
+    try {
+      var res = await api("POST", "/api/host/autostart", { enabled: enabled });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+      els.autostartHint.textContent = enabled
+        ? "已在启动文件夹注册（无需管理员权限）"
+        : "当前未启用";
+      toast(enabled ? "已启用开机自启" : "已关闭开机自启", "ok");
+      refresh();
+    } catch (e) {
+      els.setAutostart.checked = !enabled;
+      toast("设置自启失败：" + e.message, "err");
+    } finally {
+      els.setAutostart.disabled = false;
+    }
+  }
+
+  // ===== 升级（便携包；源码模式后端会拒绝并提示 git pull）=====
+  async function checkUpdate() {
+    els.checkUpdate.disabled = true;
+    els.updateInfo.textContent = "检查中…";
+    try {
+      var res = await api("GET", "/api/update/check");
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+      latestInfo = data;
+      els.updateInfo.textContent = data.has_update
+        ? "当前 v" + data.current + " → 最新 v" + data.latest
+        : "已是最新（v" + data.current + "）";
+      els.applyUpdate.hidden = !data.has_update;
+    } catch (e) {
+      els.updateInfo.textContent = "检查失败：" + e.message;
+      els.applyUpdate.hidden = true;
+    } finally {
+      els.checkUpdate.disabled = false;
+    }
+  }
+
+  async function applyUpdate() {
+    if (!latestInfo || !latestInfo.has_update) return;
+    els.applyUpdate.disabled = true;
+    els.updateInfo.textContent = "下载中…（约 "
+      + (Math.round((latestInfo.size || 0) / 104857.6) / 10) + " MB）";
+    try {
+      var res = await api("POST", "/api/update/apply", {
+        version: latestInfo.latest,
+        url: latestInfo.url,
+        sha256: latestInfo.sha256
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+      els.updateInfo.textContent = "已下载 v" + data.version + "，重启后生效";
+      toast("升级包已就绪，即将重启宿主", "ok");
+      els.settingsModal.hidden = true;
+      setTimeout(function () { doHostAction("restart"); }, 900);
+    } catch (e) {
+      els.updateInfo.textContent = "升级失败：" + e.message;
+      els.applyUpdate.disabled = false;
     }
   }
 
@@ -1736,6 +1823,15 @@
   }
   if (els.setBackup) {
     els.setBackup.addEventListener("click", doBackup);
+  }
+  if (els.setAutostart) {
+    els.setAutostart.addEventListener("change", toggleAutostart);
+  }
+  if (els.checkUpdate) {
+    els.checkUpdate.addEventListener("click", checkUpdate);
+  }
+  if (els.applyUpdate) {
+    els.applyUpdate.addEventListener("click", applyUpdate);
   }
   if (els.settingsModal) {
     els.settingsModal.addEventListener("click", function (e) {
