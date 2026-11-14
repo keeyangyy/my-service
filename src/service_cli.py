@@ -4,7 +4,7 @@
 启停逻辑只在这里维护一份，并且可以被单测直接覆盖（tests/test_service_cli.py）。
 
 用法：
-    python src/service_cli.py start|stop|restart|status|shortcut
+    python src/service_cli.py start|stop|restart|status|shortcut|update-apply
 
 架构位置：
     app/            代码根（本文件在 app/src/ 下）
@@ -140,7 +140,7 @@ def cmd_start(app: Path, data_root: Path) -> int:
     if existing:
         print(f"已在运行 pid={existing}")
         return 0
-    for name in ("logs", "data"):
+    for name in ("data", "data/logs"):
         (Path(data_root) / name).mkdir(parents=True, exist_ok=True)
     subprocess.Popen(
         [str(interpreter(app, data_root)), str(Path(app) / "src" / "server.py")],
@@ -156,7 +156,7 @@ def cmd_start(app: Path, data_root: Path) -> int:
             print(f"started pid={pid}")
             ensure_shortcut(app, data_root)
             return 0
-    print("FAILED — 查看 logs/host.err.log 或 logs/host.jsonl", file=sys.stderr)
+    print("FAILED — 查看 data/logs/host.err.log 或 data/logs/host.jsonl", file=sys.stderr)
     return 1
 
 
@@ -198,12 +198,32 @@ def cmd_shortcut(app: Path, data_root: Path) -> int:
     return 0
 
 
+def cmd_update_apply(app: Path, data_root: Path) -> int:
+    """应用暂存的升级（包根 start.cmd 在起宿主前调用，可用性窗口唯一）。
+
+    便携包：把 data/update/code.new 按清单替换 src/web/run/docs + 三文档，
+    旧代码留 data/bak/code-prev/ 可回滚。没有待生效升级时静默成功。
+    """
+    from core import update
+
+    if not (Path(data_root) / update.UPDATE_SUBDIR / "code.new").is_dir():
+        return 0
+    result = update.apply_pending(data_root)
+    if result.get("ok"):
+        print(f"已升级到 v{result.get('version')}"
+              f"（旧代码备份: {result.get('backup')}）")
+        return 0
+    print(f"升级未生效: {result.get('error')}", file=sys.stderr)
+    return 1
+
+
 HANDLERS = {
     "start": cmd_start,
     "stop": cmd_stop,
     "restart": cmd_restart,
     "status": cmd_status,
     "shortcut": cmd_shortcut,
+    "update-apply": cmd_update_apply,
 }
 
 

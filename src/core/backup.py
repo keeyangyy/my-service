@@ -1,9 +1,9 @@
 """my-service · core/backup.py
 
-实例配置备份：把 `reg/`、`config.json`、`adapters/`（若存在）复制到 `bak/<时间戳>/`。
+实例配置备份：把 `reg/`、`config.json`、`adapters/`（若存在）复制到 `data/bak/<时间戳>/`。
 
-不修改、不删除源文件。备份目录不进 git（见 .gitignore）。
-保留策略：`bak/` 下只留最近 `keep` 份（默认 7，0 = 不自动清理），见 `prune_backups()`。
+不修改、不删除源文件。备份属运行时数据，统一落在 `data/` 下、不进 git（见 .gitignore）。
+保留策略：`data/bak/` 下只留最近 `keep` 份（默认 7，0 = 不自动清理），见 `prune_backups()`。
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 BACKUP_DIRNAME = "bak"
+BACKUP_PARENT = "data"   # 备份根 = <home>/data/bak（运行时数据统一进 data/）
 DEFAULT_KEEP = 7
 
 
@@ -21,8 +22,8 @@ def _copy_tree(src: Path, dest: Path) -> int:
 
 
 def _backup_dirs(base: Path) -> list[Path]:
-    """bak/ 下的备份目录，按名字（时间戳）倒序 = 新→旧。"""
-    root = Path(base) / BACKUP_DIRNAME
+    """data/bak/ 下的备份目录，按名字（时间戳）倒序 = 新→旧。"""
+    root = Path(base) / BACKUP_PARENT / BACKUP_DIRNAME
     if not root.is_dir():
         return []
     return sorted((p for p in root.iterdir() if p.is_dir()),
@@ -57,7 +58,7 @@ def create_backup(base: Path, keep: int = DEFAULT_KEEP) -> dict:
     keep > 0 时顺手清理超出保留份数的旧备份。
     """
     base = Path(base)
-    root = base / BACKUP_DIRNAME
+    root = base / BACKUP_PARENT / BACKUP_DIRNAME
     root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     dest = root / stamp
@@ -85,7 +86,7 @@ def create_backup(base: Path, keep: int = DEFAULT_KEEP) -> dict:
 
 def list_backups(base: Path, limit: int = 20) -> list[dict]:
     """按时间倒序列出备份 → [{name, path, size}]。"""
-    root = Path(base) / BACKUP_DIRNAME
+    root = Path(base) / BACKUP_PARENT / BACKUP_DIRNAME
     if not root.is_dir():
         return []
     items = sorted((p for p in root.iterdir() if p.is_dir()),

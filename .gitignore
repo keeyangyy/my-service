@@ -1,7 +1,6 @@
-# 记录（日志：只追加，删了不影响运行）
-logs/
-
-# 数据（运行态/状态/账本；删了行为会变）
+# 运行时数据（本项目约定：日志/账本/缓存/备份统一放 data/ 下）
+#   data/logs/  记录：只追加、可随时删，删了不影响下次运行
+#   data/bak/   备份、data/pids/ 运行态 pid、cron_state.json 等：删了行为会变
 data/
 
 # 临时 / 会话交接
@@ -23,8 +22,6 @@ tools/.cache/
 
 # 原子写残留（注册条/账本写入中断留下的 *.json.tmp）
 *.tmp
-
-bak/
 
 # 面板快捷方式：每台机器按本机 config.json 生成，不入库
 run/Dashboard.url

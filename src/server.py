@@ -51,7 +51,7 @@ def load_config(home: Path) -> dict:
         "reg_dir": "reg",
         "audit_retention_days": 7,   # 登记簿事件保留天数（0 = 永不自动清理）
         "cors_local_only": True,     # 仅本机来源的网页可获得跨源许可（关掉=回到无 CORS 的历史行为）
-        "backup": {"keep": 7},       # bak/ 保留份数（0 = 不自动清理）
+        "backup": {"keep": 7},       # data/bak/ 保留份数（0 = 不自动清理）
     }
     cfg_path = _config_path(home)
     if cfg_path.is_file():
@@ -67,16 +67,16 @@ def load_config(home: Path) -> dict:
 def _setup_host_logging(base: Path) -> tuple[Path, Path]:
     """宿主自身的日志边界（被管服务的输出零接管，见 core/audit.py 顶部说明）。
 
-    返回 (logs_dir, data_dir)——**记录与数据分开**（见项目 README 核心字段）：
-    - logs\\  记录类：只追加、可随时删，删了不影响下次运行
-    - data\\  数据类：运行态/状态/账本，删了行为会变
+    返回 (logs_dir, data_dir)——**运行时数据全在 data\\ 下**（本项目约定）：
+    - data\\logs\\  记录类：只追加、可随时删，删了不影响下次运行
+    - data\\        数据类：运行态/状态/账本/备份，删了行为会变
 
-    - sys.stderr → logs\\host.err.log：异常栈留档，兼作无控制台场景的兜底。
+    - sys.stderr → data\\logs\\host.err.log：异常栈留档，兼作无控制台场景的兜底。
     - sys.stdout：终端直跑时保留可见；后台/计划任务（S4U 无控制台）时丢到 devnull。
       不再重定向到文件——启停事件属于登记簿 host.jsonl，stdout 不冒充日志。
     """
-    logs_dir = base / "logs"
     data_dir = base / "data"
+    logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
     # 故意长期持有：宿主生命周期的 stderr 重定向，不能改成 with
@@ -96,7 +96,7 @@ def main() -> int:
     app = Path(__file__).resolve().parents[1]
     home = _resolve_home(app)
     cfg = load_config(home)
-    # 记录（logs\）与数据（data\）分开：登记簿/异常栈进 logs\，运行态账本/pid 进 data\
+    # 运行时数据都在 data\ 下：登记簿/异常栈进 data\logs\，运行态账本/pid 进 data\
     logs_dir, data_dir = _setup_host_logging(home)
     audit_path = audit.init(logs_dir)
     runner.set_runtime_dir(data_dir)
@@ -108,7 +108,7 @@ def main() -> int:
     monitor_settings.setdefault("audit_retention_days",
                                 cfg.get("audit_retention_days", 7))
     manager = Manager(scanner, settings=monitor_settings)
-    # 备份保留策略：bak/ 只留最近 keep 份（0 = 不自动清理）
+    # 备份保留策略：data/bak/ 只留最近 keep 份（0 = 不自动清理）
     backup_settings = dict(cfg.get("backup") or {})
     backup_settings.setdefault("keep", 7)
     # 定时任务注册目录（reg\cron\）：不存在则建空目录，用户一眼可见往哪放注册条

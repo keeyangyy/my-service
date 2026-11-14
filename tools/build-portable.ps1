@@ -1,12 +1,19 @@
 # my-service 便携包构建（Windows）
 #
-# 产物结构（包根）：
-#   runtime/            内嵌 Python（下载一次，缓存在 tools/.cache）
-#   app/                代码 + 文档（升级只替换这里）
-#   data/ logs/ bak/    运行态（保留）
-#   reg/services|tasks/ 注册条（保留）
-#   config.json         数据根配置
-#   start.cmd stop.cmd  稳定入口
+# 产物结构（包根 = 仓库结构，不再有 app/ 层）：
+#   src/ web/ run/             代码与入口
+#   docs/guide/                使用说明（只带用户向文档：使用指南 + 注册指南 + 截图）
+#   README.md CHANGELOG.md LICENSE
+#   config.json                数据根配置
+#   start.cmd stop.cmd         稳定入口（不依赖 pwsh）
+#   VERSION.txt
+#   runtime/                   内嵌 Python（升级不动）
+#   reg/services|tasks/        注册条（用户手写，升级保留）
+#   data/logs  data/bak        运行时数据骨架（升级保留）
+#
+# 不进包：tests/ examples/ tools/ AGENTS.md CONTRIBUTING.md SECURITY.md
+#         ruff.toml .coveragerc .editorconfig .gitignore .gitattributes .github/
+#         docs/{architecture.md,design/,analysis/}（开发者向，留在仓库）
 #
 # 用法:
 #   pwsh -File .\tools\build-portable.ps1
@@ -23,6 +30,10 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $cache = Join-Path $PSScriptRoot ".cache"
+
+# 包内代码目录（升级 = 按这份清单替换，见 src/service_cli.py update-apply）
+$CODE_DIRS = @("src", "web", "run", "docs")
+$CODE_FILES = @("README.md", "CHANGELOG.md", "LICENSE")
 
 function Get-Version {
     param([string]$Repo)
@@ -52,41 +63,41 @@ if (-not $Version) { $Version = Get-Version -Repo $repo }
 Write-Host "构建 my-service $Version（Python $PythonVersion）"
 
 $runtimeSrc = Get-Runtime -PythonVersion $PythonVersion -Cache $cache
-$stage = Join-Path $repo "$OutDir\my-service-$Version"
+# -OutDir 支持绝对路径（便于组装到临时目录做校验）
+$outBase = if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $repo $OutDir }
+$stage = Join-Path $outBase "my-service-$Version"
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 # ---- runtime（升级不动） ----
 Copy-Item -LiteralPath $runtimeSrc -Destination (Join-Path $stage "runtime") -Recurse -Force
 
-# ---- app（代码 + 文档；升级替换的对象） ----
-$app = Join-Path $stage "app"
-New-Item -ItemType Directory -Force -Path $app | Out-Null
-foreach ($d in "src", "web", "run", "examples", "docs", "tests", "tools") {
+# ---- 代码目录（升级替换的对象） ----
+foreach ($d in "src", "web", "run") {
     $src = Join-Path $repo $d
     if (Test-Path -LiteralPath $src) {
-        Copy-Item -LiteralPath $src -Destination (Join-Path $app $d) -Recurse -Force
+        Copy-Item -LiteralPath $src -Destination (Join-Path $stage $d) -Recurse -Force
     }
 }
-# 打包缓存与隐私清单不进包
-$cacheCopy = Join-Path $app "tools\.cache"
-if (Test-Path -LiteralPath $cacheCopy) { Remove-Item -LiteralPath $cacheCopy -Recurse -Force }
-$denyCopy = Join-Path $app "tools\privacy-deny.txt"
-if (Test-Path -LiteralPath $denyCopy) { Remove-Item -LiteralPath $denyCopy -Force }
+# 文档只带用户向的 docs/guide/（截图在 docs/guide/images/，README 引用它）
+$guide = Join-Path $repo "docs\guide"
+if (Test-Path -LiteralPath $guide) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage "docs") | Out-Null
+    Copy-Item -LiteralPath $guide -Destination (Join-Path $stage "docs\guide") -Recurse -Force
+}
 # 本机生成的面板快捷方式不进包（每台机器各自生成）
-$dashCopy = Join-Path $app "run\Dashboard.url"
+$dashCopy = Join-Path $stage "run\Dashboard.url"
 if (Test-Path -LiteralPath $dashCopy) { Remove-Item -LiteralPath $dashCopy -Force }
 
-foreach ($f in "README.md", "CHANGELOG.md", "LICENSE", "CONTRIBUTING.md",
-              "SECURITY.md", "AGENTS.md", "ruff.toml", ".coveragerc", ".editorconfig") {
+foreach ($f in "README.md", "CHANGELOG.md", "LICENSE") {
     $src = Join-Path $repo $f
     if (Test-Path -LiteralPath $src) {
-        Copy-Item -LiteralPath $src -Destination (Join-Path $app $f) -Force
+        Copy-Item -LiteralPath $src -Destination (Join-Path $stage $f) -Force
     }
 }
 
-# ---- 数据骨架（保留） ----
-foreach ($d in "data", "logs", "bak", "reg\services", "reg\tasks") {
+# ---- 数据骨架（升级保留） ----
+foreach ($d in "data\logs", "data\bak", "reg\services", "reg\tasks") {
     New-Item -ItemType Directory -Force -Path (Join-Path $stage $d) | Out-Null
 }
 
@@ -116,7 +127,7 @@ Write-Host "已组装: $stage"
 if ($SkipZip) { return }
 
 # ---- 打 zip + sha256 + latest.json ----
-$zipOut = Join-Path $repo "$OutDir\my-service-$Version.zip"
+$zipOut = Join-Path $outBase "my-service-$Version.zip"
 if (Test-Path -LiteralPath $zipOut) { Remove-Item -LiteralPath $zipOut -Force }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipOut -CompressionLevel Optimal
 
@@ -134,7 +145,7 @@ $latest = [ordered]@{
     size    = $item.Length
     notes   = "https://github.com/$RepoSlug/releases/tag/v$Version"
 }
-[IO.File]::WriteAllText((Join-Path $repo "$OutDir\latest.json"),
+[IO.File]::WriteAllText((Join-Path $outBase "latest.json"),
                         (($latest | ConvertTo-Json) -replace "`r`n", "`n") + "`n",
                         [Text.UTF8Encoding]::new($false))
-Write-Host "版本清单: $OutDir\latest.json"
+Write-Host "版本清单: $(Join-Path $outBase latest.json)"

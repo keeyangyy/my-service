@@ -63,7 +63,7 @@ class TestBackup(unittest.TestCase):
 
     def test_prune_keeps_latest(self):
         for name in ("20260101-000000", "20260102-000000", "20260103-000000"):
-            (self.root / "bak" / name).mkdir(parents=True)
+            (self.root / "data" / "bak" / name).mkdir(parents=True)
         removed = backup.prune_backups(self.root, keep=2)
         self.assertEqual(removed, ["20260101-000000"])
         self.assertEqual([p.name for p in backup._backup_dirs(self.root)],
@@ -71,7 +71,7 @@ class TestBackup(unittest.TestCase):
 
     def test_prune_zero_keeps_all(self):
         for name in ("20260101-000000", "20260102-000000"):
-            (self.root / "bak" / name).mkdir(parents=True)
+            (self.root / "data" / "bak" / name).mkdir(parents=True)
         self.assertEqual(backup.prune_backups(self.root, keep=0), [])
         self.assertEqual(len(backup._backup_dirs(self.root)), 2)
 

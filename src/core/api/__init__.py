@@ -172,7 +172,7 @@ class _Handler(BaseHTTPRequestHandler):
         return self._static("index.html")
 
     def _get_audit(self, parsed) -> None:  # noqa: ANN001
-        """控制面登记簿（logs/host.jsonl）——不含任何服务业务输出。"""
+        """控制面登记簿（data/logs/host.jsonl）——不含任何服务业务输出。"""
         qs = parse_qs(parsed.query)
         n = _num(qs, "n", 200)
         svc = (qs.get("svc") or [None])[0] or None
@@ -184,7 +184,7 @@ class _Handler(BaseHTTPRequestHandler):
         })
 
     def _get_host_err(self, parsed) -> None:  # noqa: ANN001
-        """宿主自身异常栈（logs/host.err.log）。"""
+        """宿主自身异常栈（data/logs/host.err.log）。"""
         qs = parse_qs(parsed.query)
         n = _num(qs, "n", 200)
         return self._json(200, _tail_file(
@@ -346,7 +346,7 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         if self.backup_settings is not None:
             self.backup_settings["keep"] = keep
-            # 立即按新策略收敛一次，保存后 bak/ 里马上只剩 keep 份
+            # 立即按新策略收敛一次，保存后 data/bak/ 里马上只剩 keep 份
             if self.settings_path:
                 backup.prune_backups(Path(self.settings_path).parent, keep)
         return False
@@ -524,7 +524,11 @@ class _Handler(BaseHTTPRequestHandler):
         return True
 
     def _post_update_apply(self, parts: list[str], body: dict) -> bool:
-        """POST /api/update/apply {version,url,sha256} —— 下载暂存，重启后由 launcher 替换。"""
+        """POST /api/update/apply {version,url,sha256} —— 下载暂存到 data/update/code.new。
+
+        重启时由包根 start.cmd 调 `service_cli.py update-apply` 按清单替换
+        `src/ web/ run/ docs/` + 三文档（旧代码留 data/bak/code-prev 可回滚）。
+        """
         if not self._is(parts, "api", "update", "apply"):
             return False
         home = getattr(self.host, "home", None)
@@ -573,11 +577,11 @@ def _num(qs: dict, key: str, default: int) -> int:
 
 
 def _host_logs_dir(manager, host) -> Path:  # noqa: ANN001
-    """宿主记录目录：<my-service>/logs —— 登记簿 host.jsonl / 异常栈 host.err.log 的落点。"""
+    """宿主记录目录：<my-service>/data/logs —— 登记簿 host.jsonl / 异常栈 host.err.log 的落点。"""
     logs_dir = getattr(host, "logs_dir", None)
     if logs_dir:
         return Path(logs_dir)
-    return Path(manager.scanner.reg_dir).parent / "logs"
+    return Path(manager.scanner.reg_dir).parent.parent / "data" / "logs"
 
 
 def _tail_file(path: Path, name: str, n: int) -> dict:

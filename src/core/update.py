@@ -1,14 +1,17 @@
 """my-service · core/update.py
 
 便携包一键升级：检查 GitHub Release 的 `latest.json` → 下载 zip → 校验 sha256 →
-解压到 `data/update/app.new/` → 写待生效标记。
+把清单内的代码（`src/ web/ run/ docs/` + 三个文档）解压到 `data/update/code.new/`
+→ 写待生效标记。
 
-**真正的目录替换由 launcher（包根 `start.cmd`）在下次启动 python 之前完成**：
-Windows 上运行中的 `app/` 目录被 cwd/文件句柄占用，无法重命名；旧宿主退出、
-新宿主尚未起来的那一刻才是唯一安全窗口。替换失败就保留标记，下次启动再试。
+**真正的目录替换由 launcher（包根 `start.cmd`）在下次启动 python 之前完成**
+（`src/service_cli.py update-apply`）：Windows 上运行中的代码目录被 cwd/文件句柄
+占用，无法重命名；旧宿主退出、新宿主尚未起来的那一刻才是唯一安全窗口。
+替换前旧代码整体挪到 `data/bak/code-prev/`，中途失败会回滚并保留标记，下次启动再试。
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import shutil
@@ -20,6 +23,11 @@ DEFAULT_REPO = "keeyangyy/my-service"
 TIMEOUT = 20
 UA = "my-service-updater"
 UPDATE_SUBDIR = Path("data") / "update"
+BACKUP_SUBDIR = Path("data") / "bak"
+# 升级替换清单（与 tools/build-portable.ps1 的 CODE_DIRS / CODE_FILES 保持一致）：
+# 包根 = 仓库结构，没有 app/ 层；只换这几个目录与文档，reg/ data/ config.json 一律不动。
+CODE_DIRS = ("src", "web", "run", "docs")
+CODE_FILES = ("README.md", "CHANGELOG.md", "LICENSE")
 
 
 def _ver_tuple(version: str) -> tuple[int, ...]:
@@ -78,17 +86,31 @@ def _download(url: str, dest: Path, timeout: float = 120.0) -> str:
     return digest.hexdigest()
 
 
-def _pick_app_dir(staging: Path) -> Path | None:
-    """zip 顶层是 my-service-x.y.z/，取其中的 app/（含 src/server.py 才算有效）。"""
+def _code_entries(root: Path) -> list[Path]:
+    """代码根下属于替换清单的条目（目录 + 文档）。"""
+    entries = [root / name for name in CODE_DIRS if (root / name).is_dir()]
+    entries += [root / name for name in CODE_FILES if (root / name).is_file()]
+    return entries
+
+
+def _pick_code_root(staging: Path) -> Path | None:
+    """zip 顶层是 my-service-x.y.z/，取其中含 src/server.py 的代码根。
+
+    兼容两种布局：新包（包根 = 代码根）与旧包（代码在 app/ 里）。
+    """
     for top in staging.iterdir():
-        candidate = top / "app" if top.is_dir() else None
-        if candidate is not None and (candidate / "src" / "server.py").is_file():
-            return candidate
+        if not top.is_dir():
+            continue
+        if (top / "src" / "server.py").is_file():
+            return top
+        legacy = top / "app"
+        if (legacy / "src" / "server.py").is_file():
+            return legacy
     return None
 
 
 def apply(home: Path, info: dict) -> dict:
-    """下载 + 校验 + 解压到 data/update/app.new，并写 pending.json。
+    """下载 + 校验 + 按清单暂存到 data/update/code.new，并写 pending.json。
 
     返回 {ok, version, note} 或 {ok: False, error}。
     """
@@ -100,7 +122,7 @@ def apply(home: Path, info: dict) -> dict:
 
     upd = Path(home) / UPDATE_SUBDIR
     shutil.rmtree(upd / "staging", ignore_errors=True)
-    shutil.rmtree(upd / "app.new", ignore_errors=True)
+    shutil.rmtree(upd / "code.new", ignore_errors=True)
     upd.mkdir(parents=True, exist_ok=True)
 
     zip_path = upd / f"my-service-{version}.zip"
@@ -116,18 +138,25 @@ def apply(home: Path, info: dict) -> dict:
     except (OSError, zipfile.BadZipFile) as exc:
         return {"ok": False, "error": f"解压失败: {exc}"}
 
-    app_src = _pick_app_dir(staging)
-    if app_src is None:
-        return {"ok": False, "error": "包内缺少 app/src/server.py"}
-    target = upd / "app.new"
-    shutil.move(str(app_src), str(target))
+    code_src = _pick_code_root(staging)
+    if code_src is None:
+        return {"ok": False, "error": "包内缺少 src/server.py"}
+    entries = _code_entries(code_src)
+    if not entries:
+        return {"ok": False, "error": "包内没有可替换的代码目录"}
+
+    target = upd / "code.new"
+    target.mkdir(parents=True, exist_ok=True)
+    for entry in entries:
+        shutil.move(str(entry), str(target / entry.name))
     shutil.rmtree(staging, ignore_errors=True)
     zip_path.unlink(missing_ok=True)
 
     flag = upd / "pending.json"
     flag.write_text(json.dumps({"version": version}, ensure_ascii=False) + "\n",
                     encoding="utf-8")
-    return {"ok": True, "version": version, "note": "重启后由 start.cmd 替换 app/ 并生效"}
+    return {"ok": True, "version": version,
+            "note": "重启后由 start.cmd 调 update-apply 替换代码目录并生效"}
 
 
 def pending_version(home: Path) -> str | None:
@@ -141,3 +170,53 @@ def pending_version(home: Path) -> str | None:
         return None
     version = str(data.get("version") or "")
     return version or None
+
+
+def apply_pending(home: Path) -> dict:
+    """把 data/update/code.new 按清单替换到 home（launcher 起 python 前调用）。
+
+    步骤：旧代码整体挪到 data/bak/code-prev/ → 新代码就位 → 删 pending.json。
+    中途失败：新代码退回暂存区、旧代码搬回原位，保留 pending.json 供下次重试。
+    """
+    home = Path(home)
+    upd = home / UPDATE_SUBDIR
+    flag = upd / "pending.json"
+    new = upd / "code.new"
+    if not new.is_dir():
+        return {"ok": False, "error": "没有待生效的升级（data/update/code.new 不存在）"}
+
+    version = pending_version(home) or ""
+    backup = home / BACKUP_SUBDIR / "code-prev"
+    names = [n for n in CODE_DIRS + CODE_FILES if (new / n).exists()]
+    if not names:
+        return {"ok": False, "error": "暂存区为空（data/update/code.new 里没有清单项）"}
+    shutil.rmtree(backup, ignore_errors=True)
+    backup.mkdir(parents=True, exist_ok=True)
+
+    moved: list[str] = []       # 已挪进备份的旧条目
+    done: list[str] = []        # 已就位的新条目
+    try:
+        for name in names:
+            current = home / name
+            if current.exists():
+                shutil.move(str(current), str(backup / name))
+                moved.append(name)
+        for name in names:
+            staged = new / name
+            if staged.exists():
+                shutil.move(str(staged), str(home / name))
+                done.append(name)
+    except OSError as exc:
+        for name in done:       # 新代码退回暂存区
+            with contextlib.suppress(OSError):
+                shutil.move(str(home / name), str(new / name))
+        for name in moved:      # 旧代码搬回原位
+            with contextlib.suppress(OSError):
+                shutil.move(str(backup / name), str(home / name))
+        return {"ok": False, "error": f"替换失败，已回滚: {exc}"}
+
+    flag.unlink(missing_ok=True)
+    shutil.rmtree(new, ignore_errors=True)
+    return {"ok": True, "version": version, "applied": done,
+            "backup": str(backup),
+            "note": f"已升级到 v{version}；旧代码在 data/bak/code-prev/，需要回滚就把它搬回来"}
