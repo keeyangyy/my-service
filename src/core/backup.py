@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/backup.py
 
 实例配置备份：把 `reg/`、`config.json`、`adapters/`（若存在）复制到 `bak/<时间戳>/`。

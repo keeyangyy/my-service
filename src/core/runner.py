@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/runner.py
 
 纯工具层：构建命令行、启动托管进程、按停止模式终结进程、执行健康检查。
@@ -19,6 +18,7 @@ from urllib.parse import urlsplit
 from pathlib import Path
 
 from .scanner import Spec
+import contextlib
 
 # 新进程组 + 隐藏窗口：taskkill /T 可整树收割；黑窗不打扰用户桌面
 CREATE_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -124,7 +124,7 @@ def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
         try:
             out_path = entry_output_path(spec)
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_fh = open(out_path, "wb")      # 每次启动覆盖，只看这一次
+            out_fh = open(out_path, "wb")      # noqa: SIM115 - 句柄交给 Popen，生命周期由 handle 管理
         except OSError:
             out_path, out_fh = None, None
     try:
@@ -140,10 +140,8 @@ def start_process(spec: Spec, log_base: Path | None = None) -> ProcessHandle:
     finally:
         if out_fh is not None:
             out_fh.close()      # 子进程已继承句柄，父进程这份要关掉
-    try:
+    with contextlib.suppress(OSError):
         pidfile_path(spec).write_text(str(proc.pid), encoding="ascii")
-    except OSError:
-        pass
     return ProcessHandle(proc, time.time(), pidfile_path(spec), out_path)
 
 
@@ -236,20 +234,16 @@ def wait_gone(pid: int, deadline: float) -> bool:
 
 
 def _drop_pidfile(handle: ProcessHandle) -> None:
-    try:
+    with contextlib.suppress(OSError):
         handle.pidfile.unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def close_handle(handle: ProcessHandle) -> None:
     """回收框架侧产物（pid 文件 + 入口输出捕获）。进程已退出时用。"""
     _drop_pidfile(handle)
     if handle.output_path is not None:
-        try:
+        with contextlib.suppress(OSError):
             handle.output_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def stop_managed(handle: ProcessHandle) -> None:
@@ -310,10 +304,8 @@ def run_once(entry: Path, args: list[str], cwd: Path,
         return rc, int((time.time() - began) * 1000), None
     except subprocess.TimeoutExpired:
         _taskkill_tree(proc.pid)
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
         return None, int((time.time() - began) * 1000), None
 
 
@@ -439,8 +431,9 @@ def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, st
                 last_active: float | None = None
                 try:
                     payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
-                    if isinstance(payload, dict) and isinstance(payload.get("last_active"), (int, float)):
-                        last_active = float(payload["last_active"])
+                    reported = payload.get("last_active") if isinstance(payload, dict) else None
+                    if isinstance(reported, (int, float)):
+                        last_active = float(reported)
                 except Exception:  # noqa: BLE001 - 响应非 JSON/空体，不影响健康结论
                     pass
                 if spec.health_service:

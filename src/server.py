@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service 宿主入口。
 
     python src/server.py            # 前台运行
@@ -9,6 +8,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -62,14 +62,15 @@ def _setup_host_logging(base: Path) -> tuple[Path, Path]:
     data_dir = base / "data"
     logs_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    sys.stderr = open(logs_dir / "host.err.log", "a", buffering=1,
+    # 故意长期持有：宿主生命周期的 stderr 重定向，不能改成 with
+    sys.stderr = open(logs_dir / "host.err.log", "a", buffering=1,  # noqa: SIM115
                       encoding="utf-8", errors="replace")
     try:
         on_console = bool(sys.stdout) and sys.stdout.isatty()
     except (OSError, ValueError):
         on_console = False
     if not on_console:
-        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 - 故意长开
     return logs_dir, data_dir
 
 
@@ -81,10 +82,8 @@ def main() -> int:
     logs_dir, data_dir = _setup_host_logging(base)
     audit_path = audit.init(logs_dir)
     runner.set_runtime_dir(data_dir)
-    try:
+    with contextlib.suppress(OSError):
         (data_dir / "host.pid").write_text(str(os.getpid()), encoding="ascii")
-    except OSError:
-        pass
     reg_root = (base / cfg["reg_dir"]).resolve()
     scanner = Scanner(reg_root / "services")
     monitor_settings = dict(cfg.get("monitor") or {})
@@ -147,7 +146,8 @@ def main() -> int:
             if alive:
                 # 归位 running（登记簿记 autostart_skip，面板如实显示）
                 manager.adopt_external(name, reason, act="autostart_skip")
-                print(f"[autostart] {name}: 已在运行（{reason}），跳过自启并归位 running", flush=True)
+                print(f"[autostart] {name}: 已在运行（{reason}），跳过自启并归位 running",
+                      flush=True)
                 continue
             ok, msg = manager.start(name, via="autostart")
             print(f"[autostart] {name}: {msg}", flush=True)

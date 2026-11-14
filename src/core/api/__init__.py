@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/api.py
 
 HTTP 层：REST API + web/ 静态托管。绑定 127.0.0.1，零第三方依赖。
@@ -11,11 +10,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import audit, backup
-from .cors import (
-    LOCAL_HOSTS, WRITE_PREFIXES, is_local_origin, is_write_path,
-    origin_host, origin_of,
-)
-from .static import WEB_DIR, load as load_static
+from .cors import is_local_origin, is_write_path, origin_host, origin_of
+from .static import load as load_static
 
 # 兼容旧私有名（原 core/api.py 的模块级纯函数，保持外部引用不破）
 _origin_of = origin_of

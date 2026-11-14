@@ -1,0 +1,18 @@
+# coverage 配置（my-service）
+[run]
+source = src
+omit =
+    */tests/*
+    */__init__.py
+    # 入口装配脚本：进程内测试不 import，行为由 tests/test_api_smoke.py 间接覆盖
+    src/server.py
+    # 宿主自重启/停止：需要真实进程与 PID，单测无法覆盖，靠 demo 手工验证
+    src/core/host.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+show_missing = true
+skip_covered = false

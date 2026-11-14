@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · tests/test_identity.py — 实例身份判定回归
 
 覆盖 Manager.identify() 的四态判定链与配套安全约束：

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · tests/test_service_config.py — 服务配置行内编辑
 
 覆盖 Manager.update_config 的 idle_timeout_sec：保存、边界拒绝、非 on_demand 拒绝、

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/scheduler.py — 定时任务调度器
 
 与常驻服务（managed/detached/on_demand）并行的第二个物种：一次性脚本任务。
@@ -20,6 +19,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -415,10 +415,8 @@ class Scheduler:
     def loop(self) -> None:
         """调度主循环——与 monitor_loop 并列的第二个永动线程。"""
         while True:
-            try:
+            with contextlib.suppress(Exception):   # 调度线程永不退出
                 self.tick()
-            except Exception:  # noqa: BLE001 - 调度线程永不退出
-                pass
             time.sleep(self.tick_sec)
 
     def _init_next_run(self, spec: CronSpec, now: float) -> float:
@@ -478,7 +476,7 @@ class Scheduler:
             if name in self.running:
                 return
             self.running.add(name)
-            p = self.persist.setdefault(name, {})
+            self.persist.setdefault(name, {})
         try:
             entry = spec.entry_abs
             if entry is None:

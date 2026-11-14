@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/audit.py — 控制面登记簿（生命周期审计流）
 
 只记 my-service 自己对服务的编排动作：谁、何时、做了什么、成没成、一句话原因。
@@ -26,6 +25,7 @@ import tempfile
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+import contextlib
 
 MAX_BYTES = 5 * 1024 * 1024   # 登记簿按大小轮转（框架自家文件，几行成本）
 BACKUPS = 3
@@ -104,14 +104,10 @@ def _rotate_if_needed() -> None:
     for i in range(BACKUPS - 1, 0, -1):
         src = Path(f"{base}.{i}")
         if src.is_file():
-            try:
+            with contextlib.suppress(OSError):
                 src.replace(Path(f"{base}.{i + 1}"))
-            except OSError:
-                pass
-    try:
+    with contextlib.suppress(OSError):
         _path.replace(Path(f"{base}.1"))
-    except OSError:
-        pass
 
 
 def current_path() -> Path | None:

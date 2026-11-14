@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · tests/test_state_order.py — 服务列表拖拽排序回归
 
 覆盖 Manager 的顺序账本：默认字母序、重排、未知名忽略、部分列表追加、

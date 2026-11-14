@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/host.py
 
 宿主自身生命周期控制器——独立于服务列表的专属通道（规避自举悖论）。

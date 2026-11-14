@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/state/manager.py
 
 Manager：把 Scanner（发现）+ Runner（进程原子操作）编成一个带状态机的服务管理器。
@@ -26,6 +25,7 @@ from .. import audit, runner
 from ..scanner import IDLE_MAX_SEC, IDLE_MIN_SEC, Scanner, Spec
 from ._common import _dur
 from .monitor import MonitorMixin
+import contextlib
 
 RUNTIME_KEYS = (
     "enabled", "autostart", "archived", "order",
@@ -69,10 +69,8 @@ class Manager(MonitorMixin):
             for key in ("fast_sec", "idle_sec", "panel_grace_sec",
                         "audit_retention_days"):
                 if key in settings:
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         self.settings[key] = float(settings[key])
-                    except (TypeError, ValueError):
-                        pass
         self.lock = threading.RLock()
         self._load_runtime()
         self.refresh()
@@ -140,13 +138,9 @@ class Manager(MonitorMixin):
                     continue
                 st = self.state.get(name, {})
                 status = st.get("status", "unknown")
-                handle = self.handles.get(name)
                 uptime = None
                 if status == "running" and st.get("started_at"):
                     uptime = int(time.time() - st["started_at"])
-                pid = None if handle is None else (handle.popen.poll() or handle.pid)
-                if handle and handle.popen.poll() is not None:
-                    pid = None
                 out.append({
                     "name": name,
                     "display": spec.display,
@@ -257,7 +251,7 @@ class Manager(MonitorMixin):
             return "mine", "declared-pidfile", f"注册条 pidfile {decl_pid} 存活且端口在监听"
 
         if spec.health_type == "process":
-            pid, pid_src, _conf = runner.locate(spec, handle)
+            pid, pid_src, _conf = runner.locate(spec, self.handles.get(name))
             if pid:
                 return "mine", pid_src, f"进程定位 pid={pid}（{pid_src}）"
             return "absent", "", "进程型且无存活凭证"

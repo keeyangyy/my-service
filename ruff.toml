@@ -1,0 +1,22 @@
+# ruff 配置（my-service）
+# 目标：挡住"文件/函数膨胀成屎山"，而不是纠结格式（格式用 ruff format 单独做）
+line-length = 100
+target-version = "py310"
+
+[lint]
+# E/F 基础错误；B bugbear；UP pyupgrade；SIM 简化；C901 复杂度；PLR 结构类
+select = ["E", "F", "W", "B", "UP", "SIM", "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915"]
+# 中文注释按显示宽度不适用 E501，直接忽略
+ignore = ["E501"]
+
+[lint.mccabe]
+# 圈复杂度上限（golangci-lint 的 cyclop 对应项）
+max-complexity = 15
+
+[lint.pylint]
+# 分支数 / 语句数 / 参数数 / 局部变量 / return 个数
+max-branches = 12
+max-statements = 60
+max-args = 8
+max-locals = 20
+max-returns = 8

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""my-service · tests/test_entry_output.py — detached 入口脚本输出的可见性回归
 
 背景（线上真事）：官方 start.ps1 凭 `%LOCALAPPDATA%\<vendor>\<app>.pid` 里一个

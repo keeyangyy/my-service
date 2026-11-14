@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/api/cors.py
 
 CORS / 外站门禁的纯判定。无 IO，便于单测与复用。

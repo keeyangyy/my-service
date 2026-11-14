@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · tests/test_backup.py — 实例配置备份
 
 覆盖：备份 reg/ + config.json + adapters/、同秒冲突加后缀、列表倒序与大小。

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/state/_common.py
 
 状态机公共常量与小工具（manager 与 monitor mixin 共用）。

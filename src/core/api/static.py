@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/api/static.py
 
 web/ 静态资源读取（含目录逃逸防护）。

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · core/state/monitor.py
 
 每秒观测收敛循环与 on_demand 空闲回收。
@@ -8,6 +7,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 
@@ -59,10 +59,8 @@ class MonitorMixin:
     def monitor_loop(self) -> None:
         """观测态收敛：面板活跃 1s / 空闲 10s；写操作可立即唤醒。"""
         while True:
-            try:
+            with contextlib.suppress(Exception):   # 监测线程永不退出
                 self._tick()
-            except Exception:  # noqa: BLE001 - 监测线程永不退出
-                pass
             active = (time.time() - self.panel_last_seen) < self.settings["panel_grace_sec"]
             interval = self.settings["fast_sec"] if active else self.settings["idle_sec"]
             self._wake.wait(interval)
@@ -71,10 +69,8 @@ class MonitorMixin:
             now = time.time()
             if now - self._last_prune >= 3600:
                 self._last_prune = now
-                try:
+                with contextlib.suppress(Exception):   # 清理失败不影响收敛
                     audit.prune(float(self.settings.get("audit_retention_days", 7)))
-                except Exception:  # noqa: BLE001 - 清理失败不影响收敛
-                    pass
 
     def _tick(self) -> None:
         with self.lock:
@@ -117,19 +113,18 @@ class MonitorMixin:
                         self.handles.pop(name, None)
                         runner.close_handle(handle)
                         handle = None
-                    if spec.mode == "managed" and not spec.start_detach:
-                        if not alive:
-                            rc = handle.popen.returncode if handle else None
-                            self.handles.pop(name, None)
-                            if handle:
-                                runner.close_handle(handle)
-                            st.update(status="failed",
-                                      error=f"进程启动即退出 rc={rc}", fail_at=now)
-                            st.pop("start_began", None)
-                            st.pop("start_via", None)
-                            audit.emit("crash", ok=False, svc=name, dur_ms=dur,
-                                       note=f"进程启动即退出 rc={rc}（{via}）")
-                            continue
+                    if spec.mode == "managed" and not spec.start_detach and not alive:
+                        rc = handle.popen.returncode if handle else None
+                        self.handles.pop(name, None)
+                        if handle:
+                            runner.close_handle(handle)
+                        st.update(status="failed",
+                                  error=f"进程启动即退出 rc={rc}", fail_at=now)
+                        st.pop("start_began", None)
+                        st.pop("start_via", None)
+                        audit.emit("crash", ok=False, svc=name, dur_ms=dur,
+                                   note=f"进程启动即退出 rc={rc}（{via}）")
+                        continue
                     if elapsed > timeout:
                         # 关键修复点：超时必须收敛，不能像早期版本那样残留 starting
                         note = (f"健康检查超时({timeout:.0f}s)"
@@ -192,7 +187,8 @@ class MonitorMixin:
                         else:
                             st.update(status="stopped", started_at=None, error=None)
                         continue
-                    if spec.health_type in ("port", "http") and now - float(st.get("last_check") or 0) >= 5:
+                    since_check = now - float(st.get("last_check") or 0)
+                    if spec.health_type in ("port", "http") and since_check >= 5:
                         # running 态每 5 秒复检一次健康端口；不依赖 handle——
                         # 外部归位实例（handle=None）也能被持续监控
                         st["last_check"] = now

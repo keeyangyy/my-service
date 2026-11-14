@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · tests/test_audit.py — 登记簿清空与自动清理回归
 
 覆盖 audit.clear（按名/全清/坏行保留）与 audit.prune（按天清理/边界）。

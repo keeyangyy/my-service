@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · tests/test_scheduler.py — 定时任务调度核心回归
 
 纯标准库 unittest（项目零第三方依赖）。全部用 tempfile 隔离，

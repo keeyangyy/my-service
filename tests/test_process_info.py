@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """my-service · tests/test_process_info.py — 进程定位底层（Windows）
 
 覆盖：进程创建时间、端口→PID、进程名枚举、locate 的回退顺序。

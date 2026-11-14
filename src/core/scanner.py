@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""my-service · core/scanner.py — 注册中心（reg/services 唯一源）
 
 发现机制：只扫 `reg\services\*.json`。每个条目声明服务的真实家（path），

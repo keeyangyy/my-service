@@ -12,6 +12,11 @@ context/
 __pycache__/
 *.pyc
 
+# 测试产物
+.coverage
+coverage.xml
+htmlcov/
+
 # 原子写残留（注册条/账本写入中断留下的 *.json.tmp）
 *.tmp
 
