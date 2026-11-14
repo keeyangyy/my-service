@@ -1,0 +1,75 @@
+name: Bug 报告
+description: 面板 / 服务状态 / 注册条行为与预期不符
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请脱敏：不要包含本机绝对路径、用户名、真实被管服务名、token / cookie。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 期望什么，实际发生了什么
+      placeholder: 期望 …，实际 …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 服务模式
+      options:
+        - managed（常驻托管）
+        - on_demand（点开即起）
+        - task（定时任务）
+        - 与具体模式无关
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: my-service 版本
+      description: 面板右上角，或 src/core/host.py 里的 VERSION
+      placeholder: "0.13.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python 版本
+      description: python --version 的输出
+      placeholder: "3.12.10"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志（已脱敏）
+      description: logs/host.err.log 末尾，或 src/svc.ps1 events <服务名> 的输出
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: sanitize
+    attributes:
+      label: 脱敏确认
+      options:
+        - label: 我已确认内容不含本机路径、用户名、真实服务名与凭据
+          required: true
