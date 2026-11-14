@@ -49,6 +49,7 @@
     toasts: document.getElementById("toast-container"),
     refresh: document.getElementById("btn-refresh"),
     hostUptime: document.getElementById("host-uptime"),
+    hostAutostart: document.getElementById("host-autostart"),
     auditBtn: document.getElementById("btn-host-audit"),
     auditDrawer: document.getElementById("audit-drawer"),
     hostRestart: document.getElementById("btn-host-restart"),
@@ -1582,6 +1583,18 @@
       els.hostUptime.textContent = "宿主运行 " + fmtUptime(host.uptime_sec);
       els.hostUptime.title = "my-service 自身已运行 " + fmtUptime(host.uptime_sec)
         + "（pid " + host.pid + "，v" + host.version + "）";
+    }
+    if (host && host.autostart && els.hostAutostart) {
+      var autoLabel = { startup: "开机自启", logon: "登录自启", none: "未设自启" };
+      var autoTip = {
+        startup: "启动文件夹方案：%APPDATA%\\...\\Startup\\start-my-service.cmd",
+        logon: "计划任务 StartMyService（登录触发）",
+        none: "未检测到自启项，可运行 run\\install_autostart.ps1 安装"
+      };
+      els.hostAutostart.textContent = autoLabel[host.autostart] || host.autostart;
+      els.hostAutostart.title = autoTip[host.autostart] || "";
+      els.hostAutostart.classList.toggle("off", host.autostart === "none");
+      els.hostAutostart.hidden = false;
     }
     if (host && host.version && els.verTag) {
       els.verTag.hidden = false;

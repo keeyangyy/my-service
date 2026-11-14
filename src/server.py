@@ -25,10 +25,26 @@ from core.scanner import Scanner  # noqa: E402
 from core.scheduler import Scheduler  # noqa: E402
 from core.state import Manager  # noqa: E402
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+def _resolve_home(base: Path) -> Path:
+    """数据根 home。
+
+    - 显式 `MY_SERVICE_HOME` 优先（便于自定义数据位置）
+    - 便携包：`base`（app/）的上一级有 `runtime/python.exe` → 数据放包根
+    - 源码模式：home = base（行为与历史一致）
+    """
+    env = os.environ.get("MY_SERVICE_HOME")
+    if env:
+        return Path(env).expanduser().resolve()
+    if (base.parent / "runtime" / "python.exe").is_file():
+        return base.parent
+    return base
 
 
-def load_config() -> dict:
+def _config_path(home: Path) -> Path:
+    return home / "config.json"
+
+
+def load_config(home: Path) -> dict:
     defaults = {
         "host": "127.0.0.1",
         "port": 1236,
@@ -37,9 +53,10 @@ def load_config() -> dict:
         "cors_local_only": True,     # 仅本机来源的网页可获得跨源许可（关掉=回到无 CORS 的历史行为）
         "backup": {"keep": 7},       # bak/ 保留份数（0 = 不自动清理）
     }
-    if CONFIG_PATH.is_file():
+    cfg_path = _config_path(home)
+    if cfg_path.is_file():
         try:
-            user = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+            user = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             if isinstance(user, dict):
                 defaults.update(user)
         except Exception as exc:  # noqa: BLE001
@@ -75,16 +92,17 @@ def _setup_host_logging(base: Path) -> tuple[Path, Path]:
 
 
 def main() -> int:
-    cfg = load_config()
-    # base = my-service 根（src/ 的上一级）
+    # app = 代码根（src/ 的上一级）；home = 数据根（便携包时是 app 的上一级）
+    app = Path(__file__).resolve().parents[1]
+    home = _resolve_home(app)
+    cfg = load_config(home)
     # 记录（logs\）与数据（data\）分开：登记簿/异常栈进 logs\，运行态账本/pid 进 data\
-    base = Path(__file__).resolve().parents[1]
-    logs_dir, data_dir = _setup_host_logging(base)
+    logs_dir, data_dir = _setup_host_logging(home)
     audit_path = audit.init(logs_dir)
     runner.set_runtime_dir(data_dir)
     with contextlib.suppress(OSError):
         (data_dir / "host.pid").write_text(str(os.getpid()), encoding="ascii")
-    reg_root = (base / cfg["reg_dir"]).resolve()
+    reg_root = (home / cfg["reg_dir"]).resolve()
     scanner = Scanner(reg_root / "services")
     monitor_settings = dict(cfg.get("monitor") or {})
     monitor_settings.setdefault("audit_retention_days",
@@ -104,7 +122,7 @@ def main() -> int:
     httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
                       controller=controller, scheduler=scheduler,
                       cors_local_only=bool(cfg.get("cors_local_only", True)),
-                      settings_path=CONFIG_PATH,
+                      settings_path=_config_path(home),
                       backup_settings=backup_settings)
     controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()

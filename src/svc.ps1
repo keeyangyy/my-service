@@ -16,10 +16,17 @@ param(
 $ErrorActionPreference = "Stop"
 
 # 端点从 config.json 读取（与 ctl.ps1 同源），避免硬编码端口
-$root = Split-Path $PSScriptRoot -Parent
+# $app = 代码根；$dataRoot = 数据根（便携包为 app 的上一级）
+$app = Split-Path $PSScriptRoot -Parent
+$dataRoot = $app
+if ($env:MY_SERVICE_HOME) {
+    $dataRoot = [IO.Path]::GetFullPath($env:MY_SERVICE_HOME)
+} elseif (Test-Path -LiteralPath (Join-Path (Split-Path $app -Parent) "runtime\python.exe")) {
+    $dataRoot = Split-Path $app -Parent
+}
 $bindHost = "127.0.0.1"
 $port = 1236
-$cfgPath = Join-Path $root "config.json"
+$cfgPath = Join-Path $dataRoot "config.json"
 if (Test-Path -LiteralPath $cfgPath) {
     try {
         $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json

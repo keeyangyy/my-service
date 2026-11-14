@@ -69,6 +69,29 @@ pwsh -File .\run\restart.ps1
 .\run\install_autostart.ps1         # 安装开机自启（默认启动文件夹方案）
 ```
 
+## 便携包（免装 Python）
+
+```powershell
+pwsh -File .\tools\build-portable.ps1      # 产物：dist\my-service-<版本>.zip（约 11 MB）
+```
+
+解压后双击 `start.cmd`（后台无窗口），`stop.cmd` 停止。包结构：
+
+```
+my-service-x.y.z/
+├── runtime/                # 内嵌 Python 3.12（升级不动）
+├── app/                    # 代码 + 文档（升级只替换这里）
+├── data/ logs/ reg/ bak/   # 运行态与注册条（升级保留）
+├── config.json             # 数据根配置
+├── start.cmd / stop.cmd    # 稳定入口（不依赖 pwsh）
+└── VERSION.txt
+```
+
+- 首次 `start.cmd` 会在包根生成 `Dashboard.url`
+- 开机自启：`app\run\install_autostart.ps1`（便携包会自动指向包根 `start.cmd`，以后升级不用重装）
+- 升级：替换 `app/` 即可，`data/ logs/ reg/ config.json` 不动
+- 自定义数据位置：设置环境变量 `MY_SERVICE_HOME` 指向任意目录
+
 ## 注册第一个服务（三步）
 
 1. 服务目录里补齐三件套：**启动入口**、**停止方式**、**健康判定**。
@@ -130,6 +153,8 @@ my-service/
 │   └── core/                  # api / state / scheduler / runner / scanner / audit / backup
 ├── web/                       # 前端静态资源（index.html / app.js / style.css / opening.html）
 ├── tools/
+│   ├── build-portable.ps1     # 便携包构建（runtime 缓存 + 组装 + zip）
+│   ├── portable/              # 包根启动器模板（start.cmd / stop.cmd）
 │   └── check_privacy.ps1      # 公开发布前的隐私检查
 ├── examples/                  # 示例注册条 + 可运行 demo（examples/demo）
 ├── tests/                     # 单元测试

@@ -9,13 +9,27 @@
 - 前端硬编码接口地址，改端口的实例会连到别的宿主
   - `web/app.js` 的 `API_BASE` 改为同源相对路径
   - `src/svc.ps1` 改为从 `config.json` 读 host/port
+- PowerShell 脚本的 `$home` 与内置只读变量 `$HOME` 冲突（变量名大小写不敏感）
+  - 统一改名 `$dataRoot`（ctl.ps1 / svc.ps1 / install_autostart.ps1）
 
 ### 新增功能
 
+- 便携包（免装 Python）
+  - `tools/build-portable.ps1` 生成 `dist/my-service-<版本>.zip`（约 11 MB）
+  - 结构：内嵌 `runtime/`（Python 3.12）+ `app/`（代码）+ 包根 `data/` `logs/` `reg/` `bak/` `config.json`
+  - 包根 `start.cmd` / `stop.cmd`，不依赖 pwsh
+- 面板 header 显示自启状态（启动文件夹 / 计划任务 / 未设）
 - `examples/demo`：可运行的示例环境
   - 一键复制源码到临时目录、用独立端口起实例，含 4 条示例注册条与 2 个示例服务
 - README 增加控制台截图
   - `docs/images/panel.png`，取自 demo 环境
+
+### 重构
+
+- 代码根（`app/`）与数据根（home）分离
+  - `src/server.py` 新增 `_resolve_home`：`MY_SERVICE_HOME` → 便携包（上一级有 `runtime/python.exe`）→ 源码模式
+  - `src/ctl.ps1` / `src/svc.ps1` / `run/install_autostart.ps1` 同步支持；便携包自动使用 `runtime/python.exe`
+  - 面板快捷方式：源码模式放 `app/run/`，便携包放包根
 
 ## v0.13.0（2026-11-14）
 

@@ -37,6 +37,28 @@ class HostController:
         self.data_dir = data_dir    # 数据：host.pid 等运行态
         self.started = time.time()
         self.httpd = None   # serve_forever 前由 main 注入
+        self.autostart = self._detect_autostart()
+
+    @staticmethod
+    def _detect_autostart() -> str:
+        """探测本机自启方式：startup（启动文件夹）/ logon（计划任务）/ none。
+
+        构造时探测一次即可——自启项变化需要重装，不需要每秒查。
+        """
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            cmd = (Path(appdata) / "Microsoft" / "Windows" / "Start Menu"
+                   / "Programs" / "Startup" / "start-my-service.cmd")
+            if cmd.is_file():
+                return "startup"
+        try:
+            done = subprocess.run(["schtasks", "/query", "/tn", "StartMyService"],
+                                  capture_output=True, timeout=3)
+            if done.returncode == 0:
+                return "logon"
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return "none"
 
     def meta(self) -> dict:
         return {
@@ -44,6 +66,7 @@ class HostController:
             "uptime_sec": int(time.time() - self.started),
             "started_at": datetime.fromtimestamp(
                 self.started, tz=timezone.utc).isoformat(),
+            "autostart": self.autostart,
         }
 
     def schedule(self, action: str) -> None:

@@ -17,6 +17,10 @@ __pycache__/
 coverage.xml
 htmlcov/
 
+# 打包产物与运行时缓存
+dist/
+tools/.cache/
+
 # 原子写残留（注册条/账本写入中断留下的 *.json.tmp）
 *.tmp
 
