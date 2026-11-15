@@ -17,6 +17,8 @@ sys.path.insert(0, str(SRC))
 
 from service_cli import (  # noqa: E402
     _api,
+    base_url,
+    client_host,
     _fmt_last,
     cmd_cron_run,
     cmd_crons,
@@ -284,6 +286,32 @@ class TestMainDispatch(unittest.TestCase):
                 self.assertRaises(SystemExit) as ctx:
             main(["svc-start"])
         self.assertEqual(ctx.exception.code, 2)
+
+
+class TestClientHost(unittest.TestCase):
+    """客户端地址归一化：通配监听不能当连接目标（Windows 报 WinError 10049）。"""
+
+    def test_wildcard_falls_back_to_loopback(self):
+        self.assertEqual(client_host("0.0.0.0"), "127.0.0.1")
+        self.assertEqual(client_host("::"), "127.0.0.1")
+        self.assertEqual(client_host("[::]"), "127.0.0.1")
+
+    def test_specific_host_kept(self):
+        self.assertEqual(client_host("192.168.1.5"), "192.168.1.5")
+        self.assertEqual(client_host("127.0.0.1"), "127.0.0.1")
+
+    def test_empty_falls_back(self):
+        self.assertEqual(client_host(None), "127.0.0.1")
+        self.assertEqual(client_host("  "), "127.0.0.1")
+
+    def test_base_url_uses_loopback_for_wildcard(self):
+        root = Path(tempfile.mkdtemp(prefix="ms-cli-host-"))
+        try:
+            (root / "config.json").write_text(
+                '{"host": "0.0.0.0", "port": 4321}', encoding="utf-8")
+            self.assertEqual(base_url(root), "http://127.0.0.1:4321")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

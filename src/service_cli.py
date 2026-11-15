@@ -110,6 +110,24 @@ def load_config(data_root: Path) -> dict:
     return cfg
 
 
+def client_host(host: str | None) -> str:
+    """客户端连接用的地址：监听通配地址时改用回环。
+
+    `0.0.0.0` / `::` 是「监听所有网卡」的意思，不能当作连接目标
+    （Windows 上直接报 WinError 10049）。
+    """
+    text = (host or "").strip()
+    if text in ("0.0.0.0", "::", "[::]"):
+        return DEFAULT_HOST
+    return text or DEFAULT_HOST
+
+
+def base_url(data_root: Path) -> str:
+    """宿主 API 基地址（读 config.json，通配监听自动回落回环）。"""
+    cfg = load_config(data_root)
+    return f"http://{client_host(cfg['host'])}:{cfg['port']}"
+
+
 def version(app: Path) -> str:
     """从 core/host.py 读 VERSION（不 import，避免牵连宿主模块）。"""
     try:
@@ -128,8 +146,7 @@ def shortcut_path(app: Path, data_root: Path) -> Path:
 def write_shortcut(app: Path, data_root: Path) -> Path:
     path = shortcut_path(app, data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    cfg = load_config(data_root)
-    url = f"http://{cfg['host']}:{cfg['port']}"
+    url = base_url(data_root)
     path.write_bytes(f"[InternetShortcut]\r\nURL={url}\r\n".encode("ascii"))
     return path
 
@@ -186,8 +203,7 @@ def cmd_restart(app: Path, data_root: Path) -> int:
 
 
 def cmd_status(app: Path, data_root: Path) -> int:
-    cfg = load_config(data_root)
-    url = f"http://{cfg['host']}:{cfg['port']}"
+    url = base_url(data_root)
     pid = is_running(data_root)
     if pid:
         print(f"running pid={pid} v{version(app)} {url}")
@@ -253,8 +269,7 @@ API_TIMEOUT = 8
 
 def _api(data_root: Path, method: str, path: str, body: dict | None = None) -> dict:
     """调宿主 REST API；连不上时给出一句可操作的提示并退出。"""
-    cfg = load_config(data_root)
-    url = f"http://{cfg['host']}:{cfg['port']}{path}"
+    url = f"{base_url(data_root)}{path}"
     payload = None
     headers = {"Accept": "application/json"}
     if body is not None:
