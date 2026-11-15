@@ -276,13 +276,13 @@ class Manager(MonitorMixin):
         return None
 
     def _id_by_process(self, spec: Spec, name: str) -> tuple[str, str, str] | None:
-        if not spec.identity_process:
-            return None
         if spec.health_type == "process":
             pid, pid_src, _conf = runner.locate(spec, self.handles.get(name))
             if pid:
                 return "mine", pid_src, f"进程定位 pid={pid}（{pid_src}）"
             return "absent", "", "进程型且无存活凭证"
+        if not spec.identity_process:
+            return None
         # http/port 型：只认 identity.process 的**唯一**匹配；端口在监听时还要求
         # 与端口属主一致——否则等于信任「端口有人应答」，会重蹈把别人程序认成
         # 自家服务的覆辙（v0.12 的教训）。
