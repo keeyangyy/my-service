@@ -8,17 +8,30 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 from service_cli import (  # noqa: E402
+    _api,
+    _fmt_last,
+    cmd_cron_run,
+    cmd_crons,
+    cmd_events,
+    cmd_host_err,
+    cmd_ls,
     cmd_shortcut,
     cmd_status,
+    cmd_svc_restart,
+    cmd_svc_start,
+    cmd_svc_stop,
     interpreter,
     is_running,
     load_config,
+    main,
     pid_alive,
     pid_file,
     read_pid,
@@ -107,6 +120,170 @@ class TestServiceCli(unittest.TestCase):
             code = cmd_status(self.app, self.app)
         self.assertEqual(code, 1)
         self.assertIn("stopped v9.9.9", buf.getvalue())
+
+
+class TestServiceCommands(unittest.TestCase):
+    """服务管理命令：HTTP 调用与输出渲染（mock _api，不依赖真实宿主）。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="ms-cli-cmd-"))
+        self.app = self.root / "app"
+        (self.app / "src" / "core").mkdir(parents=True)
+        (self.app / "src" / "core" / "host.py").write_text(
+            'VERSION = "9.9.9"\n', encoding="utf-8")
+        (self.root / "config.json").write_text(
+            '{"host": "127.0.0.1", "port": 19999}', encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _run(self, fn, *args):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = fn(self.app, self.root, *args)
+        return code, buf.getvalue()
+
+    def test_ls_renders_rows(self):
+        payload = {"services": [
+            {"name": "svc-a", "display": "A", "status": "running", "port": 1234,
+             "uptime_sec": 60, "autostart": True, "error": None},
+            {"name": "svc-b", "display": "B", "status": "stopped", "port": None,
+             "uptime_sec": None, "autostart": False, "error": "boom"},
+        ]}
+        with mock.patch("service_cli._api", return_value=payload):
+            code, out = self._run(cmd_ls)
+        self.assertEqual(code, 0)
+        self.assertIn("svc-a", out)
+        self.assertIn("autostart", out)
+        self.assertIn("boom", out)
+
+    def test_svc_actions_paths(self):
+        with mock.patch("service_cli._api",
+                        return_value={"status": "running", "message": "ok"}) as api:
+            for fn in (cmd_svc_start, cmd_svc_stop, cmd_svc_restart):
+                code, out = self._run(fn, "svc-a")
+                self.assertEqual(code, 0)
+                self.assertIn("svc-a -> running (ok)", out)
+        paths = [c.args[2] for c in api.call_args_list]
+        self.assertIn("/api/services/svc-a/start?via=cli", paths)
+        self.assertIn("/api/services/svc-a/stop", paths)
+        self.assertIn("/api/services/svc-a/restart", paths)
+
+    def test_svc_action_requires_name(self):
+        with self.assertRaises(SystemExit) as ctx:
+            self._run(cmd_svc_start, None)
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_svc_action_error_returns_nonzero(self):
+        with mock.patch("service_cli._api",
+                        return_value={"ok": False, "status": "failed", "message": "no"}):
+            code, _ = self._run(cmd_svc_stop, "svc-a")
+        self.assertEqual(code, 1)
+
+    def test_crons_render_and_fmt_last(self):
+        payload = {"crons": [
+            {"name": "c1", "display": "C1", "valid": True, "running": True,
+             "enabled": True, "schedule": "daily 09:30", "last_run": 1,
+             "last_ok": True, "last_dur_ms": 12},
+            {"name": "c2", "display": "C2", "valid": False, "error": "bad"},
+            {"name": "c3", "display": "C3", "valid": True, "enabled": False,
+             "last_run": 2, "last_ok": False, "last_rc": None},
+        ]}
+        with mock.patch("service_cli._api", return_value=payload):
+            code, out = self._run(cmd_crons)
+        self.assertEqual(code, 0)
+        self.assertIn("running", out)
+        self.assertIn("invalid", out)
+        self.assertIn("FAIL (超时/未启动)", out)
+        self.assertEqual(_fmt_last({}), "未运行过")
+        self.assertEqual(_fmt_last({"last_run": 1, "last_ok": False, "last_rc": 3}),
+                         "FAIL (rc=3)")
+
+    def test_cron_run(self):
+        with mock.patch("service_cli._api", return_value={"message": "started"}) as api:
+            code, out = self._run(cmd_cron_run, "c1")
+        self.assertEqual(code, 0)
+        self.assertIn("c1 -> started", out)
+        self.assertEqual(api.call_args.args[2], "/api/crons/c1/run?via=cli")
+
+    def test_cron_run_requires_name(self):
+        with self.assertRaises(SystemExit) as ctx:
+            self._run(cmd_cron_run, None)
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_events_with_name_and_count(self):
+        payload = {"events": [
+            {"ts": "2026-01-01", "svc": None, "act": "host_start", "ok": True, "note": "n"},
+            {"ts": "2026-01-02", "svc": "svc-a", "act": "start", "ok": False, "note": "bad"},
+        ]}
+        with mock.patch("service_cli._api", return_value=payload) as api:
+            code, out = self._run(cmd_events, "svc-a", 20)
+        self.assertEqual(code, 0)
+        self.assertIn("(host)", out)
+        self.assertIn("FAIL", out)
+        self.assertEqual(api.call_args.args[2], "/api/audit?n=20&svc=svc-a")
+
+    def test_events_numeric_name_is_count(self):
+        with mock.patch("service_cli._api", return_value={"events": []}) as api:
+            self._run(cmd_events, "30", 50)
+        self.assertEqual(api.call_args.args[2], "/api/audit?n=30")
+
+    def test_events_all_skips_filter(self):
+        with mock.patch("service_cli._api", return_value={"events": []}) as api:
+            self._run(cmd_events, "all", 5)
+        self.assertEqual(api.call_args.args[2], "/api/audit?n=5")
+
+    def test_host_err_numeric(self):
+        with mock.patch("service_cli._api", return_value={"lines": ["l1", "l2"]}) as api:
+            code, out = self._run(cmd_host_err, "10")
+        self.assertEqual(code, 0)
+        self.assertIn("l1", out)
+        self.assertEqual(api.call_args.args[2], "/api/host-err?n=10")
+
+    def test_api_connection_error_exits(self):
+        with mock.patch("service_cli.urllib.request.urlopen",
+                        side_effect=urllib.error.URLError("down")), \
+                self.assertRaises(SystemExit) as ctx:
+            _api(self.root, "GET", "/api/services")
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_api_success_parses_json(self):
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        with mock.patch("service_cli.urllib.request.urlopen", return_value=Resp()):
+            data = _api(self.root, "GET", "/api/services")
+        self.assertEqual(data, {"ok": True})
+
+
+class TestMainDispatch(unittest.TestCase):
+    def test_unknown_action_rejected(self):
+        with self.assertRaises(SystemExit):
+            main(["nope"])
+
+    def test_events_dispatch(self):
+        with mock.patch("service_cli._api", return_value={"events": []}), \
+                mock.patch("service_cli.resolve_data_root", return_value=Path(".")):
+            self.assertEqual(main(["events", "all", "5"]), 0)
+
+    def test_svc_start_dispatch(self):
+        with mock.patch("service_cli._api",
+                        return_value={"status": "running", "message": "ok"}), \
+                mock.patch("service_cli.resolve_data_root", return_value=Path(".")):
+            self.assertEqual(main(["svc-start", "a"]), 0)
+
+    def test_svc_start_missing_name(self):
+        with mock.patch("service_cli.resolve_data_root", return_value=Path(".")), \
+                self.assertRaises(SystemExit) as ctx:
+            main(["svc-start"])
+        self.assertEqual(ctx.exception.code, 2)
 
 
 if __name__ == "__main__":
