@@ -2,6 +2,15 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## Unreleased
+
+### 修复
+
+- 面板从其他机器打开时，服务链接的 `localhost` / `127.0.0.1` 按面板主机名解析
+  - 注册条里的回环地址表示「服务所在主机」；c675 的面板在本机浏览器打开时，
+    omniroute、searxng 等链接原先指向访问者自己的电脑，无法打开
+  - matlab-mcp-bridge 没有网页，注册条去掉 `url`，卡片不再可点
+
 ## v0.17.0（2026-11-15）
 
 ### 变更

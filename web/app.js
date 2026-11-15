@@ -100,6 +100,24 @@
     return (typeof u === "string" && /^https?:\/\//.test(u)) ? u : null;
   }
 
+  /* 注册条里的 localhost / 127.0.0.1 表示「服务所在主机」。
+     面板从其他机器打开时（如 c675 的面板在本机浏览器看），
+     这些地址会指向访问者自己的电脑，因此按面板的 hostname 替换。 */
+  function resolveServiceUrl(u) {
+    if (!u) return u;
+    try {
+      var url = new URL(u, window.location.href);
+      var isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+      var pageHost = window.location.hostname;
+      if (isLocal && pageHost && pageHost !== "localhost" && pageHost !== "127.0.0.1") {
+        url.hostname = pageHost;
+      }
+      return url.toString();
+    } catch (e) {
+      return u;
+    }
+  }
+
   function cssEscape(s) {
     return String(s).replace(/(["\\])/g, "\\$1");
   }
@@ -1358,7 +1376,7 @@
   function renderCard(svc, card) {
     svcData.set(svc.name, svc);            // 供 ⚙ 点击时立刻取到最新值
     var status = svc.status || "stopped";
-    var url = safeUrl(svc.url);
+    var url = resolveServiceUrl(safeUrl(svc.url));
     card.dataset.display = svc.display || svc.name;
 
     // 整行点击：仅 url 合法时 clickable
