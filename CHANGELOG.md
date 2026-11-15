@@ -2,7 +2,7 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
-## Unreleased
+## v0.16.0（2026-11-15）
 
 ### 新增功能
 

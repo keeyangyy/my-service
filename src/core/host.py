@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import audit, update
 
-VERSION = "0.15.3"
+VERSION = "0.16.0"
 
 CORE_DIR = Path(__file__).resolve().parent          # core/
 SRC_DIR = CORE_DIR.parent                            # src/
