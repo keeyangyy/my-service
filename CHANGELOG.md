@@ -2,6 +2,15 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.16.1（2026-11-15）
+
+### 修复
+
+- 客户端连接地址对通配监听回落回环
+  - c675 的 `config.json` 是 `host: "0.0.0.0"`，从本机跑 `service_cli.py ls` 报 `WinError 10049`
+  - 新增 `client_host()` / `base_url()`：`0.0.0.0`、`::` 作为连接目标时改用 `127.0.0.1`
+  - `_api`、`cmd_status`、`write_shortcut` 统一走 `base_url()`
+
 ## v0.16.0（2026-11-15）
 
 ### 新增功能
