@@ -2,6 +2,15 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.15.3（2026-11-15）
+
+### 修复
+
+- `process` 型身份判定的修复未随 v0.15.2 发行包发布
+  - v0.15.2 的发布提交漏带了 `src/core/state/manager.py`，发行包里的判定顺序仍是旧的
+  - 受影响：仅 `process` 健康 + 仅 pidfile 的服务（如网络监控）在 v0.15.2 包上会显示 `stopped`
+  - 本版补上：process 型优先走 `locate()`（句柄 / pidfile / 进程名），其余类型才要求 `identity.process`
+
 ## v0.15.2（2026-11-15）
 
 ### 修复
