@@ -2,6 +2,15 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## Unreleased
+
+### 变更
+
+- 删除 `src/svc.ps1`，服务管理统一走 `python src/service_cli.py`
+  - 薄壳只剩命令名映射；程序调用场景的收益低于多一处入口的维护成本
+  - 命令名：`ls` / `svc-start` / `svc-stop` / `svc-restart` / `crons` / `cron-run` / `events` / `host-err`
+  - README、AGENTS、usage、registration、cron、logging、architecture、pitfalls 同步
+
 ## v0.16.1（2026-11-15）
 
 ### 修复

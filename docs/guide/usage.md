@@ -8,10 +8,10 @@
 |:--|:--|
 | Web Dashboard | `http://127.0.0.1:1236` |
 | 人的入口 | `run/start.ps1`、`run/stop.ps1`、`run/restart.ps1`（幂等）、`run/Dashboard.url`（首次启动时按本机 config 生成，双击开面板；不入库） |
-| 服务 CLI | `./src/svc.ps1 ls \| crons \| cron-run <名> \| events [name] [n] \| host-err [n] \| start \| stop \| restart <name>` |
+| 服务 CLI | `python src/service_cli.py ls \| crons \| cron-run <名> \| events [name] [n] \| host-err [n] \| svc-start \| svc-stop \| svc-restart <name>` |
 | REST API | 见下节「常用接口」；完整接口表在仓库内 `docs/design/api.md` |
 
-> `svc.ps1 events` 读的是启停登记簿；服务业务日志请去服务家 `logs/`。
+> `service_cli.py events` 读的是启停登记簿；服务业务日志请去服务家 `logs/`。
 
 ## 常用接口
 

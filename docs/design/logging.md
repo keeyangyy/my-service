@@ -62,7 +62,7 @@ data/entry-out/<服务名>.out
 ## 查看
 
 - 面板「▤ 登记簿」/ 卡片「事件」
-- `./src/svc.ps1 events [name] [n]`
+- `python src/service_cli.py events [name] [n]`
 - `GET /api/audit?n=&svc=&fail=1`
 
 ## 明确不做

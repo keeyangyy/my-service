@@ -94,12 +94,12 @@ pwsh -File ./run/start.ps1
 ### 命令行
 
 ```powershell
-./src/svc.ps1 ls                    # 服务列表与状态
-./src/svc.ps1 start <name>          # 启动指定服务
-./src/svc.ps1 stop <name>           # 停止指定服务
-./src/svc.ps1 crons                 # 定时任务列表
-./src/svc.ps1 cron-run <name>       # 立即执行一次任务
-./src/svc.ps1 events [name] [n]     # 查看启停登记簿
+python src/service_cli.py ls                 # 服务列表与状态
+python src/service_cli.py svc-start <name>   # 启动指定服务
+python src/service_cli.py svc-stop <name>    # 停止指定服务
+python src/service_cli.py crons              # 定时任务列表
+python src/service_cli.py cron-run <name>    # 立即执行一次任务
+python src/service_cli.py events [name] [n]  # 查看启停登记簿
 ```
 
 ## 配置
@@ -133,7 +133,6 @@ my-service/
 ├── src/
 │   ├── server.py              # 装配入口（config → Scanner → Manager → Scheduler → HTTP）
 │   ├── service_cli.py         # 唯一 CLI 实现（宿主生命周期 + 服务管理）
-│   ├── svc.ps1                # 服务管理薄壳（转调 service_cli.py）
 │   └── core/                  # api / state / scheduler / runner / scanner / audit / backup
 ├── web/                       # 面板静态资源
 ├── tools/

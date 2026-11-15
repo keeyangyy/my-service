@@ -40,7 +40,7 @@
 
 1. 服务在家补齐启动、停止、健康（或至少启动 + 健康）。
 2. 在 `my-service/reg/services/` 新建 `<服务名>.json`；定时任务放 `reg/tasks/`。
-3. 保存即生效，无需重启宿主：刷新面板或 `svc.ps1 ls` 即可看到。
+3. 保存即生效，无需重启宿主：刷新面板或 `python src/service_cli.py ls` 即可看到。
 
 ## 接入检查单
 

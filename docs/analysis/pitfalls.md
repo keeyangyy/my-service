@@ -38,7 +38,7 @@
 start "" /min pwsh -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\my-service\run\start.ps1" start
 ```
 
-- 登录时由启动体验执行，进程跑在**当前用户交互会话** → `svc.ps1` / `ctl.ps1` / 面板直接可操作，无凭据限制、无 session 0 概念。
+- 登录时由启动体验执行，进程跑在**当前用户交互会话** → 终端 CLI / 面板直接可操作，无凭据限制、无 session 0 概念。
 - **黑窗仍在**：`-WindowStyle Hidden` 只隐藏 pwsh，管不住 `start` 自身开的 cmd 窗口，实机能感知到闪一下。
 - 计划任务方案（S4U / SYSTEM-AtStartup / nssm 服务）保留为 `install_autostart.ps1` 的 `-Mode` 备选。
 

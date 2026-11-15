@@ -37,7 +37,7 @@
 - **开关**：面板滑块（同服务自启滑块）控制是否参与调度，权威值只写运行态账本（`data/cron_runtime.json`）；只影响下一次触发，正在跑的一轮自然跑完；停用期间不排新计划，重新启用即恢复。
 - **状态恢复**：`last_run/last_ok/last_rc/next_run` 持久化在 `data/cron_state.json`（scheduler 独写，运行期以内存为准），宿主重启后照单恢复。
 - **触发记录**：卡片「事件」窗展开该任务的 `cron_run/cron_skip` 时间线（登记簿按任务名过滤）；note 只记结果与非常规来源（定时触发无前缀，手动触发/错过补跑以中文前缀区分），脚本自身输出仍由任务自己记录。
-- **手动触发**：面板「▶ 立即运行」按钮 / `svc.ps1 cron-run <名>` / `POST /api/crons/{名}/run`；运行中重复触发返回 409 拒绝。
+- **手动触发**：面板「▶ 立即运行」按钮 / `python src/service_cli.py cron-run <名>` / `POST /api/crons/{名}/run`；运行中重复触发返回 409 拒绝。
 
 ## 面板行内编辑
 

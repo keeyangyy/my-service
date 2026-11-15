@@ -32,7 +32,7 @@
 ```
 src/
 ├── server.py          组装入口
-├── ctl.ps1 / svc.ps1  内部引擎 / 服务 CLI
+├── service_cli.py     启停引擎 + 服务 CLI（唯一实现）
 └── core/
     ├── host.py        HostController + VERSION
     ├── api/           路由 · 跨源（cors）· 静态（static）
