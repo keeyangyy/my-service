@@ -204,19 +204,20 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_update_check(self, parsed) -> None:  # noqa: ANN001
         """GET /api/update/check —— 拉 GitHub Release 的 latest.json 对比版本。
 
-        源码工作区直接拒绝（升级请用 git pull），省掉一次必然无意义的网络请求。
+        任何部署形态都允许检查与升级；源码工作区额外返回 source_worktree=true，
+        前端据此提示「更新后工作区将与 git 不一致」。
         """
         from ..host import VERSION
         home = getattr(self.host, "home", None)
-        if self.host is None or home is None or not update.is_deployed(home):
-            self._json(400, {"ok": False,
-                             "error": "源码工作区不支持自助升级，请用 git pull"})
+        if self.host is None or home is None:
+            self._json(400, {"ok": False, "error": "宿主上下文缺失"})
             return
         try:
             info = update.check(VERSION)
         except Exception as exc:  # noqa: BLE001 - 网络/格式异常统一报 502
             self._json(502, {"ok": False, "error": f"检查更新失败: {exc}"})
             return
+        info["source_worktree"] = update.is_source_worktree(home)
         self._json(200, info)
 
     def _get_services(self, path: str) -> None:
@@ -544,14 +545,13 @@ class _Handler(BaseHTTPRequestHandler):
         前端下载成功后会自动调 `/api/host/restart`；旧宿主派生 `apply-update-and-start`
         更新器，等本进程退出后按清单替换 `src/ web/ run/ docs/` + 三文档
         （旧代码留 data/bak/code-prev 可回滚），再起新宿主。
-        仅打包部署（包根有 VERSION.txt）支持；源码工作区一律拒绝，避免覆盖工作区。
+        任何部署形态都可下发；源码工作区替换后与 git 不一致，可 `git checkout .` 恢复。
         """
         if not self._is(parts, "api", "update", "apply"):
             return False
         home = getattr(self.host, "home", None)
-        if self.host is None or home is None or not update.is_deployed(home):
-            self._json(400, {"ok": False,
-                             "error": "源码模式不支持一键升级，请用 git pull"})
+        if self.host is None or home is None:
+            self._json(400, {"ok": False, "error": "宿主上下文缺失"})
             return True
         result = update.apply(home, body)
         self._json(200 if result.get("ok") else 500, result)

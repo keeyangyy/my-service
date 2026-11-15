@@ -2,6 +2,24 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## Unreleased
+
+### 新增功能
+
+- 服务管理 CLI 合并进 `service_cli.py`（唯一实现）
+  - 新增 `ls` / `svc-start` / `svc-stop` / `svc-restart` / `crons` / `cron-run` / `events` / `host-err`
+  - `src/svc.ps1` 缩为薄壳（命令名映射 + 参数透传），逻辑只保留一份
+  - 服务管理命令一律走宿主 HTTP API，不直接读注册条或动进程
+
+### 变更
+
+- 一键升级不再区分部署形态
+  - 源码工作区也能检查与升级；升级后工作区与 git 不一致，可 `git checkout .` 恢复
+  - 移除 `VERSION.txt` 与 `is_deployed` 判据；`/api/update/check` 返回 `source_worktree` 供前端提示
+- 发行包不再内置 `config.json` 与 `VERSION.txt`
+  - 配置是用户数据：缺省走 `DEFAULT_CONFIG`，面板保存时自动创建/写回
+  - 版本以 `src/core/host.py` 的 `VERSION` 为唯一来源
+
 ## v0.15.3（2026-11-15）
 
 ### 修复

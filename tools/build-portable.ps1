@@ -4,8 +4,6 @@
 #   src/ web/ run/             代码与入口（双击 run\start.ps1 启停，需要系统 Python）
 #   docs/guide/                使用说明（用户向：使用指南 + 注册指南 + 截图）
 #   README.md CHANGELOG.md LICENSE
-#   config.json                数据根配置
-#   VERSION.txt
 #   reg/services|tasks/        注册条（用户手写，升级保留）
 #   data/logs  data/bak        运行时数据骨架（升级保留）
 #
@@ -107,24 +105,10 @@ foreach ($d in "data\logs", "data\bak", "reg\services", "reg\tasks") {
     New-Item -ItemType Directory -Force -Path (Join-Path $stage $d) | Out-Null
 }
 
-# ---- 默认 config.json（数据根） ----
-$cfg = [ordered]@{
-    host                 = "127.0.0.1"
-    port                 = 1236
-    reg_dir              = "reg"
-    audit_retention_days = 7
-    cors_local_only      = $true
-    cors_allow           = @()
-    monitor              = [ordered]@{ fast_sec = 1.0; idle_sec = 10.0; panel_grace_sec = 15.0 }
-    scheduler            = [ordered]@{ tick_sec = 10.0 }
-    backup               = [ordered]@{ keep = 7 }
-}
-$cfgText = ($cfg | ConvertTo-Json -Depth 4).Replace("`r`n", "`n") + "`n"
-[IO.File]::WriteAllText((Join-Path $stage "config.json"), $cfgText,
-                        [Text.UTF8Encoding]::new($false))
+# ---- 不生成 config.json ----
+# 配置是「用户数据」不是「发行物」：缺省时走 server.py 的 DEFAULT_CONFIG，
+# 面板「设置」保存时自动创建/写回。这样包内不含任何可被误当模板的配置副本。
 
-[IO.File]::WriteAllText((Join-Path $stage "VERSION.txt"), $Version + "`n",
-                        [Text.UTF8Encoding]::new($false))
 
 Write-Host "已组装: $stage"
 

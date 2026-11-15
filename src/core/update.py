@@ -28,14 +28,13 @@ BACKUP_SUBDIR = Path("data") / "bak"
 # 包根 = 仓库结构，没有 app/ 层；只换这几个目录与文档，reg/ data/ config.json 一律不动。
 CODE_DIRS = ("src", "web", "run", "docs")
 CODE_FILES = ("README.md", "CHANGELOG.md", "LICENSE")
-# 打包产物才有的标记：包根 VERSION.txt 由 tools/build-portable.ps1 写入。
-# 源码仓库里没有它，所以用它区分「打包部署」与「开发工作区」——决定能否一键升级。
-DEPLOY_MARKER = "VERSION.txt"
+def is_source_worktree(home: Path) -> bool:
+    """是否源码工作区（包根有 .git）。
 
-
-def is_deployed(home: Path) -> bool:
-    """是否打包部署（包根有 VERSION.txt）。源码工作区一律 False，避免自助升级覆盖工作区。"""
-    return (Path(home) / DEPLOY_MARKER).is_file()
+    只用于给前端一句提示（升级后工作区会与 git 不一致），**不阻止升级**：
+    任何部署形态都允许检查更新与下发替换清单。
+    """
+    return (Path(home) / ".git").exists()
 
 
 def _ver_tuple(version: str) -> tuple[int, ...]:

@@ -62,7 +62,7 @@ my-service-x.y.z\
 - 依赖：目标机器需要 Python 3.10+；要连同解释器一起分发，打包时加 `-WithRuntime`
 - 包根就是代码根；`.lnk` 自启指向 `src\server.py`，升级只换代码目录
 - 升级：面板「检查更新」→ 点更新 → 自动下载并重启，重启瞬间替换 `src/ web/ run/ docs/`；旧代码留 `data\bak\code-prev\` 可回滚，`reg/ data/ config.json` 不动
-- 端口等配置改包根 `config.json`；想换数据位置就设置 `MY_SERVICE_HOME`
+- 端口等配置写在包根 `config.json`（不存在时用内置默认，面板设置保存会自动创建）；想换数据位置就设置 `MY_SERVICE_HOME`
 - 包里只带用户向文档（本文件 + `registration.md` + 截图），架构/设计/排坑留在仓库
 
 ## 目录与数据：哪些能删

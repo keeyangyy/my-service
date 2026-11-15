@@ -22,7 +22,7 @@
 | GET | `/api/host-err?n=` | 宿主异常栈 |
 | GET | `/api/crons` | 定时任务列表 |
 | GET | `/api/settings` | 编排器全局设置 |
-| GET | `/api/update/check` | 检查新版本（仅打包部署可用） |
+| GET | `/api/update/check` | 检查新版本（任何部署可用；源码工作区带 `source_worktree` 标记） |
 | POST | `/api/services/order` | `{"names":[...]}` 拖拽排序 |
 | POST | `/api/services/{svc}/start\|stop\|restart[?via=cli]` | 启停 |
 | POST | `/api/services/{svc}/config` | `{"idle_timeout_sec": N}`（仅 on_demand） |

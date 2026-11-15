@@ -295,13 +295,13 @@
     }
   }
 
-  // ===== 升级（便携包；源码模式后端会拒绝并提示 git pull）=====
+  // ===== 升级（任何部署形态；源码工作区会提示与 git 不一致）=====
   var UPDATE_IDLE_LABEL = "⟳ 更新";
 
   function updateBtnReset() {
     els.checkUpdate.textContent = UPDATE_IDLE_LABEL;
     els.checkUpdate.classList.remove("has-update");
-    els.checkUpdate.title = "检查更新（便携包：下载后自动重启生效）";
+    els.checkUpdate.title = "检查更新（下载后自动重启生效）";
   }
 
   async function onUpdateClick() {
@@ -321,7 +321,10 @@
         els.checkUpdate.classList.add("has-update");
         els.checkUpdate.title = "当前 v" + data.current + " → 最新 v" + data.latest
           + "（点击下载，下载完成后自动重启生效）";
-        toast("发现新版本 v" + data.latest + "（当前 v" + data.current + "）", "ok");
+        var srcHint = data.source_worktree
+          ? "；源码工作区：更新后与 git 不一致，可用 git checkout . 恢复"
+          : "";
+        toast("发现新版本 v" + data.latest + "（当前 v" + data.current + "）" + srcHint, "ok");
       } else {
         updateBtnReset();
         toast("已是最新（v" + data.current + "）", "ok");
