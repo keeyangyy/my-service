@@ -48,7 +48,7 @@
 
 ## 运行态约定
 
-- 宿主与服务的启停只走 `run/*.ps1`（底层 `src/service_cli.py`），不要直接 `python src/server.py` 长期跑。
+- 启停只走入口，不直接 `python src/server.py` 长期跑：宿主生命周期走 `run/*.ps1`（底层 `src/service_cli.py`），服务管理走 `src/svc.ps1` 或 `python src/service_cli.py`（转调宿主 HTTP API）。
 - 面板快捷方式 `run/Dashboard.url` 由 `service_cli.py` 按本机 `config.json` 生成，不入库、不写死浏览器路径。
 - 改 `src/` 后需重启宿主才生效；被管服务进程的生命周期独立于宿主，不受重启影响。
 

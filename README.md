@@ -48,7 +48,7 @@ cd my-service
 pwsh -File ./run/start.ps1
 ```
 
-源码工作区不支持面板一键升级，升级方式为 `git pull` 后重启宿主。
+源码工作区也可以一键升级：走发行包替换（`src/ web/ run/ docs/` + 三个文档），升级后工作区与 git 不一致，可用 `git checkout .` 恢复；想保留 git 历史时优先 `git pull`。
 
 ## 快速开始
 
@@ -104,7 +104,7 @@ pwsh -File ./run/start.ps1
 
 ## 配置
 
-`config.json` 位于包根，缺省值即内置默认值；面板「设置」修改后立即生效并写回文件。
+`config.json` 是可选文件：不存在时使用内置默认值（`host` / `port` 等）；面板「设置」修改后立即生效，并自动创建/写回该文件。
 
 | 字段 | 默认值 | 说明 |
 |:--|:--|:--|
@@ -132,8 +132,8 @@ my-service/
 ├── data/                      # 运行时数据：logs / bak / update / pids
 ├── src/
 │   ├── server.py              # 装配入口（config → Scanner → Manager → Scheduler → HTTP）
-│   ├── service_cli.py         # 启停引擎（run/*.ps1 的底层实现）
-│   ├── svc.ps1                # 命令行客户端
+│   ├── service_cli.py         # 唯一 CLI 实现（宿主生命周期 + 服务管理）
+│   ├── svc.ps1                # 服务管理薄壳（转调 service_cli.py）
 │   └── core/                  # api / state / scheduler / runner / scanner / audit / backup
 ├── web/                       # 面板静态资源
 ├── tools/

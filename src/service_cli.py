@@ -5,6 +5,9 @@
 
 用法：
     python src/service_cli.py start|stop|restart|status|shortcut|update-apply
+    python src/service_cli.py ls|svc-start <名>|svc-stop <名>|svc-restart <名>
+    python src/service_cli.py crons|cron-run <名>|events [名] [n]|host-err [n]
+（服务管理命令走宿主 HTTP API，宿主未运行时直接报错退出）
 
 架构位置：
     app/            代码根（本文件在 app/src/ 下）
@@ -21,6 +24,9 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent      # app/
@@ -241,7 +247,125 @@ def cmd_apply_update_and_start(app: Path, data_root: Path) -> int:
     return cmd_start(app, data_root)
 
 
+# ---------------------------------------------------------------- 服务管理（走宿主 HTTP API）
+API_TIMEOUT = 8
+
+
+def _api(data_root: Path, method: str, path: str, body: dict | None = None) -> dict:
+    """调宿主 REST API；连不上时给出一句可操作的提示并退出。"""
+    cfg = load_config(data_root)
+    url = f"http://{cfg['host']}:{cfg['port']}{path}"
+    payload = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
+            raw = resp.read()
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"[连接失败] 先运行 run/start.ps1 启动宿主（{exc}）", file=sys.stderr)
+        raise SystemExit(1) from exc
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+def _require(name: str | None, action: str) -> str:
+    if not name:
+        print(f"用法: service_cli.py {action} <名称>", file=sys.stderr)
+        raise SystemExit(2)
+    return name
+
+
+def cmd_ls(app: Path, data_root: Path) -> int:
+    rows = _api(data_root, "GET", "/api/services").get("services") or []
+    for s in rows:
+        port = f":{s['port']}" if s.get("port") else ""
+        uptime = f"  uptime={s['uptime_sec']}s" if s.get("uptime_sec") else ""
+        auto = "  autostart" if s.get("autostart") else ""
+        err = f"  ! {s['error']}" if s.get("error") else ""
+        print(f"{s.get('status', ''):<10}{s.get('display', ''):<22}"
+              f"{s.get('name', '')}{port}{uptime}{auto}{err}")
+    return 0
+
+
+def _svc_action(app: Path, data_root: Path, name: str | None, verb: str,
+                action: str, via_cli: bool) -> int:
+    name = _require(name, action)
+    path = f"/api/services/{urllib.parse.quote(name)}/{verb}"
+    if via_cli:
+        path += "?via=cli"
+    r = _api(data_root, "POST", path)
+    print(f"{name} -> {r.get('status')} ({r.get('message')})")
+    return 0 if r.get("ok", True) else 1
+
+
+def cmd_svc_start(app: Path, data_root: Path, name: str | None) -> int:
+    return _svc_action(app, data_root, name, "start", "svc-start", True)
+
+
+def cmd_svc_stop(app: Path, data_root: Path, name: str | None) -> int:
+    return _svc_action(app, data_root, name, "stop", "svc-stop", False)
+
+
+def cmd_svc_restart(app: Path, data_root: Path, name: str | None) -> int:
+    return _svc_action(app, data_root, name, "restart", "svc-restart", False)
+
+
+def _fmt_last(c: dict) -> str:
+    if c.get("last_run") is None:
+        return "未运行过"
+    if c.get("last_ok"):
+        return f"ok ({c.get('last_dur_ms')}ms)"
+    if c.get("last_rc") is None:
+        return "FAIL (超时/未启动)"
+    return f"FAIL (rc={c.get('last_rc')})"
+
+
+def cmd_crons(app: Path, data_root: Path) -> int:
+    rows = _api(data_root, "GET", "/api/crons").get("crons") or []
+    for c in rows:
+        state = ("invalid" if not c.get("valid") else
+                 "running" if c.get("running") else
+                 "idle" if c.get("enabled") else "disabled")
+        err = f"  ! {c['error']}" if c.get("error") else ""
+        print(f"{state:<9}{c.get('display', ''):<22}{c.get('name', '')}  "
+              f"{c.get('schedule', '')}  {_fmt_last(c)}{err}")
+    return 0
+
+
+def cmd_cron_run(app: Path, data_root: Path, name: str | None) -> int:
+    name = _require(name, "cron-run")
+    r = _api(data_root, "POST", f"/api/crons/{urllib.parse.quote(name)}/run?via=cli")
+    print(f"{name} -> {r.get('message')}")
+    return 0 if r.get("ok", True) else 1
+
+
+def cmd_events(app: Path, data_root: Path, name: str | None = None,
+               count: int = 50) -> int:
+    if name and name.isdigit():          # events 20 → 20 条，不过滤
+        count, name = int(name), None
+    q = f"/api/audit?n={count}"
+    if name and name != "all":
+        q += "&svc=" + urllib.parse.quote(name)
+    for e in _api(data_root, "GET", q).get("events") or []:
+        ok = "ok" if e.get("ok") else "FAIL"
+        print(f"{e.get('ts', '')}  {e.get('svc') or '(host)':<20}"
+              f"{e.get('act', ''):<18}{ok}  {e.get('note', '')}")
+    return 0
+
+
+def cmd_host_err(app: Path, data_root: Path, name: str | None = None,
+                 count: int = 50) -> int:
+    if name and name.isdigit():          # host-err 30 → 30 行
+        count = int(name)
+    for line in _api(data_root, "GET", f"/api/host-err?n={count}").get("lines") or []:
+        print(line)
+    return 0
+
+
 HANDLERS = {
+    # 宿主生命周期
     "start": cmd_start,
     "stop": cmd_stop,
     "restart": cmd_restart,
@@ -249,15 +373,37 @@ HANDLERS = {
     "shortcut": cmd_shortcut,
     "update-apply": cmd_update_apply,
     "apply-update-and-start": cmd_apply_update_and_start,
+    # 服务管理（走 HTTP API）
+    "ls": cmd_ls,
+    "svc-start": cmd_svc_start,
+    "svc-stop": cmd_svc_stop,
+    "svc-restart": cmd_svc_restart,
+    "crons": cmd_crons,
+    "cron-run": cmd_cron_run,
+    "events": cmd_events,
+    "host-err": cmd_host_err,
 }
+
+NEEDS_NAME = {"svc-start", "svc-stop", "svc-restart", "cron-run"}
+NEEDS_ARGS = {"events", "host-err"}
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="my-service", description="my-service 启停入口")
+    parser = argparse.ArgumentParser(
+        prog="my-service",
+        description="my-service 启停与服务管理（唯一实现）")
     parser.add_argument("action", nargs="?", default="start", choices=sorted(HANDLERS))
+    parser.add_argument("name", nargs="?", default=None,
+                        help="服务/任务名；events、host-err 也可传条数")
+    parser.add_argument("count", nargs="?", type=int, default=50)
     args = parser.parse_args(argv)
     app = APP_DIR
-    return HANDLERS[args.action](app, resolve_data_root(app))
+    data_root = resolve_data_root(app)
+    if args.action in NEEDS_NAME:
+        return HANDLERS[args.action](app, data_root, args.name)
+    if args.action in NEEDS_ARGS:
+        return HANDLERS[args.action](app, data_root, args.name, args.count)
+    return HANDLERS[args.action](app, data_root)
 
 
 if __name__ == "__main__":
