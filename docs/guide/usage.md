@@ -165,7 +165,7 @@ my-service-x.y.z\
 | `data\logs\` | 记录（登记簿 host.jsonl、异常栈 host.err.log） | 无影响，下次启动重建 |
 | `data\bak\` | 备份（reg + config.json、升级前的旧代码） | 失去回滚点 |
 | `data\update\` | 升级暂存 | 未生效的升级丢失，重新下载即可 |
-| `data\runtime\` | 框架观测值（状态、PID 来源等） | 无影响，由探测重建 |
+| `data\pids\` | 框架写的 pid 凭证（宿主与它拉起的实例） | 无影响，下次启动重建 |
 | `data\cron_state.json` | 定时任务状态 | 任务重算下次触发时间 |
 
 `data/` 整个删掉 = 丢 cron 状态与备份（服务注册条在 `reg/`，不受影响）；`reg/` 是事实源，删了要重写。

@@ -141,8 +141,8 @@ reg/services/ollama/
 |:--|:--|:--|
 | `reg/services/<名>.json` | 全部用户声明 | 用户 / 面板 |
 | `reg/tasks/<名>.json` | 全部用户声明 + schedule | 用户 / 面板 |
-| `data/runtime/services/<名>.json` | status / pid / started_at / last_active | 框架 |
-| `data/runtime/tasks/<名>.json` | last_run / last_ok / last_rc / next_run | 框架 |
+| `data/pids/<名>.pid` | 框架拉起实例的 pid 凭证（服务自己写的 pidfile 在服务家里） | 框架 |
+| `data/cron_state.json` | last_run / last_ok / last_rc / next_run | 框架 |
 | `data/host.pid`、`data/logs/host.jsonl` | 宿主 pid 与审计 | 框架 |
 
 观测值可随时删；配置不受影响。

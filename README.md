@@ -136,7 +136,7 @@ my-service/
 │   ├── services/<name>.json   # 服务注册条（唯一发现源）
 │   └── tasks/<name>.json      # 定时任务注册条
 ├── run/                       # 人工入口：start / stop / restart / 自启安装与卸载
-├── data/                      # 运行时数据：logs / bak / update / runtime / pids
+├── data/                      # 运行时数据：logs / bak / update / pids / entry-out
 ├── src/
 │   ├── server.py              # 装配入口（config → Scanner → Manager → Scheduler → HTTP）
 │   ├── service_cli.py         # 唯一 CLI 实现（宿主生命周期 + 服务管理）
