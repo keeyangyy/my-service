@@ -54,14 +54,15 @@ Copy-Item -LiteralPath (Join-Path $demoDir 'services') -Destination $WorkDir -Re
 
 # demo 自己的 config.json（独立端口 + 独立注册目录）
 $cfg = [ordered]@{
-    host                 = '127.0.0.1'
-    port                 = $Port
-    reg_dir              = 'demo-reg'
-    audit_retention_days = 7
-    cors_local_only      = $true
-    monitor              = [ordered]@{ fast_sec = 1.0; idle_sec = 10.0; panel_grace_sec = 15.0 }
-    scheduler            = [ordered]@{ tick_sec = 10.0 }
-    backup               = [ordered]@{ keep = 7 }
+    server   = [ordered]@{ host = '127.0.0.1'; port = $Port }
+    cors     = [ordered]@{ local_only = $true; allow = @() }
+    audit    = [ordered]@{ retention_days = 7 }
+    backup   = [ordered]@{ keep = 7 }
+    advanced = [ordered]@{
+        reg_dir   = 'demo-reg'
+        monitor   = [ordered]@{ fast_sec = 1.0; idle_sec = 10.0; panel_grace_sec = 15.0 }
+        scheduler = [ordered]@{ tick_sec = 10.0 }
+    }
 }
 $cfgText = ($cfg | ConvertTo-Json -Depth 4).Replace("`r`n", "`n") + "`n"
 [IO.File]::WriteAllText((Join-Path $WorkDir 'config.json'), $cfgText, [Text.UTF8Encoding]::new($false))

@@ -1,0 +1,41 @@
+name: pages
+
+# 宣传页：site/ 变动时自动部署到 GitHub Pages
+# 首次启用：仓库 Settings → Pages → Source 选 "GitHub Actions"（或 gh api 设 build_type=workflow）
+on:
+  push:
+    branches: [master]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上传静态站点
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4

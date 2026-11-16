@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>my-service · 面向 AI 时代的本地控制台</title>
+<meta name="description" content="面向 AI 时代的本地控制台：一份 JSON 注册条统一管理本机自建小服务的启停、健康探测、开机自启与定时调度。纯 Python 标准库，零第三方依赖。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="my-service · 面向 AI 时代的本地控制台">
+<meta property="og:description" content="一份 JSON 注册条统一管理本机自建小服务的启停、健康探测、开机自启与定时调度。纯 Python 标准库，零第三方依赖。">
+<meta property="og:image" content="https://keeyangyy.github.io/my-service/panel.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --card-hover: #1c2333;
+    --text: #e6edf3; --muted: #8b949e; --border: #30363d;
+    --green: #3fb950; --blue: #58a6ff; --yellow: #d29922;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.7 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    background: #1f2630; padding: 2px 6px; border-radius: 5px; font-size: .92em;
+  }
+  pre {
+    background: #0b0f14; border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px 20px; overflow-x: auto; font-size: 14px; line-height: 1.65;
+  }
+  pre code { background: none; padding: 0; }
+
+  header.hero { padding: 72px 0 56px; text-align: center; }
+  .badges { margin-bottom: 18px; }
+  .badges span {
+    display: inline-block; margin: 0 4px; padding: 2px 10px; font-size: 12px;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 999px;
+  }
+  h1 { font-size: 44px; margin: 0 0 12px; letter-spacing: -.5px; }
+  .tagline { font-size: 21px; color: var(--text); margin: 0 0 14px; }
+  .lede { font-size: 16px; color: var(--muted); max-width: 720px; margin: 0 auto 30px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 44px; }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 9px; font-weight: 600;
+    border: 1px solid var(--border); color: var(--text); background: var(--card);
+  }
+  .btn.primary { background: #238636; border-color: #238636; color: #fff; }
+  .btn:hover { text-decoration: none; background: var(--card-hover); }
+  .btn.primary:hover { background: #2ea043; }
+  .shot { max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block; margin: 0 auto; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 26px; margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 30px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .card .ico { font-size: 20px; margin-bottom: 10px; }
+
+  .pains { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .pain {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 16px; color: var(--muted); font-size: 15px;
+  }
+  .pain b { color: var(--text); font-weight: 600; }
+
+  .steps { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .step { counter-increment: st; }
+  .step::before {
+    content: counter(st); display: inline-flex; width: 26px; height: 26px;
+    align-items: center; justify-content: center; border-radius: 50%;
+    background: #238636; color: #fff; font-size: 14px; font-weight: 700; margin-bottom: 10px;
+  }
+  .steps { counter-reset: st; }
+
+  .who { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .who div {
+    border-left: 3px solid var(--green); padding: 4px 0 4px 14px; color: var(--muted);
+  }
+  .who b { color: var(--text); }
+
+  footer {
+    padding: 40px 0 60px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 14px; text-align: center;
+  }
+  footer a { margin: 0 8px; }
+  .dot { color: var(--green); }
+
+  /* 窄屏：grid 子项默认 min-width:auto 会被长代码块撑破，必须先归零 */
+  html, body { max-width: 100%; overflow-x: clip; }
+  .grid > *, .steps > *, .who > *, .pains > * { min-width: 0; }
+  pre { max-width: 100%; white-space: pre-wrap; word-break: break-word; }
+  .tagline, .lede, h1, h2, .pain, .card p, .who div { overflow-wrap: anywhere; }
+  .badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+  .badges span { margin: 0; }
+
+  @media (max-width: 680px) {
+    .wrap { padding: 0 16px; }
+    header.hero { padding: 40px 0 32px; }
+    h1 { font-size: 32px; }
+    .tagline { font-size: 18px; }
+    .lede { font-size: 15px; }
+    h2 { font-size: 21px; }
+    section { padding: 36px 0; }
+    pre { font-size: 12px; padding: 14px 16px; }
+    .cta { gap: 10px; }
+    .btn { padding: 10px 18px; font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero wrap">
+  <div class="badges">
+    <span>Windows 10 / 11</span>
+    <span>Python 3.10+</span>
+    <span>零第三方依赖</span>
+    <span><img src="https://img.shields.io/github/v/release/keeyangyy/my-service?label=release&color=3fb950" alt="release" style="vertical-align:-3px"></span>
+    <span>MIT</span>
+  </div>
+  <h1>my-service</h1>
+  <p class="tagline">面向 AI 时代的本地控制台——把你亲手写的那些小服务，收进一处统一管理。</p>
+  <p class="lede">
+    写一个服务变容易了，但怎么起、怎么停、活着没有、开机要不要自启、到点跑不跑、出错去哪看，
+    每个小服务都得重来一遍——而这里，一份 JSON 注册条就能把这些接管掉。
+  </p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/keeyangyy/my-service/releases/latest">下载最新版</a>
+    <a class="btn" href="https://github.com/keeyangyy/my-service">在 GitHub 查看</a>
+  </div>
+  <img class="shot" src="panel.png" alt="控制台面板">
+</header>
+
+<section class="wrap">
+  <h2>每个自建服务，都在重复同一套脏活</h2>
+  <p class="sub">这些和业务无关，但少一样，服务就"不像个正经服务"。</p>
+  <div class="pains">
+    <div class="pain"><b>起停脚本</b><br>每写一个服务就配一份 start/stop，还要处理残留进程</div>
+    <div class="pain"><b>健康判断</b><br>端口通了不等于活着，HTTP 200 也可能是别人的服务</div>
+    <div class="pain"><b>开机自启</b><br>快捷方式、计划任务、系统服务……每家做法都不一样</div>
+    <div class="pain"><b>定时执行</b><br>错过一次就断档，还得自己防重叠、防连发</div>
+    <div class="pain"><b>日志与审计</b><br>出事了翻控制台窗口，找不到"几点几分谁重启的"</div>
+    <div class="pain"><b>状态漂移</b><br>进程崩了，面板还显示 running</div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>一份注册条，接管整套运维</h2>
+  <p class="sub">声明式接入：写入 <code>reg/services/&lt;名字&gt;.json</code> 即生效，不用改框架代码。</p>
+  <div class="grid">
+    <div class="card">
+      <div class="ico">📄</div>
+      <h3>一份 JSON = 一个服务</h3>
+      <p>路径、启停入口、健康判据、自启与超时全部写在注册条里；保存即生效，无需重启宿主。</p>
+    </div>
+    <div class="card">
+      <div class="ico">🎛</div>
+      <h3>三种托管形态</h3>
+      <p><code>managed</code> 常驻托管、<code>on_demand</code> 点开才起并空闲回收、<code>task</code> 到点跑一次。管不了进程时还有点火脚本形态。</p>
+    </div>
+    <div class="card">
+      <div class="ico">🩺</div>
+      <h3>健康 + 身份双判定</h3>
+      <p>HTTP / 端口 / pidfile / 进程名可任意组合；还会核对"端口上跑的是不是你"，不是就拒绝停止。</p>
+    </div>
+    <div class="card">
+      <div class="ico">⏰</div>
+      <h3>定时调度</h3>
+      <p>daily / weekly / interval，超时强杀整棵进程树，错过计划可选补跑，绝不堆积连发。</p>
+    </div>
+    <div class="card">
+      <div class="ico">📜</div>
+      <h3>结构化审计</h3>
+      <p>每次启停与调度写进 <code>host.jsonl</code>，面板内直接检索"谁在几点动了什么"。</p>
+    </div>
+    <div class="card">
+      <div class="ico">🪶</div>
+      <h3>零第三方依赖</h3>
+      <p>纯 Python 标准库 + 原生 JavaScript，不用装包管理器，解压就能跑。</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>30 秒上手</h2>
+  <p class="sub">解压、启动、打开面板——不需要装 Docker，也不需要写代码。</p>
+  <div class="steps">
+    <div class="step card">
+      <h3>下载解压</h3>
+      <p>从 Releases 取最新的 <code>my-service-x.y.z.zip</code>，解压到任意目录（需要系统 Python 3.10+）。</p>
+    </div>
+    <div class="step card">
+      <h3>启动宿主</h3>
+      <pre><code>pwsh -File run/start.ps1</code></pre>
+    </div>
+    <div class="step card">
+      <h3>打开面板</h3>
+      <p>浏览器访问 <code>http://127.0.0.1:1236</code>，或在 <code>run/</code> 里双击 <code>Dashboard.url</code>。</p>
+    </div>
+  </div>
+  <p class="sub" style="margin-top:26px">懒得手写配置？把服务目录和启停方式告诉 AI，让它帮你生成一份注册条：</p>
+<pre><code>{
+  "path": "C:/path/to/your-service",
+  "display": "your-service",
+  "mode": "on_demand",
+  "start": { "entry": "src/server.py" },
+  "stop":  { "script": "run/stop.ps1" },
+  "identity": { "http": "http://127.0.0.1:33510/health" },
+  "settings": { "state": "active", "idle_timeout_sec": 600 }
+}</code></pre>
+</section>
+
+<section class="wrap">
+  <h2>面板能做什么</h2>
+  <div class="grid">
+    <div class="card"><h3>服务卡片</h3><p>状态、端口、置信度一眼可见；启动 / 停止 / 重启，点卡片直接打开服务页面。</p></div>
+    <div class="card"><h3>定时任务</h3><p>启用开关、立即运行、行内修改时刻与间隔，并展示上次执行结果。</p></div>
+    <div class="card"><h3>事件登记簿</h3><p>按服务或失败筛选，看清每次启停的耗时与原因。</p></div>
+    <div class="card"><h3>编排器设置</h3><p>空闲回收时长、开机自启、更新与备份，都在面板里完成。</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>适合谁</h2>
+  <div class="who">
+    <div><b>写了很多小工具的人</b><br>爬虫、签到、看板、模型服务，散在各处，缺一个统一入口。</div>
+    <div><b>24 小时开着的家用主机</b><br>需要开机自启、远程看状态，又不想为几个脚本上 Docker。</div>
+    <div><b>和 AI 会话一起写服务的人</b><br>AI 帮你把服务写出来了，运维这层交给它；CLI 与 API 也能直接给 agent 用。</div>
+    <div><b>不喜欢装依赖的人</b><br>只有 Python 标准库，卸掉只需要删掉一个目录。</div>
+  </div>
+</section>
+
+<footer>
+  <div>my-service · 面向 AI 时代的本地控制台 <span class="dot">●</span> MIT License</div>
+  <div style="margin-top:10px">
+    <a href="https://github.com/keeyangyy/my-service/blob/master/docs/guide/usage.md">文档</a>
+    <a href="https://github.com/keeyangyy/my-service/blob/master/docs/guide/registration.md">注册条规范</a>
+    <a href="https://github.com/keeyangyy/my-service/blob/master/CHANGELOG.md">更新日志</a>
+    <a href="https://github.com/keeyangyy/my-service">GitHub</a>
+  </div>
+</footer>
+
+</body>
+</html>
