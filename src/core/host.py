@@ -27,6 +27,7 @@ CORE_DIR = Path(__file__).resolve().parent          # core/
 SRC_DIR = CORE_DIR.parent                            # src/
 SERVER_PY = SRC_DIR / "server.py"
 _DETACH = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+_NO_WINDOW = 0x08000000             # CREATE_NO_WINDOW：框架发起的控制台程序不弹黑窗
 
 
 class HostController:
@@ -82,7 +83,8 @@ class HostController:
                 return "startup"
         try:
             done = subprocess.run(["schtasks", "/query", "/tn", "StartMyService"],
-                                  capture_output=True, timeout=3)
+                                  capture_output=True, timeout=3,
+                                  creationflags=_NO_WINDOW)
             if done.returncode == 0:
                 return "logon"
         except (OSError, subprocess.SubprocessError):
@@ -132,6 +134,7 @@ class HostController:
              "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-Command", ps],
             capture_output=True, timeout=30, check=True,
+            creationflags=_NO_WINDOW,
         )
 
     def set_autostart(self, enabled: bool) -> tuple[bool, str]:
