@@ -179,6 +179,7 @@ pwsh -File ./examples/demo/start-demo.ps1         # 起一个隔离的 demo 实�
 
 | 文档 | 面向 | 内容 |
 |:--|:--|:--|
+| [在线介绍页](https://keeyangyy.github.io/my-service/) | 访客 | 单页介绍：特性、30 秒上手、面板截图 |
 | [使用指南](docs/guide/usage.md) | 使用者 | 四层入口、完整 REST 接口、配置项、升级回滚、卸载 |
 | [注册一个服务](docs/guide/registration.md) | 使用者 | 三件套要求、字段速查、identity 写法、定时任务、排查 |
 | [注册条规范](docs/design/config-schema.md) | 开发者 | 注册条字段的权威定义与迁移说明 |
