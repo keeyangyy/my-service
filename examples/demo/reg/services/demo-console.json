@@ -9,12 +9,11 @@
     "args": ["--port", "33510", "--name", "示例面板", "--color", "blue", "--pidfile", "demo-console.pid"]
   },
   "stop": { "script": "stop_demo.ps1", "grace_sec": 10 },
-  "health": {
-    "type": "http",
-    "url": "http://127.0.0.1:33510/health",
+  "identity": {
+    "http": "http://127.0.0.1:33510/health",
+    "service_name": "示例面板",
     "timeout_sec": 30,
-    "service": "示例面板"
+    "pidfile": "demo-console.pid"
   },
-  "identity": { "pidfile": "demo-console.pid" },
-  "runtime": { "enabled": true, "autostart": false, "idle_timeout_sec": 600 }
+  "settings": { "state": "active", "autostart": false, "idle_timeout_sec": 600 }
 }

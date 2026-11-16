@@ -12,7 +12,7 @@
 | 即用即走 | `on_demand` | 点开才起、超时回收 |
 | 定时任务 | `task` | 到点跑一次 |
 
-空组隐藏。各组独立拖拽排序，**跨组拖不动**（分组由 `mode` 决定）。`runtime.order` 是全局序号，面板按 `(mode, order)` 排序。
+空组隐藏。各组独立拖拽排序，**跨组拖不动**（分组由 `mode` 决定）。`settings.order` 是全局序号，面板按 `(mode, order)` 排序。
 
 ## 状态展示（六态）
 
@@ -56,7 +56,7 @@ PID 来源：handle / framework-pidfile / service-pidfile / port / process
 | `on_demand` | 超时回收时长（`idle_timeout_sec`）、自启（默认关） |
 | `task` | 启用、补跑、执行超时、调度时刻（单独区块） |
 
-`自启` 开关留在主行；`enabled: false` 时自启一并失效。
+`自启` 开关留在主行；`state: disabled` 时自启一并失效。
 
 ## 编排器全局设置（header ⚙）
 

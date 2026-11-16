@@ -7,7 +7,11 @@
     "entry": "demo_app.py",
     "args": ["--port", "33511", "--name", "示例常驻服务", "--color", "green", "--pidfile", "demo-worker.pid"]
   },
-  "health": { "type": "port", "port": 33511, "timeout_sec": 30 },
-  "identity": { "pidfile": "demo-worker.pid" },
-  "runtime": { "enabled": true, "autostart": true }
+  "stop": { "script": "stop_demo.ps1" },
+  "identity": {
+    "port": 33511,
+    "timeout_sec": 30,
+    "pidfile": "demo-worker.pid"
+  },
+  "settings": { "state": "active", "autostart": true }
 }

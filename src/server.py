@@ -41,24 +41,35 @@ def _config_path(home: Path) -> Path:
     return home / "config.json"
 
 
+def _deep_merge(base: dict, extra: dict) -> None:
+    """把 extra 深合并进 base（分组内保留未覆盖的默认值）。"""
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+
+
 def load_config(home: Path) -> dict:
     defaults = {
-        "host": "127.0.0.1",
-        "port": 1236,
-        "reg_dir": "reg",
-        "audit_retention_days": 7,   # 登记簿事件保留天数（0 = 永不自动清理）
-        "cors_local_only": True,     # 仅本机来源的网页可获得跨源许可（关掉=回到无 CORS 的历史行为）
-        "cors_allow": [],            # 额外放行的来源：主机名 / IP / CIDR（空=只本机）
-        "backup": {"keep": 7},       # data/bak/ 保留份数（0 = 不自动清理）
+        "server": {"host": "127.0.0.1", "port": 1236},
+        "cors": {"local_only": True, "allow": []},
+        "audit": {"retention_days": 7},
+        "backup": {"keep": 7},
         # GitHub 代理前缀（更新检查/下载用）；空数组 = 只用官方
         "update": {"mirrors": list(update.DEFAULT_MIRRORS)},
+        "advanced": {
+            "reg_dir": "reg",
+            "monitor": {"fast_sec": 1.0, "idle_sec": 10.0, "panel_grace_sec": 15.0},
+            "scheduler": {"tick_sec": 10.0},
+        },
     }
     cfg_path = _config_path(home)
     if cfg_path.is_file():
         try:
             user = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             if isinstance(user, dict):
-                defaults.update(user)
+                _deep_merge(defaults, user)
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] config.json 解析失败({exc})，使用默认配置")
     return defaults
@@ -102,11 +113,11 @@ def main() -> int:
     runner.set_runtime_dir(data_dir)
     with contextlib.suppress(OSError):
         (data_dir / "host.pid").write_text(str(os.getpid()), encoding="ascii")
-    reg_root = (home / cfg["reg_dir"]).resolve()
+    reg_root = (home / cfg["advanced"]["reg_dir"]).resolve()
     scanner = Scanner(reg_root / "services")
-    monitor_settings = dict(cfg.get("monitor") or {})
+    monitor_settings = dict(cfg["advanced"].get("monitor") or {})
     monitor_settings.setdefault("audit_retention_days",
-                                cfg.get("audit_retention_days", 7))
+                                cfg["audit"].get("retention_days", 7))
     manager = Manager(scanner, settings=monitor_settings)
     # 备份保留策略：data/bak/ 只留最近 keep 份（0 = 不自动清理）
     backup_settings = dict(cfg.get("backup") or {})
@@ -115,17 +126,17 @@ def main() -> int:
     cron_dir = (reg_root / "tasks").resolve()
     cron_dir.mkdir(parents=True, exist_ok=True)
     scheduler = Scheduler(cron_dir, data_dir / "cron_state.json",
-                          tick_sec=float((cfg.get("scheduler") or {}).get("tick_sec", 10.0)))
+                          tick_sec=float(cfg["advanced"]["scheduler"].get("tick_sec", 10.0)))
     # 定时任务与服务不再按路径绑定：任务独立展示、独立管理
     controller = HostController(manager, logs_dir, data_dir, app_dir=app, home=home)
 
-    httpd = api.serve(manager, cfg["host"], int(cfg["port"]),
+    httpd = api.serve(manager, cfg["server"]["host"], int(cfg["server"]["port"]),
                       controller=controller, scheduler=scheduler,
-                      cors_local_only=bool(cfg.get("cors_local_only", True)),
-                      cors_allow=cfg.get("cors_allow") or (),
+                      cors_local_only=bool(cfg["cors"].get("local_only", True)),
+                      cors_allow=cfg["cors"].get("allow") or (),
                       settings_path=_config_path(home),
                       backup_settings=backup_settings,
-                      update_mirrors=(cfg.get("update") or {}).get("mirrors"))
+                      update_mirrors=cfg["update"].get("mirrors"))
     controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]
@@ -134,9 +145,9 @@ def main() -> int:
     scheduler.scan()
     cron_names = ", ".join(sorted(s["name"] for s in scheduler.snapshot())) or "(无)"
     audit.emit("host_start", pid=os.getpid(),
-               note=f"v{VERSION} listening http://{cfg['host']}:{cfg['port']}"
+               note=f"v{VERSION} listening http://{cfg['server']['host']}:{cfg['server']['port']}"
                     f" | 注册服务: {listing} | 定时任务: {cron_names}")
-    print(f"my-service v{VERSION} listening on http://{cfg['host']}:{cfg['port']}"
+    print(f"my-service v{VERSION} listening on http://{cfg['server']['host']}:{cfg['server']['port']}"
           f"  (pid={os.getpid()})", flush=True)
     print(f"reg = {scanner.reg_dir}  |  注册服务: {listing}  |  登记簿 = {audit_path}",
           flush=True)

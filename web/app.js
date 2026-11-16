@@ -71,6 +71,11 @@
     backupInfo: document.getElementById("backup-info"),
     setSave: document.getElementById("set-save"),
     setCancel: document.getElementById("set-cancel"),
+    setConn: document.getElementById("set-conn"),
+    setCorsLocal: document.getElementById("set-cors-local"),
+    setCorsAllow: document.getElementById("set-cors-allow"),
+    setMirrors: document.getElementById("set-mirrors"),
+    setRegdir: document.getElementById("set-regdir"),
     updateModal: document.getElementById("update-modal"),
     updateVersion: document.getElementById("update-version"),
     updateSize: document.getElementById("update-size"),
@@ -226,15 +231,27 @@
       var res = await api("GET", "/api/settings");
       if (!res.ok) throw new Error("HTTP " + res.status);
       var data = await res.json();
-      var m = data.monitor || {};
-      var s = data.scheduler || {};
+      var adv = data.advanced || {};
+      var m = adv.monitor || {};
+      var s = adv.scheduler || {};
+      var a = data.audit || {};
       var b = data.backup || {};
+      var c = data.cors || {};
+      var u = data.update || {};
+      var srv = data.server || {};
       els.setFast.value = m.fast_sec != null ? m.fast_sec : 1;
       els.setIdle.value = m.idle_sec != null ? m.idle_sec : 10;
       els.setGrace.value = m.panel_grace_sec != null ? m.panel_grace_sec : 15;
       els.setTick.value = s.tick_sec != null ? s.tick_sec : 10;
-      els.setAudit.value = m.audit_retention_days != null ? m.audit_retention_days : 7;
+      els.setAudit.value = a.retention_days != null ? a.retention_days : 7;
       els.setBackupKeep.value = b.keep != null ? b.keep : 7;
+      els.setCorsLocal.checked = c.local_only !== false;
+      els.setCorsAllow.value = (c.allow || []).join(", ");
+      els.setMirrors.value = (u.mirrors || []).join(", ");
+      els.setConn.textContent = "监听：" + (srv.host || "?") + ":" + (srv.port || "?")
+        + "（改 config.json 后重启）";
+      els.setRegdir.textContent = "注册目录：" + (adv.reg_dir || "reg")
+        + "（改 config.json 后重启）";
       els.settingsModal.hidden = false;
       refreshBackupInfo();
     } catch (e) {
@@ -248,15 +265,27 @@
     if (settingsSaving) return;
     settingsSaving = true;
     els.setSave.disabled = true;
+    var splitList = function (text) {
+      return String(text || "").split(",")
+        .map(function (s) { return s.trim(); })
+        .filter(function (s) { return s; });
+    };
     var body = {
-      monitor: {
-        fast_sec: Number(els.setFast.value),
-        idle_sec: Number(els.setIdle.value),
-        panel_grace_sec: Number(els.setGrace.value),
-        audit_retention_days: Number(els.setAudit.value)
+      audit: { retention_days: Number(els.setAudit.value) },
+      backup: { keep: Number(els.setBackupKeep.value) },
+      cors: {
+        local_only: !!els.setCorsLocal.checked,
+        allow: splitList(els.setCorsAllow.value)
       },
-      scheduler: { tick_sec: Number(els.setTick.value) },
-      backup: { keep: Number(els.setBackupKeep.value) }
+      update: { mirrors: splitList(els.setMirrors.value) },
+      advanced: {
+        monitor: {
+          fast_sec: Number(els.setFast.value),
+          idle_sec: Number(els.setIdle.value),
+          panel_grace_sec: Number(els.setGrace.value)
+        },
+        scheduler: { tick_sec: Number(els.setTick.value) }
+      }
     };
     try {
       var res = await api("POST", "/api/settings", body);
@@ -415,7 +444,7 @@
   function cronStatus(c) {
     if (!c.valid) return "invalid";
     if (c.running) return "running";
-    if (!c.enabled) return "disabled";
+    if (c.state === "disabled") return "disabled";
     return "idle";
   }
 
@@ -1036,7 +1065,9 @@
         (c.catch_up ? "，错过补跑" : "") + "）——点「⚙ 设置」修改"));
       if (c.running) {
         info.appendChild(cronChip("本轮运行中…"));
-      } else if (c.enabled && c.valid && typeof c.next_run === "number") {
+      } else if (c.valid && c.schedule_active === false) {
+        info.appendChild(cronChip("未选择星期，不会执行"));
+      } else if (c.state !== "disabled" && c.valid && typeof c.next_run === "number") {
         info.appendChild(cronChip("下次 " + fmtClock(c.next_run)));
       }
       if (c.valid) info.appendChild(lastResultChip(c));
@@ -1056,7 +1087,7 @@
       cronModeMemo.set(c.name, memo);
       // 主行的「启用」开关同步勾选态（提交中不回拨，避免闪一下）
       var enCb = row.querySelector('.actions [data-role="enabled"]');
-      if (enCb && !cronCfgPending.has(c.name)) enCb.checked = !!c.enabled;
+      if (enCb && !cronCfgPending.has(c.name)) enCb.checked = c.state !== "disabled";
       // 设置按钮：展开态高亮；坏注册条禁用（面板改不了根因）
       var cfgBtnEl = row.querySelector(".btn-cfg");
       if (cfgBtnEl) {
@@ -1073,7 +1104,7 @@
       logBtn.textContent = isOpen ? "收起" : "事件";
 
       var runBtn = row.querySelector(".btn-run");
-      runBtn.disabled = c.running || !c.valid || !c.enabled || cronRunPending.has(c.name);
+      runBtn.disabled = c.running || !c.valid || c.state === "disabled" || cronRunPending.has(c.name);
 
       desired.push(row);
     });
@@ -1589,7 +1620,13 @@
     var focusedAction = focusedBtn ? focusedBtn.dataset.action : null;
     var wanted = wantedOps(status, svc);
 
-    if (focusedAction) {
+    if (svc.state === "disabled") {
+      opGroup.replaceChildren();
+      var offNote = document.createElement("span");
+      offNote.className = "readonly-note";
+      offNote.textContent = "已停用";
+      opGroup.appendChild(offNote);
+    } else if (focusedAction) {
       var defByAction = {};
       wanted.forEach(function (d) { defByAction[d.action] = d; });
       var existing = Array.prototype.slice.call(opGroup.querySelectorAll("button.btn"));

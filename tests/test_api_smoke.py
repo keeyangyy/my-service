@@ -71,8 +71,8 @@ class TestApiSmoke(unittest.TestCase):
     def test_settings_shape(self):
         status, body = self._get("/api/settings")
         self.assertEqual(status, 200)
-        self.assertIn("monitor", body)
-        self.assertIn("scheduler", body)
+        self.assertIn("monitor", body["advanced"])
+        self.assertIn("scheduler", body["advanced"])
         self.assertEqual(body["backup"]["keep"], 7)
 
     def test_backups_empty(self):

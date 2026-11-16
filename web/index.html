@@ -60,21 +60,31 @@
   <div id="settings-modal" class="settings-modal" hidden>
     <div class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <h3 id="settings-title">⚙ 编排器设置</h3>
-      <label>面板可见时刷新（秒）<input id="set-fast" type="number" min="0.2" step="0.2"></label>
-      <label>面板隐藏时刷新（秒）<input id="set-idle" type="number" min="1" step="1"></label>
-      <label>面板活跃宽限（秒）<input id="set-grace" type="number" min="1" step="1"></label>
-      <label>定时任务检查间隔（秒）<input id="set-tick" type="number" min="1" step="1"></label>
       <label>事件保留天数（0 = 永不清理）<input id="set-audit" type="number" min="0" step="1"></label>
       <label>备份保留份数（0 = 不自动清理）<input id="set-backup-keep" type="number" min="0" step="1" placeholder="7"></label>
       <div class="settings-backup">
         <button id="set-backup" type="button">立即备份</button>
         <span id="backup-info" class="settings-hint">—</span>
       </div>
+
+      <details class="settings-advanced">
+        <summary>高级设置</summary>
+        <p class="settings-hint" id="set-conn">监听：—</p>
+        <label>面板可见时刷新（秒）<input id="set-fast" type="number" min="0.2" step="0.2"></label>
+        <label>面板隐藏时刷新（秒）<input id="set-idle" type="number" min="1" step="1"></label>
+        <label>面板活跃宽限（秒）<input id="set-grace" type="number" min="1" step="1"></label>
+        <label>定时任务检查间隔（秒）<input id="set-tick" type="number" min="1" step="1"></label>
+        <label class="settings-check"><input type="checkbox" id="set-cors-local"> 仅本机网页可跨源访问</label>
+        <label>CORS 额外放行（逗号分隔）<input id="set-cors-allow" type="text" placeholder="主机名 / IP / CIDR"></label>
+        <label>更新源代理（逗号分隔，留空 = 只用官方）<input id="set-mirrors" type="text"></label>
+        <p class="settings-hint" id="set-regdir">注册目录：—</p>
+      </details>
+
       <div class="settings-actions">
         <button id="set-cancel" type="button">取消</button>
         <button id="set-save" type="button" class="primary">保存</button>
       </div>
-      <p class="settings-hint">保存后立即生效，并写入 config.json。</p>
+      <p class="settings-hint">保存后立即生效；监听地址/端口与注册目录需改 config.json 并重启。</p>
     </div>
   </div>
 

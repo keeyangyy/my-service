@@ -121,7 +121,7 @@ def _spec(port: int | None):
 
     class _Spec:
         folder = "test"
-        health_type = "port" if port else "process"
+        probe = "port" if port else "process"
         health_port = port
         health_url = None
         pidfile = None

@@ -50,15 +50,15 @@ class _Sandbox:
         return Scheduler(self.reg, self.root / "state.json",
                          self.root / "order.json")
 
-    def runtime(self, name: str | None = None) -> dict:
-        """读注册条 runtime 组；给 name 则返回该条。"""
+    def settings(self, name: str | None = None) -> dict:
+        """读注册条 settings 组；给 name 则返回该条。"""
         out: dict = {}
         for p in self.reg.glob("*.json"):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
                 continue
-            out[p.stem] = data.get("runtime") or {}
+            out[p.stem] = data.get("settings") or {}
         return out.get(name, {}) if name else out
 
     def reg_bytes(self, name: str) -> bytes:
@@ -116,11 +116,11 @@ class TestCronSpec(unittest.TestCase):
         self.assertEqual(s.schedule_times, [(9, 30), (23, 30)])
         self.assertEqual(s.schedule_desc, "每天 09:30, 23:30")
 
-    def test_daily_empty_at_rejected(self):
+    def test_daily_empty_at_defaults_to_0900(self):
         p = self.box.put("t2e", schedule={"type": "daily", "at": []})
         s = CronSpec("t2e", p)
-        self.assertFalse(s.valid)
-        self.assertIn("at", s.error)
+        self.assertTrue(s.valid, s.error)
+        self.assertEqual(s.schedule_times, [(9, 0)])
 
     def test_weekly_ok(self):
         p = self.box.put("tw", schedule={"type": "weekly",
@@ -132,12 +132,13 @@ class TestCronSpec(unittest.TestCase):
         self.assertEqual(s.schedule_times, [(9, 30)])
         self.assertEqual(s.schedule_desc, "每周周一、周三、周五 09:30")
 
-    def test_weekly_empty_days_rejected(self):
+    def test_weekly_empty_days_means_no_schedule(self):
         p = self.box.put("tw0", schedule={"type": "weekly", "days": [],
                                           "at": ["09:30"]})
         s = CronSpec("tw0", p)
-        self.assertFalse(s.valid)
-        self.assertIn("days", s.error)
+        self.assertTrue(s.valid, s.error)
+        self.assertFalse(s.schedule_active)
+        self.assertEqual(s.schedule_desc, "每周（未选择星期，不执行）")
 
     def test_weekly_bad_days_rejected(self):
         p = self.box.put("tw9", schedule={"type": "weekly", "days": [0, 8],
@@ -146,18 +147,19 @@ class TestCronSpec(unittest.TestCase):
         self.assertFalse(s.valid)
         self.assertIn("days", s.error)
 
-    def test_weekly_requires_at(self):
+    def test_weekly_empty_at_defaults_to_0900(self):
         p = self.box.put("twa", schedule={"type": "weekly", "days": [1],
                                           "at": []})
         s = CronSpec("twa", p)
-        self.assertFalse(s.valid)
-        self.assertIn("at", s.error)
+        self.assertTrue(s.valid, s.error)
+        self.assertEqual(s.schedule_times, [(9, 0)])
 
-    def test_invalid_missing_schedule(self):
+    def test_missing_schedule_defaults_to_daily_0900(self):
         p = self.box.put("t3")
         s = CronSpec("t3", p)
-        self.assertFalse(s.valid)
-        self.assertIn("schedule", s.error)
+        self.assertTrue(s.valid, s.error)
+        self.assertEqual(s.schedule_type, "daily")
+        self.assertEqual(s.schedule_desc, "每天 09:00")
 
     def test_invalid_daily_bad_at(self):
         p = self.box.put("t4", schedule={"type": "daily", "at": "25:99"})
@@ -173,7 +175,7 @@ class TestCronSpec(unittest.TestCase):
 
     def test_timeout_clamped(self):
         p = self.box.put("t6", schedule={"type": "interval", "every_sec": 10},
-                         runtime={"run_timeout_sec": 1})
+                         settings={"run_timeout_sec": 1})
         s = CronSpec("t6", p)
         self.assertTrue(s.valid, s.error)
         self.assertEqual(s.timeout_sec, 5.0)   # 下限钳到 5s
@@ -182,7 +184,8 @@ class TestCronSpec(unittest.TestCase):
 class TestScheduling(unittest.TestCase):
     def setUp(self):
         self.box = _Sandbox()
-        self.box.put("t", schedule={"type": "interval", "every_sec": 10})
+        self.box.put("t", schedule={"type": "interval", "every_sec": 10},
+                     settings={"state": "active"})
         self.sched = self.box.sched()
 
     def tearDown(self):
@@ -224,7 +227,7 @@ class TestScheduling(unittest.TestCase):
 
     def test_miss_caught_up_when_enabled(self):
         self.box.put("c", schedule={"type": "interval", "every_sec": 3600},
-                     runtime={"catch_up": True})
+                     settings={"state": "active", "catch_up": True})
         self.sched.scan()
         self.sched.tick()
         self.sched.persist["c"]["next_run"] = time.time() - 999
@@ -236,7 +239,7 @@ class TestScheduling(unittest.TestCase):
         self.assertTrue(self._snap("c")["last_ok"])
 
     def test_disabled_task_not_scheduled(self):
-        self.box.put("off", runtime={"enabled": False},
+        self.box.put("off",
                      schedule={"type": "interval", "every_sec": 10})
         self.sched.scan()
         self.sched.tick()
@@ -257,7 +260,8 @@ class TestScheduling(unittest.TestCase):
 class TestRunNowAndPersist(unittest.TestCase):
     def setUp(self):
         self.box = _Sandbox()
-        self.box.put("t", schedule={"type": "interval", "every_sec": 3600})
+        self.box.put("t", schedule={"type": "interval", "every_sec": 3600},
+                     settings={"state": "active"})
         self.sched = self.box.sched()
         self.sched.scan()
 
@@ -296,15 +300,14 @@ class TestRunNowAndPersist(unittest.TestCase):
         self.sched.scan()                               # 注册条已删 → 账目清零
         self.assertNotIn("t", self.sched.persist)
 
-    def test_toggle_enabled_writes_ledger_and_takes_effect(self):
+    def test_toggle_enabled_writes_settings_and_takes_effect(self):
         ok, _ = self.sched.toggle_enabled("t", False)
         self.assertTrue(ok)
-        # 权威值只进运行态账本；注册条一个字节不动
-        self.assertIs(self.box.runtime("t")["enabled"], False)
+        # 权威值写回注册条 settings.state
+        self.assertEqual(self.box.settings("t")["state"], "disabled")
         # 内存态同步 → tick 不再调度
         snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
-        self.assertIs(snap["enabled"], False)
-        self.assertIsNone(snap["next_run"])             # 未初始化/不再推进
+        self.assertEqual(snap["state"], "disabled")
         self.sched.tick()
         snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
         self.assertIsNone(snap["next_run"])             # 停用期间不排新计划
@@ -313,7 +316,8 @@ class TestRunNowAndPersist(unittest.TestCase):
         self.assertTrue(ok2)
         self.sched.tick()
         snap = {x["name"]: x for x in self.sched.snapshot()}["t"]
-        self.assertTrue(snap["enabled"] and snap["next_run"])
+        self.assertEqual(snap["state"], "active")
+        self.assertTrue(snap["next_run"])
 
     def test_toggle_enabled_unknown_task(self):
         ok, msg = self.sched.toggle_enabled("ghost", False)
@@ -384,8 +388,10 @@ class TestUpdateConfig(unittest.TestCase):
     def setUp(self):
         self.box = _Sandbox()
         self.box.put("d", schedule={"type": "daily", "at": "23:00"},
+                     settings={"state": "active"},
                      display="每日快照", description="带额外字段的任务")
-        self.box.put("i", schedule={"type": "interval", "every_sec": 600})
+        self.box.put("i", schedule={"type": "interval", "every_sec": 600},
+                     settings={"state": "active"})
         self.sched = self.box.sched()
         self.sched.scan()
         self.sched.tick()          # 初始化 next_run
@@ -433,7 +439,7 @@ class TestUpdateConfig(unittest.TestCase):
         ok, _, _ = self.sched.update_config(
             "d", {"timeout_sec": 60, "catch_up": True})
         self.assertTrue(ok)
-        rt = self.box.runtime("d")
+        rt = self.box.settings("d")
         self.assertEqual(rt["run_timeout_sec"], 60.0)
         self.assertIs(rt["catch_up"], True)
         snap = self._snap("d")
@@ -447,8 +453,7 @@ class TestUpdateConfig(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(code, "invalid")
         self.assertIn("回滚", msg)
-        # 注册条一个字节不动；账本里的 schedule 必须回滚（不留半截配置）
-        self.assertNotIn("schedule", self.box.runtime("d"))
+        # 注册条里仍是原计划（写后校验失败即回滚，不留半截配置）
         self.assertEqual(self._raw("d")["schedule"], before["schedule"])
         snap = self._snap("d")
         self.assertTrue(snap["valid"], snap["error"])
@@ -458,14 +463,15 @@ class TestUpdateConfig(unittest.TestCase):
         ok, code, _ = self.sched.update_config(
             "i", {"schedule": {"type": "interval", "every_sec": 2}})
         self.assertFalse(ok and code == "invalid")
-        self.assertNotIn("schedule", self.box.runtime("i"))
+        self.assertNotIn("schedule", self.box.settings("i"))
         self.assertEqual(self._raw("i")["schedule"]["every_sec"], 600)
 
     def test_unknown_type_and_task(self):
         ok, code, _ = self.sched.update_config(
             "d", {"schedule": {"type": "weekly", "at": "08:00"}})
         self.assertFalse(ok and code == "invalid")
-        self.assertEqual(self.box.runtime("d"), {}, "粗校验失败不该写账本")
+        self.assertEqual(self.box.settings("d"), {"state": "active"},
+                         "粗校验失败不该写注册条")
         self.assertEqual(self._raw("d")["schedule"]["type"], "daily")
         self.assertEqual(self.sched.update_config("ghost", {"catch_up": True})[1],
                          "not_found")
@@ -473,8 +479,8 @@ class TestUpdateConfig(unittest.TestCase):
     def test_enabled_patch_still_works_via_toggle(self):
         ok, msg = self.sched.toggle_enabled("d", False)
         self.assertTrue(ok, msg)
-        self.assertIs(self.box.runtime("d")["enabled"], False)
-        self.assertIs(self._snap("d")["enabled"], False)
+        self.assertEqual(self.box.settings("d")["state"], "disabled")
+        self.assertEqual(self._snap("d")["state"], "disabled")
 
     def test_other_fields_preserved_on_write(self):
         """运行态写入不得碰注册条任何字段（display/entry/path/schedule 默认计划都在）。"""
@@ -489,7 +495,8 @@ class TestRuntimeInReg(unittest.TestCase):
 
     def setUp(self):
         self.box = _Sandbox()
-        self.box.put("t", schedule={"type": "daily", "at": "23:00"})
+        self.box.put("t", schedule={"type": "daily", "at": "23:00"},
+                     settings={"state": "active"})
         self.sched = self.box.sched()
         self.sched.scan()
 
@@ -504,13 +511,19 @@ class TestRuntimeInReg(unittest.TestCase):
         s2.scan()
         self.assertEqual(s2.snapshot()[0]["at"], ["06:30"])
 
-    def test_runtime_defaults_without_reg(self):
+    def test_settings_defaults_without_reg(self):
         s = self.box.sched()
         s.scan()
         spec = s.specs["t"]
-        self.assertIs(spec.enabled, True)
+        self.assertEqual(spec.state, "active")      # 注册条写了 settings.state
         self.assertEqual(spec.timeout_sec, 300.0)
         self.assertIs(spec.catch_up, False)
+
+    def test_task_disabled_by_default(self):
+        self.box.put("d0", schedule={"type": "interval", "every_sec": 600})
+        s = self.box.sched()
+        s.scan()
+        self.assertEqual(s.specs["d0"].state, "disabled")
 
     def test_old_reg_fields_rejected(self):
         self.box.put("legacy", schedule={"type": "interval", "every_sec": 600},
@@ -520,22 +533,22 @@ class TestRuntimeInReg(unittest.TestCase):
         self.assertFalse(s.specs["legacy"].valid)
         self.assertIn("旧版字段", s.specs["legacy"].error)
 
-    def test_runtime_in_reg_is_authoritative(self):
+    def test_settings_in_reg_is_authoritative(self):
         self.box.put("r", schedule={"type": "interval", "every_sec": 600},
-                     runtime={"enabled": False, "catch_up": True,
-                              "run_timeout_sec": 120})
+                     settings={"state": "disabled", "catch_up": True,
+                               "run_timeout_sec": 120})
         s = self.box.sched()
         s.scan()
         spec = s.specs["r"]
-        self.assertIs(spec.enabled, False)
+        self.assertEqual(spec.state, "disabled")
         self.assertIs(spec.catch_up, True)
         self.assertEqual(spec.timeout_sec, 120.0)
 
-    def test_registration_removed_clears_runtime(self):
+    def test_registration_removed_clears_spec(self):
         self.sched.update_config("t", {"timeout_sec": 90})
         (self.box.reg / "t.json").unlink()
         self.sched.scan()
-        self.assertNotIn("t", self.box.runtime())
+        self.assertNotIn("t", self.sched.specs)
 
 
 class TestOrdering(unittest.TestCase):
@@ -589,10 +602,10 @@ class TestOrdering(unittest.TestCase):
         self.sched.scan()
         self.assertEqual(self.sched._order, ["c-task", "a-task"])
         self.assertEqual(self._names(), ["c-task", "a-task"])
-        # 顺序写回注册条 runtime.order（重启后不会复活已注销任务）
+        # 顺序写回注册条 settings.order（重启后不会复活已注销任务）
         saved = {
             n: json.loads((self.box.reg / f"{n}.json").read_text(encoding="utf-8"))
-            .get("runtime", {}).get("order")
+            .get("settings", {}).get("order")
             for n in ("c-task", "a-task")
         }
         self.assertEqual(saved, {"c-task": 1, "a-task": 2})

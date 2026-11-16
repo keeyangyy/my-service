@@ -17,6 +17,16 @@
   - 发布流水线用 GitHub secret `UPDATE_SIGNING_KEY` 签名，并校验 `sig` 非空
   - 新增 `tools/gen_update_key.py`（生成密钥对）与 `tools/sign_latest.py`（签名）
 
+### 变更
+
+- 注册条模型收敛（**不兼容旧字段**，详见 [config-schema.md](docs/design/config-schema.md)）
+  - `health` 并入 `identity`：在 `identity` 里写 `http` / `port` / `pidfile` / `process` 任意成员，就同时得到健康判据与身份凭证，`health.type` 由成员自动推导
+  - 多成员共存：健康判定按 `http → port → process` 优先级取最靠前的一个（失败不回退），其余成员只参与身份判定（端口属主 / pid 凭证 / 自报 service）
+  - `runtime` 改名 `settings`；`enabled` / `archived` 合并为 `settings.state`（active / disabled / archived）
+  - 删除 `identity.match`：`process` 含 `/` 或 `\` 自动按完整路径匹配，否则按进程名
+  - `schedule` 缺省整组按 `daily 09:00`；`weekly.days` 为空 = 不调度（不再判 invalid）；task 的 `state` 默认 `disabled`
+  - 用户设置（state / order / catch_up / 超时）写回注册条 `settings`；框架观测值落 `data/runtime/`
+
 ## v0.17.3（2026-11-16）
 
 ### 修复

@@ -169,7 +169,7 @@ class MonitorMixin:
     # ------------------------------------------------------------ failed
     def _tick_failed_detached(self, name: str, spec: Spec, st: dict, now: float) -> None:
         """假失败自愈：detached 型被外部拉起/升级慢未就绪时，健康通过就归位 running。"""
-        if spec.health_type not in ("port", "http"):
+        if spec.probe not in ("port", "http"):
             return
         alive, _w = runner.check_health(spec, None)
         if alive:
@@ -187,7 +187,7 @@ class MonitorMixin:
             self._handle_unexpected_exit(name, st, handle, now)
             return
         since_check = now - float(st.get("last_check") or 0)
-        if spec.health_type in ("port", "http") and since_check >= 5:
+        if spec.probe in ("port", "http") and since_check >= 5:
             self._recheck_health(name, spec, st, handle, now)
 
     def _recheck_detached_identity(self, name: str, spec: Spec, st: dict,
@@ -197,7 +197,7 @@ class MonitorMixin:
             self.handles.pop(name, None)
             runner.close_handle(handle)
         due = now - float(st.get("last_check") or 0) >= 5
-        if not (spec.health_type in ("port", "http") and due):
+        if not (spec.probe in ("port", "http") and due):
             return
         st["last_check"] = now
         verdict, _via, why = self.identify(name)

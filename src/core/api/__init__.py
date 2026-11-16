@@ -160,10 +160,38 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_settings(self, parsed) -> None:  # noqa: ANN001
         return self._json(200, {
             "ok": True,
-            "monitor": dict(getattr(self.manager, "settings", {}) or {}),
-            "scheduler": {"tick_sec": getattr(self.scheduler, "tick_sec", 10.0)},
+            "server": {"host": getattr(self, "bind_host", "127.0.0.1"),
+                       "port": getattr(self, "bind_port", 1236)},
+            "cors": {"local_only": bool(self.cors_local_only),
+                     "allow": list(self.cors_allow or ())},
+            "audit": {"retention_days": self._audit_days()},
             "backup": {"keep": self._backup_keep()},
+            "update": {"mirrors": list(self.update_mirrors or ())},
+            "advanced": {
+                "reg_dir": self._reg_dir_name(),
+                "monitor": self._monitor_settings(),
+                "scheduler": {"tick_sec": getattr(self.scheduler, "tick_sec", 10.0)},
+            },
         })
+
+    def _audit_days(self) -> float:
+        return float(getattr(self.manager, "settings", {}).get(
+            "audit_retention_days", 7.0))
+
+    def _monitor_settings(self) -> dict:
+        settings = getattr(self.manager, "settings", {}) or {}
+        return {key: settings.get(key, default) for key, default in
+                (("fast_sec", 1.0), ("idle_sec", 10.0), ("panel_grace_sec", 15.0))}
+
+    def _reg_dir_name(self) -> str:
+        if not self.settings_path:
+            return "reg"
+        try:
+            cfg = json.loads(Path(self.settings_path).read_text(encoding="utf-8-sig"))
+            adv = cfg.get("advanced") if isinstance(cfg.get("advanced"), dict) else {}
+            return str(adv.get("reg_dir") or "reg")
+        except Exception:  # noqa: BLE001
+            return "reg"
 
     def _get_backups(self, parsed) -> None:  # noqa: ANN001
         items = (backup.list_backups(Path(self.settings_path).parent)
@@ -301,88 +329,127 @@ class _Handler(BaseHTTPRequestHandler):
         return True
 
     def _post_settings(self, parts: list[str], body: dict) -> bool:
-        """POST /api/settings {"monitor": {...}, "scheduler": {...}, "backup": {...}}"""
+        """POST /api/settings {"cors":{}, "audit":{}, "backup":{}, "update":{}, "advanced":{}}"""
         if not self._is(parts, "api", "settings"):
             return False
-        mon, sch, bkp = body.get("monitor"), body.get("scheduler"), body.get("backup")
-        if not (isinstance(mon, dict) or isinstance(sch, dict) or isinstance(bkp, dict)):
-            self._json(400, {"ok": False,
-                             "error": "需要 monitor / scheduler / backup 对象"})
-            return True
-        if self._apply_monitor(mon) or self._apply_tick(sch) or self._apply_backup_keep(bkp):
+        error = self._settings_patch_error(body)
+        if error is not None:
+            self._json(400, {"ok": False, "error": error})
             return True
         if self.settings_path and not self._persist_settings():
             return True
         self._json(200, {"ok": True})
         return True
 
-    def _apply_monitor(self, mon: object) -> bool:
-        """应用 monitor 各项；返回 True 表示已发出错误响应。"""
-        if not isinstance(mon, dict):
-            return False
-        for key in ("fast_sec", "idle_sec", "panel_grace_sec", "audit_retention_days"):
-            if key not in mon:
-                continue
-            try:
-                val = float(mon[key])
-            except (TypeError, ValueError):
-                self._json(400, {"ok": False, "error": f"{key} 需为数字"})
-                return True
-            if key == "audit_retention_days":
-                if not (0 <= val <= 3650):
-                    self._json(400, {"ok": False,
-                                     "error": "audit_retention_days 需在 0 ~ 3650 天之间"})
-                    return True
-                self.manager.settings[key] = val
-            else:
-                self.manager.settings[key] = max(0.2, val)
-        return False
+    def _settings_patch_error(self, body: object) -> str | None:
+        """应用到各配置组；返回错误消息（None = 成功）。"""
+        if not isinstance(body, dict):
+            return "请求体需为对象"
+        if "server" in body:
+            return "server 组需改 config.json 并重启宿主"
+        groups = ("cors", "audit", "backup", "update", "advanced")
+        if not any(isinstance(body.get(g), dict) for g in groups):
+            return "没有可修改的配置组"
+        if isinstance(body.get("cors"), dict):
+            self._apply_cors(body["cors"])
+        errors: list[str | None] = []
+        if isinstance(body.get("audit"), dict):
+            errors.append(self._apply_audit(body["audit"]))
+        if isinstance(body.get("backup"), dict):
+            errors.append(self._apply_backup_keep(body["backup"]))
+        if isinstance(body.get("update"), dict):
+            errors.append(self._apply_update_mirrors(body["update"]))
+        if isinstance(body.get("advanced"), dict):
+            errors.append(self._apply_advanced(body["advanced"]))
+        return next((e for e in errors if e), None)
 
-    def _apply_tick(self, sch: object) -> bool:
-        if not (isinstance(sch, dict) and "tick_sec" in sch):
-            return False
+    def _apply_cors(self, cors: dict) -> None:
+        local_only = cors.get("local_only")
+        if isinstance(local_only, bool):
+            type(self).cors_local_only = local_only
+        allow = cors.get("allow")
+        if isinstance(allow, list):
+            type(self).cors_allow = tuple(
+                str(item) for item in allow if str(item).strip())
+
+    def _apply_audit(self, audit_cfg: dict) -> str | None:
+        if "retention_days" not in audit_cfg:
+            return None
         try:
-            self.scheduler.tick_sec = max(1.0, float(sch["tick_sec"]))
+            days = float(audit_cfg["retention_days"])
         except (TypeError, ValueError):
-            self._json(400, {"ok": False, "error": "tick_sec 需为数字"})
-            return True
-        return False
+            return "retention_days 需为数字"
+        if not (0 <= days <= 3650):
+            return "retention_days 需在 0 ~ 3650 天之间"
+        self.manager.settings["audit_retention_days"] = days
+        return None
 
-    def _apply_backup_keep(self, bkp: object) -> bool:
+    def _apply_update_mirrors(self, update_cfg: dict) -> str | None:
+        mirrors = update_cfg.get("mirrors")
+        if not isinstance(mirrors, list):
+            return "mirrors 需为数组"
+        type(self).update_mirrors = [
+            str(item).strip() for item in mirrors if str(item).strip()]
+        return None
+
+    def _apply_advanced(self, adv: dict) -> str | None:
+        """monitor / scheduler 可热改；reg_dir 需改文件并重启。"""
+        if "reg_dir" in adv:
+            return "reg_dir 需改 config.json 并重启宿主"
+        mon = adv.get("monitor")
+        if isinstance(mon, dict):
+            for key in ("fast_sec", "idle_sec", "panel_grace_sec"):
+                if key not in mon:
+                    continue
+                try:
+                    val = float(mon[key])
+                except (TypeError, ValueError):
+                    return f"{key} 需为数字"
+                self.manager.settings[key] = max(0.2, val)
+        sch = adv.get("scheduler")
+        if isinstance(sch, dict) and "tick_sec" in sch:
+            try:
+                self.scheduler.tick_sec = max(1.0, float(sch["tick_sec"]))
+            except (TypeError, ValueError):
+                return "tick_sec 需为数字"
+        return None
+
+    def _apply_backup_keep(self, bkp: object) -> str | None:
         if not (isinstance(bkp, dict) and "keep" in bkp):
-            return False
+            return None
         try:
             keep = int(float(bkp["keep"]))
         except (TypeError, ValueError):
-            self._json(400, {"ok": False, "error": "备份保留份数需为数字"})
-            return True
+            return "备份保留份数需为数字"
         if not (0 <= keep <= 365):
-            self._json(400, {"ok": False,
-                             "error": "备份保留份数需在 0 ~ 365 之间（0 = 不自动清理）"})
-            return True
+            return "备份保留份数需在 0 ~ 365 之间（0 = 不自动清理）"
         if self.backup_settings is not None:
             self.backup_settings["keep"] = keep
             # 立即按新策略收敛一次，保存后 data/bak/ 里马上只剩 keep 份
             if self.settings_path:
                 backup.prune_backups(Path(self.settings_path).parent, keep)
-        return False
+        return None
 
     def _persist_settings(self) -> bool:
-        """把当前生效值写回 config.json；失败时已发出 500，返回 False。"""
+        """把当前生效值写回 config.json（分组结构）；失败时已发出 500。"""
         try:
             sp = Path(self.settings_path)
             cfg = (json.loads(sp.read_text(encoding="utf-8-sig"))
                    if sp.is_file() else {})
-            cfg["monitor"] = {
-                **cfg.get("monitor", {}),
-                **{k: self.manager.settings[k] for k in
-                   ("fast_sec", "idle_sec", "panel_grace_sec", "audit_retention_days")},
+            cfg["cors"] = {
+                "local_only": bool(self.cors_local_only),
+                "allow": list(self.cors_allow or ()),
             }
-            cfg["scheduler"] = {
-                **cfg.get("scheduler", {}),
-                "tick_sec": getattr(self.scheduler, "tick_sec", 10.0),
-            }
+            cfg["audit"] = {
+                "retention_days": self.manager.settings.get("audit_retention_days", 7)}
             cfg["backup"] = {**cfg.get("backup", {}), "keep": self._backup_keep()}
+            if self.update_mirrors is not None:
+                cfg["update"] = {"mirrors": list(self.update_mirrors)}
+            adv = cfg.get("advanced") if isinstance(cfg.get("advanced"), dict) else {}
+            adv["monitor"] = {k: self.manager.settings[k] for k in
+                              ("fast_sec", "idle_sec", "panel_grace_sec")}
+            adv["scheduler"] = {"tick_sec": getattr(self.scheduler, "tick_sec", 10.0)}
+            cfg["advanced"] = adv
             sp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
                           encoding="utf-8")
         except OSError:
@@ -571,10 +638,11 @@ class _Handler(BaseHTTPRequestHandler):
         return True
 
 
-def make_handler(manager, host=None, scheduler=None,
+def make_handler(manager, host=None, scheduler=None,  # noqa: PLR0913, ANN001
                  cors_local_only: bool = True,
                  settings_path=None, backup_settings=None,
-                 cors_allow=None, update_mirrors=None):  # noqa: ANN001
+                 cors_allow=None, update_mirrors=None,
+                 bind_host: str = "127.0.0.1", bind_port: int = 1236):
     """绑定依赖后返回 Handler 子类（依赖走类属性，方法体不依赖闭包）。"""
     return type("Handler", (_Handler,), {
         "manager": manager,
@@ -586,6 +654,8 @@ def make_handler(manager, host=None, scheduler=None,
         # 非 list/tuple 一律视为空，避免字符串被拆成单字符
         "cors_allow": tuple(cors_allow) if isinstance(cors_allow, (list, tuple)) else (),
         "update_mirrors": list(update_mirrors) if isinstance(update_mirrors, (list, tuple)) else None,
+        "bind_host": bind_host,
+        "bind_port": bind_port,
     })
 
 
@@ -637,7 +707,8 @@ def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,  
                            settings_path=settings_path,
                            backup_settings=backup_settings,
                            cors_allow=cors_allow,
-                           update_mirrors=update_mirrors)
+                           update_mirrors=update_mirrors,
+                           bind_host=bind_host, bind_port=port)
     last_err: OSError | None = None
     for _ in range(40):
         try:

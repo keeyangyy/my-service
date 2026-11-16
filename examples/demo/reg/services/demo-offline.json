@@ -7,7 +7,11 @@
     "entry": "demo_app.py",
     "args": ["--port", "33512", "--name", "示例离线服务", "--color", "amber", "--pidfile", "demo-offline.pid"]
   },
-  "health": { "type": "http", "url": "http://127.0.0.1:33512/health", "timeout_sec": 5 },
-  "identity": { "pidfile": "demo-offline.pid" },
-  "runtime": { "enabled": true, "autostart": false }
+  "stop": { "script": "stop_demo.ps1" },
+  "identity": {
+    "http": "http://127.0.0.1:33512/health",
+    "timeout_sec": 5,
+    "pidfile": "demo-offline.pid"
+  },
+  "settings": { "state": "active", "autostart": false }
 }

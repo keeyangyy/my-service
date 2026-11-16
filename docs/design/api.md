@@ -28,9 +28,9 @@
 | POST | `/api/services/{svc}/config` | `{"idle_timeout_sec": N}`（仅 on_demand） |
 | POST | `/api/crons/order` | `{"names":[...]}` 拖拽排序 |
 | POST | `/api/crons/{name}/run[?via=cli]` | 手动触发 |
-| POST | `/api/crons/{name}/config` | `enabled` / `catch_up` / `timeout_sec` / `schedule` 任意组合 |
+| POST | `/api/crons/{name}/config` | `enabled` / `state` / `catch_up` / `timeout_sec` / `schedule` 任意组合 |
 | POST | `/api/config/{svc}` | `{"autostart": bool}` |
-| POST | `/api/settings` | `monitor` / `scheduler` / `backup` 任意组合，写回 `config.json` |
+| POST | `/api/settings` | `cors` / `audit` / `backup` / `update` / `advanced`（含 `monitor`、`scheduler`）任意组合，写回 `config.json` |
 | POST | `/api/host/autostart` | `{"enabled": bool}` 开关开机自启 |
 | POST | `/api/host/stop\|restart` | 宿主自身生命周期 |
 | POST | `/api/audit/clear` | `{"svc":"名"}` 清该名事件 / `{}` 清全部 |

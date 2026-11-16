@@ -32,8 +32,8 @@ class TestServiceUpdateConfig(unittest.TestCase):
         self._write("svc-od", path=str(self.home), mode="on_demand",
                     start={"entry": "server.py"},
                     stop={"script": "stop.ps1"},
-                    health={"type": "http", "url": "http://127.0.0.1:8799/health"},
-                    runtime={"idle_timeout_sec": 600, "autostart": False})
+                    identity={"http": "http://127.0.0.1:8799/health"},
+                    settings={"idle_timeout_sec": 600, "autostart": False})
         self.home2 = self.root / "svc-det"
         self.home2.mkdir()
         (self.home2 / "start.ps1").write_text("# noop\n", encoding="utf-8")
@@ -42,8 +42,8 @@ class TestServiceUpdateConfig(unittest.TestCase):
         self._write("svc-det", path=str(self.home2), mode="managed",
                     start={"entry": "start.ps1", "detach": True},
                     stop={"script": "stop.ps1"},
-                    health={"type": "port", "port": 8798},
-                    runtime={"autostart": False})
+                    identity={"port": 8798},
+                    settings={"autostart": False})
         self.mgr = Manager(Scanner(self.reg), self.root / "order.json")
         self.mgr.refresh()
         # 装置自检：注册条必须真的解析成功，否则整组测试会在错误前提上"通过"
@@ -61,12 +61,12 @@ class TestServiceUpdateConfig(unittest.TestCase):
         return json.loads((self.reg / f"{name}.json").read_text(encoding="utf-8"))
 
     def _rt(self, name):
-        """注册条 runtime 组；无记录即空。"""
+        """注册条 settings 组；无记录即空。"""
         try:
             data = json.loads((self.reg / f"{name}.json").read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             data = {}
-        return data.get("runtime") or {}
+        return data.get("settings") or {}
 
     def _reg_bytes(self, name):
         return (self.reg / f"{name}.json").read_bytes()
@@ -139,7 +139,7 @@ class TestServiceUpdateConfig(unittest.TestCase):
         before = self._raw("svc-od")
         self.mgr.update_config("svc-od", {"idle_timeout_sec": 1800})
         after = self._raw("svc-od")
-        for k in ("path", "mode", "start", "stop", "health"):
+        for k in ("path", "mode", "start", "stop", "identity"):
             self.assertEqual(before[k], after[k], f"字段 {k} 被改坏了")
         self.assertEqual(self._rt("svc-od")["idle_timeout_sec"], 1800)
 

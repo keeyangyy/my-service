@@ -28,10 +28,12 @@ class TestServiceOrdering(unittest.TestCase):
             home = self.root / name
             home.mkdir()
             (home / "start.ps1").write_text("# noop\n", encoding="utf-8")
+            (home / "stop.ps1").write_text("# noop\n", encoding="utf-8")
             (self.reg / f"{name}.json").write_text(json.dumps(
                 {"path": str(home), "mode": "managed",
                  "start": {"entry": "start.ps1"},
-                 "health": {"type": "port", "port": 8790}}), encoding="utf-8")
+                 "stop": {"script": "stop.ps1"},
+                 "identity": {"port": 8790}}), encoding="utf-8")
         self.mgr = self._mgr()
 
     def tearDown(self):
@@ -70,10 +72,12 @@ class TestServiceOrdering(unittest.TestCase):
         home = self.root / "d-svc"
         home.mkdir()
         (home / "start.ps1").write_text("# noop\n", encoding="utf-8")
+        (home / "stop.ps1").write_text("# noop\n", encoding="utf-8")
         (self.reg / "d-svc.json").write_text(json.dumps(
             {"path": str(home), "mode": "managed",
              "start": {"entry": "start.ps1"},
-             "health": {"type": "port", "port": 8790}}), encoding="utf-8")
+             "stop": {"script": "stop.ps1"},
+             "identity": {"port": 8790}}), encoding="utf-8")
         self.mgr.refresh()
         self.assertEqual(self._names(), ["c-svc", "b-svc", "a-svc", "d-svc"])
 
@@ -85,7 +89,7 @@ class TestServiceOrdering(unittest.TestCase):
         self.assertEqual(self._names(), ["c-svc", "a-svc"])
         saved = {
             n: json.loads((self.reg / f"{n}.json").read_text(encoding="utf-8"))
-            .get("runtime", {}).get("order")
+            .get("settings", {}).get("order")
             for n in ("c-svc", "a-svc")
         }
         self.assertEqual(saved, {"c-svc": 1, "a-svc": 2})

@@ -104,8 +104,7 @@ class TestIdentify(unittest.TestCase):
             "path": str(self.home), "mode": "on_demand",
             "start": {"entry": "start.ps1"},
             "stop": {"script": "stop.ps1"},
-            "health": {"type": "http",
-                       "url": f"http://127.0.0.1:{self.PORT}/health"},
+            "identity": {"http": f"http://127.0.0.1:{self.PORT}/health"},
         }
         if extra:
             reg.update(extra)
@@ -137,7 +136,8 @@ class TestIdentify(unittest.TestCase):
 
     def test_mine_honours_identity_service_override(self):
         """注册条可用 identity.service 覆盖身份名（自写服务改过 service 值）。"""
-        self._write_reg({"identity": {"service": "another-name"}})
+        self._write_reg({"identity": {"http": f"http://127.0.0.1:{self.PORT}/health",
+                                      "service_name": "another-name"}})
         self._reload()
         self.srv, _, _ = _stub(self.PORT, "another-name")
         v, _, why = self.mgr.identify("svc")
@@ -191,7 +191,7 @@ class TestIdentify(unittest.TestCase):
         self.srv, _, _ = _stub(self.PORT, None)
         v, via, why = self.mgr.identify("svc")
         self.assertEqual(v, "mine", why)
-        self.assertEqual(via, "declared-pidfile")
+        self.assertEqual(via, "service-pidfile")
 
 
 class TestStopSafetyGate(unittest.TestCase):
@@ -214,8 +214,7 @@ class TestStopSafetyGate(unittest.TestCase):
             "path": str(self.home), "mode": "on_demand",
             "start": {"entry": "start.ps1"},
             "stop": {"script": "stop.ps1"},
-            "health": {"type": "http",
-                       "url": f"http://127.0.0.1:{self.PORT}/health"},
+            "identity": {"http": f"http://127.0.0.1:{self.PORT}/health"},
         }), encoding="utf-8")
         runner.set_runtime_dir(self.root / "data")
         audit.init(self.root / "logs")
@@ -262,8 +261,7 @@ class TestReconcile(unittest.TestCase):
             "path": str(self.home), "mode": "on_demand",
             "start": {"entry": "start.ps1"},
             "stop": {"script": "stop.ps1"},
-            "health": {"type": "http",
-                       "url": f"http://127.0.0.1:{self.PORT}/health"},
+            "identity": {"http": f"http://127.0.0.1:{self.PORT}/health"},
         }), encoding="utf-8")
         runner.set_runtime_dir(self.root / "data")
         audit.init(self.root / "logs")
@@ -332,10 +330,11 @@ class TestPortHealthWithProcessIdentity(unittest.TestCase):
         reg = {
             "path": str(self.home), "mode": "managed",
             "start": {"entry": "start.ps1"},
-            "health": {"type": "port", "port": self.PORT},
+            "stop": {"script": "stop.ps1"},
+            "identity": {"port": self.PORT},
         }
         if identity:
-            reg["identity"] = identity
+            reg["identity"] = {**reg["identity"], **identity}
         (self.reg / "svc.json").write_text(json.dumps(reg), encoding="utf-8")
         self.mgr = Manager(Scanner(self.reg), self.root / "order.json")
 

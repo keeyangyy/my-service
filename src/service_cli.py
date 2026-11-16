@@ -379,6 +379,65 @@ def cmd_host_err(app: Path, data_root: Path, name: str | None = None,
     return 0
 
 
+def _reg_services_dir(data_root: Path) -> Path:
+    """从 config.json 的 advanced.reg_dir 推导注册目录，缺省 reg。"""
+    reg_dir = "reg"
+    cfg_path = Path(data_root) / "config.json"
+    if cfg_path.is_file():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+            adv = cfg.get("advanced") if isinstance(cfg.get("advanced"), dict) else {}
+            reg_dir = str(adv.get("reg_dir") or "reg")
+        except Exception:  # noqa: BLE001 - 配置坏了也不该拖垮体检
+            pass
+    return Path(data_root) / reg_dir / "services"
+
+
+def cmd_check(app: Path, data_root: Path, name: str | None = None,
+              as_json: bool = False) -> int:
+    """只读体检注册条：errors / derived / defaults；不启停、不改文件。
+
+    主要给 AI/CI 用：全部有效退出码 0，存在 invalid 退出码 1。
+    """
+    from core.scanner import Scanner
+
+    specs = Scanner(_reg_services_dir(data_root)).scan()
+    if name:
+        specs = {k: v for k, v in specs.items() if k == name}
+    items: list[dict] = []
+    for key in sorted(specs):
+        spec = specs[key]
+        errors = ([{"message": part} for part in spec.error.split("；") if part]
+                  if spec.error else [])
+        items.append({
+            "name": key,
+            "path": str(spec.path),
+            "valid": spec.valid,
+            "errors": errors,
+            "derived": spec.derived,
+            "defaults": spec.defaults,
+        })
+    invalid = sum(1 for item in items if not item["valid"])
+    summary = {"total": len(items), "valid": len(items) - invalid,
+               "invalid": invalid}
+    if as_json:
+        print(json.dumps({"ok": invalid == 0, "summary": summary, "items": items},
+                         ensure_ascii=False, indent=2))
+        return 0 if invalid == 0 else 1
+    for item in items:
+        flag = "OK " if item["valid"] else "ERR"
+        print(f"{flag} {item['name']:<20} {item['path']}")
+        for err in item["errors"]:
+            print(f"    ! {err['message']}")
+        for der in item["derived"]:
+            print(f"    ~ {der['field']} = {der['value']}（{der['reason']}）")
+        for dft in item["defaults"]:
+            print(f"    · {dft['field']} 未写，默认 {dft['value']}")
+    print(f"\n合计 {summary['total']} 条：有效 {summary['valid']}，"
+          f"无效 {summary['invalid']}")
+    return 0 if invalid == 0 else 1
+
+
 HANDLERS = {
     # 宿主生命周期
     "start": cmd_start,
@@ -397,6 +456,8 @@ HANDLERS = {
     "cron-run": cmd_cron_run,
     "events": cmd_events,
     "host-err": cmd_host_err,
+    # 注册条体检（只读）
+    "check": cmd_check,
 }
 
 NEEDS_NAME = {"svc-start", "svc-stop", "svc-restart", "cron-run"}
@@ -411,9 +472,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("name", nargs="?", default=None,
                         help="服务/任务名；events、host-err 也可传条数")
     parser.add_argument("count", nargs="?", type=int, default=50)
+    parser.add_argument("--json", action="store_true", dest="as_json",
+                        help="check 的输出改为 JSON（供 AI/CI 解析）")
     args = parser.parse_args(argv)
     app = APP_DIR
     data_root = resolve_data_root(app)
+    if args.action == "check":
+        return cmd_check(app, data_root, args.name, args.as_json)
     if args.action in NEEDS_NAME:
         return HANDLERS[args.action](app, data_root, args.name)
     if args.action in NEEDS_ARGS:

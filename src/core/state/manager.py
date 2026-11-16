@@ -27,8 +27,8 @@ from ._common import _dur
 from .monitor import MonitorMixin
 import contextlib
 
-RUNTIME_KEYS = (
-    "enabled", "autostart", "archived", "order",
+SETTINGS_KEYS = (
+    "state", "autostart", "order",
     "idle_timeout_sec", "run_timeout_sec", "catch_up",
 )
 
@@ -170,6 +170,7 @@ class Manager(MonitorMixin):
                     "url": spec.url,
                     "uptime_sec": uptime,
                     "autostart": spec.autostart,
+                    "state": spec.state,
                     "error": st.get("error"),
                 })
             return out
@@ -232,7 +233,7 @@ class Manager(MonitorMixin):
     def _id_by_health(self, spec: Spec, name: str, port: int | None,
                       port_up: bool) -> tuple[str, str, str] | None:
         """③ 服务自报身份：复用既有 HTTP 通道，响应体里有 service 字段。"""
-        if spec.health_type != "http" or not spec.health_url:
+        if spec.probe != "http" or not spec.health_url:
             return None
         if not port_up:
             return "absent", "", "健康端口无监听"
@@ -263,7 +264,7 @@ class Manager(MonitorMixin):
 
     def _id_by_port_down(self, spec: Spec,
                          port_up: bool) -> tuple[str, str, str] | None:
-        if spec.health_type == "port" and not port_up:
+        if spec.probe == "port" and not port_up:
             return "absent", "", "端口无监听"
         return None
 
@@ -276,7 +277,7 @@ class Manager(MonitorMixin):
         return None
 
     def _id_by_process(self, spec: Spec, name: str) -> tuple[str, str, str] | None:
-        if spec.health_type == "process":
+        if spec.probe == "process":
             pid, pid_src, _conf = runner.locate(spec, self.handles.get(name))
             if pid:
                 return "mine", pid_src, f"进程定位 pid={pid}（{pid_src}）"
@@ -299,17 +300,17 @@ class Manager(MonitorMixin):
 
     @staticmethod
     def _service_name(spec: Spec, name: str) -> str:
-        """身份名：默认用注册名；注册条可用 identity.service 显式覆盖。"""
-        ident = spec.raw.get("identity") if isinstance(spec.raw, dict) else None
-        if isinstance(ident, dict) and ident.get("service"):
-            return str(ident["service"]).strip()
+        """身份名：默认用注册名；identity.service_name 可显式覆盖。"""
+        if spec.health_service:
+            return spec.health_service
         return name
 
     def _health_port(self, spec: Spec) -> int | None:
         """注册条声明的健康端口：port 型读字段，http 型从 url 解析。"""
-        if spec.health_type == "port":
+        probe = spec.probe
+        if probe == "port":
             return spec.health_port
-        if spec.health_type == "http":
+        if probe == "http":
             _, port = runner.parse_http_host_port(spec.health_url or "")
             return port
         return None
@@ -554,7 +555,7 @@ class Manager(MonitorMixin):
 
 
     def _load_order(self) -> None:
-        """按注册条里的 runtime.order 初始化顺序。"""
+        """按注册条里的 settings.order 初始化顺序。"""
         self._order = [
             n for n in sorted(
                 self.specs,
@@ -566,12 +567,12 @@ class Manager(MonitorMixin):
         ]
 
     def _save_order(self) -> None:
-        """把当前顺序写成每个条目的 runtime.order（已经是目标值的跳过）。"""
+        """把当前顺序写成每个条目的 settings.order（已经是目标值的跳过）。"""
         for i, name in enumerate(self._order, 1):
             spec = self.specs.get(name)
             if spec is None or spec.order == float(i):
                 continue
-            self._set_runtime(name, {"order": i})
+            self._set_settings(name, {"order": i})
 
     def _ordered_names(self) -> list[str]:
         known = set(self.specs)
@@ -604,13 +605,12 @@ class Manager(MonitorMixin):
         return True
 
     def runtime_snapshot(self) -> dict[str, dict]:
-        """当前条目的运行态快照（面板/调试用）。"""
+        """当前条目的用户设置快照（面板/调试用）。"""
         out: dict[str, dict] = {}
         for name, spec in self.specs.items():
             out[name] = {
-                "enabled": spec.enabled,
+                "state": spec.state,
                 "autostart": spec.autostart,
-                "archived": spec.archived,
                 "order": spec.order,
                 "idle_timeout_sec": spec.idle_timeout,
                 "run_timeout_sec": spec.run_timeout,
@@ -618,22 +618,22 @@ class Manager(MonitorMixin):
             }
         return out
 
-    def _set_runtime(self, name: str, patch: dict) -> bool:
-        """把 patch 写回注册条的 runtime 组，并重新解析该条目。返回是否成功。"""
+    def _set_settings(self, name: str, patch: dict) -> bool:
+        """把 patch 写回注册条的 settings 组，并重新解析该条目。返回是否成功。"""
         with self.lock:
             spec = self.specs.get(name)
             if spec is None:
                 return False
-            clean = {k: v for k, v in patch.items() if k in RUNTIME_KEYS}
+            clean = {k: v for k, v in patch.items() if k in SETTINGS_KEYS}
             if not clean:
                 return True
             try:
                 data = json.loads(spec.reg_path.read_text(encoding="utf-8-sig"))
-                rt = data.get("runtime")
-                if not isinstance(rt, dict):
-                    rt = {}
-                rt.update(clean)
-                data["runtime"] = rt
+                st = data.get("settings")
+                if not isinstance(st, dict):
+                    st = {}
+                st.update(clean)
+                data["settings"] = st
                 fd, tmp = tempfile.mkstemp(dir=str(spec.reg_path.parent), suffix=".tmp")
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
@@ -653,7 +653,7 @@ class Manager(MonitorMixin):
                 return False, f"未知服务 {name}"
             if spec.mode == "on_demand":
                 return False, "on_demand 模式按需启动，不支持设置自启"
-            if not self._set_runtime(name, {"autostart": bool(value)}):
+            if not self._set_settings(name, {"autostart": bool(value)}):
                 return False, "写注册条失败"
             return True, "ok"
 
@@ -683,10 +683,10 @@ class Manager(MonitorMixin):
                 patch["idle_timeout_sec"] = int(val)
 
             old = {"idle_timeout_sec": spec.idle_timeout}
-            if not self._set_runtime(name, patch):
+            if not self._set_settings(name, patch):
                 return False, "io", "写注册条失败"
             new_spec = self.specs.get(name)
             if new_spec is None or not new_spec.valid:
-                self._set_runtime(name, old)        # 回滚，不留坏配置
+                self._set_settings(name, old)        # 回滚，不留坏配置
                 return False, "invalid", (new_spec.error if new_spec else "新配置不合法")
             return True, "ok", "已保存"

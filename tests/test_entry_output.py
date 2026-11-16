@@ -43,8 +43,7 @@ _FAKE_SILENT = "import sys\nsys.exit(0)\n"
 class _Sandbox:
     """临时沙箱：注册目录 + 桩入口 + 独立的框架运行态目录。"""
 
-    def __init__(self, entry_body: str = _FAKE_ALREADY,
-                 health_type: str = "port"):
+    def __init__(self, entry_body: str = _FAKE_ALREADY):
         self.root = Path(tempfile.mkdtemp(prefix="mentry-test-"))
         self.reg = self.root / "reg"
         self.reg.mkdir()
@@ -53,7 +52,6 @@ class _Sandbox:
         self.logs = self.root / "logs"
         self.logs.mkdir()
         (self.root / "entry.py").write_text(entry_body, encoding="utf-8")
-        self.health_type = health_type
 
     def put(self, name: str = "fake", **kw) -> Path:
         # 端口取一个几乎不可能被监听的号，保证健康探测必然失败
@@ -62,7 +60,7 @@ class _Sandbox:
             "mode": "managed",
             "start": {"entry": "entry.py", "detach": True},
             "stop": {"script": "entry.py"},
-            "health": {"type": self.health_type, "port": 1, "timeout_sec": 1},
+            "identity": {"port": 1, "timeout_sec": 1},
         }
         data.update(kw)
         p = self.reg / f"{name}.json"
@@ -153,7 +151,9 @@ class EntryOutputTest(unittest.TestCase):
     def test_managed_mode_keeps_discarding_output(self):
         """非 detached 型不产生捕获文件（行为与改动前一致）。"""
         sb = self._sandbox(entry_body="import time\ntime.sleep(30)\n")
-        sb.put(mode="managed", health={"type": "none"})
+        sb.put(mode="managed",
+               start={"entry": "entry.py", "detach": False},
+               identity={"port": 1, "timeout_sec": 1})
         mgr = sb.manager()
         mgr.refresh()
         mgr.start("fake")

@@ -343,12 +343,13 @@ def quick_alive(spec: Spec, handle: ProcessHandle | None) -> bool:
     只做廉价的端口/进程探测，不做 urlopen（urlopen 在本机无监听时可能挂数秒）。
     process 型要求 handle 在场且进程存活；none 型保守返回 True（不做判定）。
     """
-    if spec.health_type == "port" and spec.health_port:
+    probe = spec.probe
+    if probe == "port" and spec.health_port:
         return port_listening("127.0.0.1", spec.health_port)
-    if spec.health_type == "http":
+    if probe == "http":
         host, port = parse_http_host_port(spec.health_url or "")
         return port_listening(host, port) if port else True
-    if spec.health_type == "process":
+    if probe == "process":
         pid, _src, _conf = locate(spec, handle)
         return pid is not None
     return True
@@ -453,31 +454,32 @@ def check_health_ext(spec: Spec, handle: ProcessHandle | None) -> tuple[bool, st
     模式空闲回收用（服务自报"最近一次业务请求"时间戳；框架自身的探测不算活动）。
     解析失败/无字段不影响健康结论。
     """
-    htype = spec.health_type
+    probe = spec.probe
     try:
-        if htype == "none":
+        if probe == "none":
             return True, "", None
-        if htype == "process":
+        if probe == "process":
             return _health_process(spec, handle)
-        if htype == "port":
+        if probe == "port":
             assert spec.health_port is not None
             with socket.create_connection(("127.0.0.1", spec.health_port), timeout=1.5):
                 return True, "", None
-        if htype == "http":
+        if probe == "http":
             return _health_http(spec)
     except OSError as exc:
         return False, f"健康检查未通过: {exc.__class__.__name__}: {exc}", None
     except Exception as exc:  # noqa: BLE001
         return False, f"健康检查异常: {exc}", None
-    return False, f"未知健康类型 {htype}", None
+    return False, f"未知健康类型 {probe}", None
 
 
 # ---------------------------------------------------------------- 进程信息（Windows）
 def _health_port_of(spec: Spec) -> int | None:
     """注册条声明的健康端口：port 型读字段，http 型从 url 解析。"""
-    if spec.health_type == "port":
+    probe = spec.probe
+    if probe == "port":
         return spec.health_port
-    if spec.health_type == "http":
+    if probe == "http":
         _, port = parse_http_host_port(spec.health_url or "")
         return port
     return None

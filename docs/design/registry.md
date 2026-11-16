@@ -7,7 +7,7 @@
 ## 原则
 
 - **一个条目 = 一个对象**，不搞字符串/对象双形态；默认值不写，只写非默认项。
-- **按生命周期分组**：`start` 起、`stop` 停、`health` 活没活、`identity` 是不是它、`runtime` 管不管它、`schedule` 何时跑。
+- **按生命周期分组**：`start` 起、`stop` 停、`identity` 活着且是不是它、`settings` 管不管它、`schedule` 何时跑。
 - **框架不读子服务源码**：端口、进程、路径全部由注册条声明。
 - **谁拉起的与模型无关**：框架拉起、外部拉起、系统自启，统一按同一状态机处理。
 
@@ -27,14 +27,15 @@
   "display": "your-service",          // 缺省 = 服务名
   "description": "示例：积分仪表盘",
   "mode": "on_demand",
-  "url": "http://127.0.0.1:33510/",      // 缺省从 health.url 推导
+  "url": "http://127.0.0.1:33510/",      // 仅前端页面地址，与探测无关
 
   "start":    { "entry": "src/server.py" },
   "stop":     { "script": "run/stop.ps1" },
-  "health":   { "type": "http", "url": "http://127.0.0.1:33510/health" },
-  "identity": { "pidfile": "data/server.pid" },
+  "identity": { "http": "http://127.0.0.1:33510/health",
+                "service_name": "your-service",
+                "pidfile": "data/server.pid" },
 
-  "runtime":  { "enabled": true, "autostart": false, "idle_timeout_sec": 600 }
+  "settings": { "state": "active", "autostart": false, "idle_timeout_sec": 600 }
 }
 ```
 
@@ -59,56 +60,54 @@
 
 停止前必须确认实例身份；确认不了就拒绝停止，避免误杀。
 
-### health（活没活）
+### identity（活着 + 是不是它）
 
-| `type` | 判据 | 必填 |
+原 `health` 已并入 `identity`：写几个探测成员，就同时得到健康判据与身份凭证。至少写一个。
+
+| 成员 | 探测 / 判据 | 必填 |
 |:--|:--|:--|
-| `http` | GET `url`，状态码 < 400；配置 `service` 时校验响应体 | `url` |
-| `port` | TCP 可连 | `port` |
-| `process` | 按 `identity` 的 pidfile / 进程名 / 框架句柄判断 | 依赖 `identity` |
+| `http` | GET 该 URL，状态码 < 400 | — |
+| `service_name` | 期望响应体 `service` 字段值；不符判 `stopped` | — |
+| `port` | TCP 可连（同时用于端口属主核对） | — |
+| `pidfile` | 读 pid + 进程存活 | — |
+| `process` | 进程名或完整路径；含 `/` 或 `\` 按路径匹配，否则按名字 | — |
+| `timeout_sec` | 健康等待上限，默认 `30` | — |
 
-`process` 的判定顺序：
+**健康判定优先级**（多成员共存只取最靠前的一个，失败不回退）：
+
+```
+http → port → pidfile → process → 框架句柄
+```
+
+`process` 型内部的定位顺序：
 
 ```
 identity.pidfile（读 pid + 进程存活）
-  → identity.process（进程名/路径匹配）
+  → identity.process（进程名/路径唯一匹配）
     → 框架句柄（仅框架拉起的实例）
 ```
 
-可选字段：
+### identity 的身份判定（是不是它）
 
-| 字段 | 默认 | 说明 |
-|:--|:--|:--|
-| `timeout_sec` | 30 | 健康等待上限 |
-| `service` | 无 | 期望的自报身份；不符 → 状态 `stopped` + error 说明 |
-
-### identity（是不是它）
-
-| 字段 | 说明 |
-|:--|:--|
-| `pidfile` | 服务或官方脚本写的 PID 文件（相对 `path` 或绝对） |
-| `process` | 进程名或完整路径 |
-| `match` | `name`（默认）/ `path` |
-
-判定顺序（强 → 弱）：
+与健康分开，按"证据产生时机"从强到弱：
 
 ```
-端口 → OwningPid → 进程路径
-pidfile + 进程存活 + 端口在监听
-进程名/路径匹配
-框架句柄（仅框架拉起的实例）
+端口属主 → own-pidfile（框架写的 pid）→ 自报 service
+  → declared-pidfile（注册条声明）→ identity.process 唯一匹配
 ```
 
-### runtime（管不管它）
+确认不了身份时拒绝停止，避免误杀。
+
+### settings（管不管它）
 
 | 字段 | 默认 | 适用 | 说明 |
 |:--|:--|:--|:--|
-| `enabled` | `true` | 全部 | `false` = 停用，不参与编排，也不自启 |
+| `state` | `active`（task 为 `disabled`） | 全部 | `active` / `disabled` / `archived` |
 | `autostart` | `false` | 全部 | 宿主启动时自动拉起 |
-| `archived` | `false` | 全部 | 归档：扫描跳过，面板折叠展示 |
 | `order` | 自动 | 全部 | 全局序号；面板按 `(mode, order)` 排序 |
 | `idle_timeout_sec` | 600 | on_demand | 超时回收阈值；`0` = 永不 |
 | `run_timeout_sec` | 300 | task | 单次执行超时，到点树杀 |
+| `catch_up` | `false` | task | 错过是否补跑 |
 
 ### schedule（仅 task）
 
@@ -117,9 +116,11 @@ pidfile + 进程存活 + 端口在监听
 "schedule": { "type": "interval", "every_sec": 3600 }
 ```
 
-- `daily.at`：每天固定时刻，可多个；
+- `daily.at`：每天固定时刻，可多个；缺省/空 = `09:00`；
+- `weekly.days`：1=周一 … 7=周日；**空 = 不调度**（条目仍 valid）；
 - `interval.every_sec`：**最小 10 秒**（与调度器检查间隔一致）；
-- `runtime.run_timeout_sec`：单次执行超时，默认 300 秒。
+- 缺省整组 `schedule` → 按 `daily 09:00` 计划；
+- `settings.run_timeout_sec`：单次执行超时，默认 300 秒。
 
 ## 回收规则（仅 on_demand）
 
@@ -162,10 +163,10 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
   "mode": "on_demand",
   "start":    { "entry": "src/server.py" },
   "stop":     { "script": "run/stop.ps1" },
-  "health":   { "type": "http", "url": "http://127.0.0.1:33510/health",
-                "service": "your-service" },
-  "identity": { "pidfile": "data/server.pid" },
-  "runtime":  { "enabled": true, "autostart": false, "idle_timeout_sec": 600 }
+  "identity": { "http": "http://127.0.0.1:33510/health",
+                "service_name": "your-service",
+                "pidfile": "data/server.pid" },
+  "settings": { "state": "active", "autostart": false, "idle_timeout_sec": 600 }
 }
 ```
 
@@ -176,8 +177,8 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
   "path": "C:/path/to/your-service",
   "mode": "managed",
   "start":  { "entry": "bin/server.exe" },
-  "health": { "type": "port", "port": 33510 },
-  "identity": { "process": "server.exe", "match": "name" }
+  "stop":   { "script": "run/stop.ps1" },
+  "identity": { "port": 33510, "process": "server.exe" }
 }
 ```
 
@@ -188,7 +189,7 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
   "path": "C:/path/to/your-service",
   "mode": "managed",
   "start":    { "entry": "agent.exe" },
-  "health":   { "type": "process" },
+  "stop":     { "script": "run/stop.ps1" },
   "identity": { "pidfile": "agent.pid" }
 }
 ```
@@ -202,8 +203,8 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
   "url": "http://localhost:8090/",
   "start":  { "entry": "start.ps1", "detach": true, "env": { "SOME-SERVICE_NO_WAIT": "1" } },
   "stop":   { "script": "stop.ps1" },
-  "health": { "type": "http", "url": "http://localhost:8090/health", "timeout_sec": 60 },
-  "identity": { "pidfile": "C:/Users/<user>/AppData/Local/<vendor>/<app>.pid" }
+  "identity": { "http": "http://localhost:8090/health", "timeout_sec": 60,
+                "pidfile": "C:/Users/<user>/AppData/Local/<vendor>/<app>.pid" }
 }
 ```
 
@@ -215,7 +216,7 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
   "mode": "task",
   "start":    { "entry": "src/run_all.py", "args": ["--site", "example"] },
   "schedule": { "type": "daily", "at": ["09:30"] },
-  "runtime":  { "enabled": true, "catch_up": false, "run_timeout_sec": 300 }
+  "settings": { "state": "active", "run_timeout_sec": 300, "catch_up": false }
 }
 ```
 
@@ -225,16 +226,15 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
 |:--|:--|
 | `path` 存在 | invalid |
 | `start.entry` 存在且文件存在 | invalid |
+| `stop.script` 存在 | invalid |
 | `mode` ∈ managed / on_demand / task | invalid |
-| `mode=task` 必须有 `schedule` | invalid |
+| `identity` 至少一个探测成员（http/port/pidfile/process） | invalid |
+| `identity.port` 需为整数 | invalid |
 | `mode=task` / `on_demand` 不允许 `start.detach: true` | invalid |
-| `health.type=http` 必须有 `url` | invalid |
-| `health.type=port` 必须有 `port` | invalid |
-| `health.type=process` 必须有 `identity.pidfile` 或 `identity.process` | invalid |
-| `on_demand` 必须有 `stop` 或可被 `taskkill` 终结 | invalid |
 | `schedule.interval.every_sec` ≥ 10 | invalid |
-| `runtime.idle_timeout_sec` ∈ 0 或 60–86400 | invalid |
-| `runtime.archived=true` 的条目不参与编排 | 跳过 |
+| `settings.state` ∈ active / disabled / archived | invalid |
+| `settings.idle_timeout_sec` ∈ 0 或 60–86400 | invalid |
+| `settings.state=archived` 的条目不参与编排 | 跳过 |
 
 ## 旧字段迁移
 
@@ -244,13 +244,14 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
 | `stop_script` | `stop.script` |
 | 顶层 `pidfile` | `identity.pidfile` |
 | `mode: detached` | `mode: managed` + `start.detach: true` |
-| `health.type: none` | `health.type: process`（无 identity 时等同只看句柄） |
-| `health.expect.service` | `health.service` |
-| `runtime.timeout_sec`（旧，回收） | `runtime.idle_timeout_sec` |
+| `health` 分组（`type` / `url` / `port` / `service` / `timeout_sec`） | 并入 `identity`：`http` / `port` / `service_name` / `timeout_sec`；`type` 由成员自动推导 |
+| `health.type: none` | 不写任何探测成员 → 只看框架句柄 |
+| `identity.match` | 删除（`process` 含 `/` 或 `\` 即按路径匹配） |
+| `runtime` 分组 | `settings` |
+| `runtime.enabled` | `settings.state`（true→active、false→disabled） |
+| `runtime.archived` | `settings.state: archived` |
+| `runtime.timeout_sec`（旧，回收） | `settings.idle_timeout_sec` |
 | `reg/cron/*.json` | `reg/tasks/*.json` + `mode: task` |
-| `reg/_archive/*.json` | 条目里 `runtime.archived: true` |
-| `data/service_runtime.json` | 各条目 `runtime` |
-| `data/cron_runtime.json` | 各任务条目 `runtime` |
-| `data/service_order.json` / `cron_order.json` | 各条目 `runtime.order` |
+| `data/service_runtime.json` / `cron_runtime.json` / `*_order.json` | 废弃：框架观测落 `data/runtime/`，用户设置落注册条 `settings` |
 
 目录迁移：启动时若发现 `reg/*.json` 或 `reg/cron/`，自动搬到 `reg/services/` / `reg/tasks/`，并记一条 `legacy_reg` 事件。

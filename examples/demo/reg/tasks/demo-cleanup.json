@@ -8,5 +8,5 @@
     "args": ["--note", "demo cleanup", "--log", "{{WORKDIR}}/data/demo-cleanup.log"]
   },
   "schedule": { "type": "interval", "every_sec": 300 },
-  "runtime": { "enabled": true, "catch_up": false, "run_timeout_sec": 60 }
+  "settings": { "state": "active", "catch_up": false, "run_timeout_sec": 60 }
 }

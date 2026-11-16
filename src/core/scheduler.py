@@ -40,8 +40,8 @@ def _dur(t0: float) -> int:
 class CronSpec:
     """单条定时任务注册的解析结果。valid=False 时 error 携带原因。"""
 
-    # 运行态字段：生效值来自注册条 runtime 组（旧的 cron_runtime.json 账本已废弃）
-    RUNTIME_KEYS = ("enabled", "catch_up", "run_timeout_sec", "order", "archived")
+    # 用户设置字段：生效值来自注册条 settings 组（旧的 cron_runtime.json 账本已废弃）
+    SETTINGS_KEYS = ("state", "catch_up", "run_timeout_sec", "order")
 
     def __init__(self, name: str, reg_path: Path, runtime: dict | None = None):
         self._init_defaults(name, reg_path)
@@ -64,7 +64,8 @@ class CronSpec:
         self.valid: bool = True
         self.error: str | None = None
         self.path: Path = Path('.')
-        self.enabled: bool = True
+        self.state: str = "disabled"             # active | disabled | archived（task 默认不启用）
+        self.schedule_active: bool = True        # weekly days 为空 → False（不调度）
         self.display: str = name
         self.description: str = ""
         self.entry: str = ""
@@ -79,6 +80,15 @@ class CronSpec:
         self.catch_up: bool = False
         self.order: float | None = None
 
+    @property
+    def enabled(self) -> bool:
+        """兼容既有调用：state != disabled。"""
+        return self.state != "disabled"
+
+    @property
+    def archived(self) -> bool:
+        return self.state == "archived"
+
     def _load(self, runtime: dict | None) -> dict | None:
         """读注册条并与运行态账本合并 → view；解析失败返回 None。"""
         try:
@@ -91,16 +101,16 @@ class CronSpec:
             self.error = f"注册条解析失败: {exc}"
             return None
         # 账本值覆盖注册条同名键（后者只作回落）
-        self.runtime = {k: runtime[k] for k in self.RUNTIME_KEYS
+        self.runtime = {k: runtime[k] for k in self.SETTINGS_KEYS
                         if isinstance(runtime, dict) and k in runtime}
         return {**data, **self.runtime}
 
     def _apply_declaration(self, view: dict, name: str) -> list[str]:
         problems: list[str] = []
         legacy = [k for k in ("entry", "args", "cwd", "enabled", "catch_up",
-                              "timeout_sec") if k in view]
+                              "timeout_sec", "runtime") if k in view]
         if legacy:
-            problems.append(f"旧版字段 {legacy} 已废弃，请改为 start / runtime 分组")
+            problems.append(f"旧版字段 {legacy} 已废弃，请改为 start / settings 分组")
 
         raw_path = view.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
@@ -114,22 +124,26 @@ class CronSpec:
                 problems.append(f"path 不是存在的目录: {self.path}")
 
         start = view.get("start") if isinstance(view.get("start"), dict) else {}
-        runtime_cfg = view.get("runtime") if isinstance(view.get("runtime"), dict) else {}
-        self.enabled = bool(runtime_cfg.get("enabled", True))
+        settings = view.get("settings") if isinstance(view.get("settings"), dict) else {}
+        state = str(settings.get("state") or "disabled").lower()
+        if state not in ("active", "disabled", "archived"):
+            problems.append(
+                f"settings.state 仅支持 active/disabled/archived，得到 {state!r}")
+        self.state = state
         self.display = str(view.get("display", name))
         self.description = str(view.get("description", ""))
         self.entry = str(start.get("entry", "")).strip()
         args = start.get("args", [])
         self.args = [str(a) for a in args] if isinstance(args, list) else []
         self.cwd = str(start.get("cwd", "."))
-        self.catch_up = bool(runtime_cfg.get("catch_up", False))
-        if "order" in runtime_cfg:
+        self.catch_up = bool(settings.get("catch_up", False))
+        if "order" in settings:
             try:
-                self.order = float(runtime_cfg["order"])
+                self.order = float(settings["order"])
             except (TypeError, ValueError):
                 self.order = None
         try:
-            self.timeout_sec = float(runtime_cfg.get("run_timeout_sec", 300.0))
+            self.timeout_sec = float(settings.get("run_timeout_sec", 300.0))
         except (TypeError, ValueError):
             problems.append("run_timeout_sec 不是数字")
         self.timeout_sec = max(5.0, min(self.timeout_sec, 86400.0))
@@ -139,10 +153,11 @@ class CronSpec:
 
     def _apply_schedule(self, view: dict) -> list[str]:
         sched = view.get("schedule")
+        if sched is None:
+            sched = {}                      # 缺省：daily 09:00
         if not isinstance(sched, dict):
-            return ['缺少 schedule 字段（{"type":"daily","at":"HH:MM"} '
-                    '或 {"type":"interval","every_sec":N}）']
-        stype = str(sched.get("type", "")).lower()
+            return ["schedule 需为对象"]
+        stype = str(sched.get("type") or "daily").lower()
         if stype == "daily":
             self.schedule_type = "daily"
             return self._apply_daily(sched)
@@ -159,8 +174,8 @@ class CronSpec:
 
     def _apply_weekly(self, sched: dict) -> list[str]:
         raw_days = sched.get("days")
-        if not isinstance(raw_days, list) or not raw_days:
-            return ['weekly 的 days 需为非空数组，如 [1, 3, 5]（1=周一 … 7=周日）']
+        if not isinstance(raw_days, list):
+            raw_days = []
         days: list[int] = []
         bad: list[object] = []
         for item in raw_days:
@@ -176,13 +191,15 @@ class CronSpec:
         if bad:
             return [f"weekly 的 days 含非法星期（需 1~7）: {bad}"]
         self.schedule_days = sorted(set(days))
+        # 空 days = 不调度（valid，但不会执行）
+        self.schedule_active = bool(self.schedule_days)
         return self._apply_times(sched, "weekly")
 
     def _apply_times(self, sched: dict, label: str) -> list[str]:
         raw_at = sched.get("at")
         raw_at = [raw_at] if isinstance(raw_at, str) else raw_at
         if not isinstance(raw_at, list) or not raw_at:
-            return [f'{label} 的 at 需为 "HH:MM" 或 ["HH:MM", ...]（至少一个时刻）']
+            raw_at = ["09:00"]
         times: list[tuple[int, int]] = []
         bad: list[str] = []
         for item in raw_at:
@@ -204,9 +221,9 @@ class CronSpec:
 
     def _apply_interval(self, sched: dict) -> list[str]:
         try:
-            self.every_sec = float(sched.get("every_sec", 0))
+            self.every_sec = float(sched.get("every_sec", 3600))
         except (TypeError, ValueError):
-            self.every_sec = 0
+            self.every_sec = 3600
         if self.every_sec < 10:
             return ["interval 的 every_sec 需 >= 10 秒"]
         self.every_sec = min(self.every_sec, 604800.0)  # ≤ 7 天
@@ -241,6 +258,8 @@ class CronSpec:
                 return f"每天 {h:02d}:{m:02d}"
             return "每天 " + ", ".join(f"{h:02d}:{m:02d}"
                                        for h, m in self.schedule_times)
+        if self.schedule_type == "weekly" and not self.schedule_days:
+            return "每周（未选择星期，不执行）"
         if (self.schedule_type == "weekly" and self.schedule_days
                 and self.schedule_times):
             days = "、".join(_WEEKDAY_NAMES[d] for d in self.schedule_days)
@@ -320,7 +339,7 @@ class Scheduler:
             spec = self.specs.get(name)
             if spec is None or spec.order == float(i):
                 continue
-            self._set_runtime(name, {"order": i})
+            self._set_settings(name, {"order": i})
 
     def _ordered_names(self) -> list[str]:
         """按 runtime.order 排序；未设 order 的按字母序追加末尾。"""
@@ -378,10 +397,11 @@ class Scheduler:
         out: dict[str, dict] = {}
         for name, spec in self.specs.items():
             out[name] = {
-                "enabled": spec.enabled,
+                "state": spec.state,
                 "catch_up": spec.catch_up,
                 "run_timeout_sec": spec.timeout_sec,
                 "order": spec.order,
+                "schedule_active": spec.schedule_active,
             }
         return out
 
@@ -405,17 +425,17 @@ class Scheduler:
             self.specs[name] = new_spec
         return True
 
-    def _set_runtime(self, name: str, patch: dict) -> bool:
-        clean = {k: v for k, v in patch.items() if k in CronSpec.RUNTIME_KEYS}
+    def _set_settings(self, name: str, patch: dict) -> bool:
+        clean = {k: v for k, v in patch.items() if k in CronSpec.SETTINGS_KEYS}
         if not clean:
             return True
 
         def mutate(data: dict) -> None:
-            rt = data.get("runtime")
-            if not isinstance(rt, dict):
-                rt = {}
-            rt.update(clean)
-            data["runtime"] = rt
+            st = data.get("settings")
+            if not isinstance(st, dict):
+                st = {}
+            st.update(clean)
+            data["settings"] = st
 
         return self._write_reg(name, mutate)
 
@@ -457,7 +477,8 @@ class Scheduler:
                     "name": name,
                     "display": spec.display,
                     "description": spec.description,
-                    "enabled": spec.enabled,
+                    "state": spec.state,
+                    "schedule_active": spec.schedule_active,
                     "valid": spec.valid,
                     "error": spec.error,
                     "schedule": spec.schedule_desc,
@@ -521,7 +542,8 @@ class Scheduler:
         now = time.time()
         with self.lock:
             for name, spec in list(self.specs.items()):
-                if not spec.valid or not spec.enabled or name in self.running:
+                if (not spec.valid or not spec.enabled
+                        or not spec.schedule_active or name in self.running):
                     continue
                 p = self.persist.setdefault(name, {})
                 nxt = p.get("next_run")
@@ -606,7 +628,12 @@ class Scheduler:
         """把外部 patch 归一化 → (runtime_patch, schedule_patch, 错误消息)。"""
         runtime_patch: dict = {}
         if "enabled" in patch:
-            runtime_patch["enabled"] = bool(patch["enabled"])
+            runtime_patch["state"] = "active" if patch["enabled"] else "disabled"
+        if "state" in patch:
+            state = str(patch["state"]).lower()
+            if state not in ("active", "disabled", "archived"):
+                return {}, None, "state 仅支持 active/disabled/archived"
+            runtime_patch["state"] = state
         if "catch_up" in patch:
             runtime_patch["catch_up"] = bool(patch["catch_up"])
         for key in ("timeout_sec", "run_timeout_sec"):
@@ -651,11 +678,11 @@ class Scheduler:
     def _commit_patch(self, name: str, spec: CronSpec, runtime_patch: dict,
                       schedule_patch: dict | None) -> tuple[bool, str, str]:
         """写回注册条并重解析；新配置无效则回滚。"""
-        old_runtime = dict(spec.raw.get("runtime") or {})
+        old_settings = dict(spec.raw.get("settings") or {})
         old_schedule = spec.raw.get("schedule")
         ok = True
         if runtime_patch:
-            ok = self._set_runtime(name, runtime_patch) and ok
+            ok = self._set_settings(name, runtime_patch) and ok
         if schedule_patch is not None:
             ok = self._set_schedule(name, schedule_patch) and ok
         if not ok:
@@ -664,7 +691,7 @@ class Scheduler:
         new_spec = CronSpec(name, spec.reg_path)
         if not new_spec.valid:
             if runtime_patch:
-                self._set_runtime(name, old_runtime)
+                self._set_settings(name, old_settings)
             if schedule_patch is not None and old_schedule is not None:
                 self._set_schedule(name, old_schedule)
             self.scan()
