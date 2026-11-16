@@ -208,19 +208,26 @@ class TestUpdate(unittest.TestCase):
         self.assertEqual(update.candidate_urls("file:///tmp/pkg.zip"), ["file:///tmp/pkg.zip"])
 
     def test_check_uses_mirror_first_and_returns_notes(self):
+        from core import ed25519
+
+        seed = b"\x04" * 32
         url = ("https://github.com/keeyangyy/my-service/releases/download/"
                "v9.9.9/my-service-9.9.9.zip")
-        payload = json.dumps({
+        data = {
             "version": "9.9.9", "url": url, "sha256": "a" * 64,
             "size": 123, "notes": "notes-url", "notes_text": "更新说明",
-        }).encode("utf-8")
+        }
+        data["sig"] = ed25519.sign(seed, update.canonical_payload(data)).hex()
+        payload = json.dumps(data).encode("utf-8")
         calls: list[str] = []
 
         def fake_urlopen(req, timeout=None):
             calls.append(req.full_url)
             return _FakeResp(payload)
 
-        with mock.patch("core.update.urllib.request.urlopen", fake_urlopen):
+        with mock.patch.object(update.update_pubkey, "PUBLIC_KEY_HEX",
+                               ed25519.public_key(seed).hex()), \
+                mock.patch("core.update.urllib.request.urlopen", fake_urlopen):
             info = update.check("0.1.0", mirrors=["https://mirror.example"])
         self.assertTrue(info["has_update"])
         self.assertEqual(info["notes_text"], "更新说明")
@@ -246,6 +253,54 @@ class TestUpdate(unittest.TestCase):
                         lambda req, timeout=None: _FakeResp(payload)), \
                 self.assertRaises(ValueError):
             update.check("0.1.0", mirrors=[])
+
+    # ---- 签名（Ed25519）----
+    def _signed_latest(self, seed: bytes) -> dict:
+        version = "9.9.9"
+        data = {
+            "version": version,
+            "url": ("https://github.com/keeyangyy/my-service/releases/download/"
+                    f"v{version}/my-service-{version}.zip"),
+            "sha256": "a" * 64,
+            "size": 123,
+            "notes_text": "更新说明",
+        }
+        from core import ed25519
+
+        data["sig"] = ed25519.sign(seed, update.canonical_payload(data)).hex()
+        return data
+
+    def test_check_accepts_valid_signature(self):
+        from core import ed25519
+
+        seed = b"\x01" * 32
+        pub = ed25519.public_key(seed)
+        payload = json.dumps(self._signed_latest(seed)).encode("utf-8")
+        with mock.patch.object(update.update_pubkey, "PUBLIC_KEY_HEX", pub.hex()), \
+                mock.patch("core.update.urllib.request.urlopen",
+                           lambda req, timeout=None: _FakeResp(payload)):
+            info = update.check("0.1.0", mirrors=[])
+        self.assertTrue(info["has_update"])
+
+    def test_check_rejects_missing_signature(self):
+        data = self._signed_latest(b"\x02" * 32)
+        data.pop("sig")
+        payload = json.dumps(data).encode("utf-8")
+        with mock.patch("core.update.urllib.request.urlopen",
+                        lambda req, timeout=None: _FakeResp(payload)), \
+                self.assertRaises(ValueError) as ctx:
+            update.check("0.1.0", mirrors=[])
+        self.assertIn("签名", str(ctx.exception))
+
+    def test_check_rejects_bad_signature(self):
+        data = self._signed_latest(b"\x03" * 32)
+        data["sig"] = "0" * 128
+        payload = json.dumps(data).encode("utf-8")
+        with mock.patch("core.update.urllib.request.urlopen",
+                        lambda req, timeout=None: _FakeResp(payload)), \
+                self.assertRaises(ValueError) as ctx:
+            update.check("0.1.0", mirrors=[])
+        self.assertIn("签名", str(ctx.exception))
 
     def test_apply_rejects_untrusted_url(self):
         result = update.apply(self.home, {

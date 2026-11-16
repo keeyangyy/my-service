@@ -75,6 +75,8 @@ jobs:
 
       - name: 组装并校验产物
         shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
           $v = "${{ inputs.version }}"
@@ -86,6 +88,7 @@ jobs:
           if ($latest.version -ne $v) { throw "latest.json 的 version 不符: $($latest.version)" }
           $want = "https://github.com/${{ github.repository }}/releases/download/v$v/my-service-$v.zip"
           if ($latest.url -ne $want) { throw "latest.json 的 url 不符: $($latest.url)" }
+          if (-not $latest.sig) { throw "latest.json 缺少签名（sig）；请配置 UPDATE_SIGNING_KEY secret" }
           $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
           if ($latest.sha256 -ne $hash) { throw "latest.json 的 sha256 与实际包不一致" }
           $sizeMb = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 2)

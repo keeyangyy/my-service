@@ -22,6 +22,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from . import ed25519, update_pubkey
+
 DEFAULT_REPO = "keeyangyy/my-service"
 TIMEOUT = 20
 UA = "my-service-updater"
@@ -38,6 +40,8 @@ DEFAULT_MIRRORS = (
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+# 签名覆盖的字段（客户端验签与 tools/sign_latest.py 必须一致）
+_SIGNED_FIELDS = ("version", "url", "sha256", "size", "notes_text")
 # 升级替换清单（与 tools/build-portable.ps1 的 CODE_DIRS / CODE_FILES 保持一致）：
 # 包根 = 仓库结构，没有 app/ 层；只换这几个目录与文档，reg/ data/ config.json 一律不动。
 CODE_DIRS = ("src", "web", "run", "docs")
@@ -116,6 +120,27 @@ def _get_json(url: str, timeout: float, mirrors=None) -> tuple[dict, str]:
     raise OSError("所有更新源均失败：" + "；".join(errors[-3:]))
 
 
+def canonical_payload(info: dict) -> bytes:
+    """签名覆盖的规范化内容（客户端与签名脚本共用）。"""
+    body = {k: info.get(k) for k in _SIGNED_FIELDS}
+    return json.dumps(body, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _verify_signature(data: dict) -> None:
+    """用内置公钥验签；缺失/格式错/验不过一律拒绝。"""
+    sig_hex = str(data.get("sig") or "").strip().lower()
+    if not sig_hex:
+        raise ValueError("latest.json 缺少签名（sig），拒绝更新")
+    try:
+        sig = bytes.fromhex(sig_hex)
+        public = bytes.fromhex(update_pubkey.PUBLIC_KEY_HEX)
+    except ValueError as exc:
+        raise ValueError("latest.json 的签名格式无效") from exc
+    if not ed25519.verify(public, canonical_payload(data), sig):
+        raise ValueError("更新包签名无效，可能被篡改，已拒绝")
+
+
 def check(current: str, repo: str = DEFAULT_REPO, timeout: float = TIMEOUT,
           mirrors=None) -> dict:
     """拉最新版本清单（只读，不下载包）。
@@ -141,6 +166,7 @@ def check(current: str, repo: str = DEFAULT_REPO, timeout: float = TIMEOUT,
     size = int(data.get("size") or 0)
     if size <= 0:
         raise ValueError("latest.json 的 size 无效")
+    _verify_signature(data)
     return {
         "ok": True,
         "current": current,

@@ -155,3 +155,15 @@ $latest = [ordered]@{
                         (($latest | ConvertTo-Json) -replace "`r`n", "`n") + "`n",
                         [Text.UTF8Encoding]::new($false))
 Write-Host "版本清单: $(Join-Path $outBase 'latest.json')"
+
+# ---- 签名（Ed25519）：私钥由 CI secret 注入；未配置则警告（客户端会拒绝未签名清单）----
+$latestPath = Join-Path $outBase "latest.json"
+if ($env:UPDATE_SIGNING_KEY) {
+    $pyExe = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+    if (-not $pyExe) { throw "找不到 python.exe，无法给 latest.json 签名" }
+    & $pyExe (Join-Path $PSScriptRoot "sign_latest.py") $latestPath
+    if ($LASTEXITCODE -ne 0) { throw "latest.json 签名失败" }
+    Write-Host "已签名 latest.json"
+} else {
+    Write-Host "警告：未设置 UPDATE_SIGNING_KEY，latest.json 未签名（客户端将拒绝该版本）" -ForegroundColor Yellow
+}

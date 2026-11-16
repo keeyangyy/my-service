@@ -34,7 +34,15 @@
 - 实际大小必须与清单一致
 - 任一不符立即丢弃下载包并报错
 
-> 已知边界：清单与包都经同一代理获取时，代理理论上可同时替换两者。要防这类攻击需要**发布签名**（私钥在发布流程、公钥内置客户端），目前未实现。
+## 签名（Ed25519）
+
+- 发布时用私钥签 `latest.json` 的 `sig` 字段，签名覆盖 `version` / `url` / `sha256` / `size` / `notes_text`
+- 客户端内置公钥（`src/core/update_pubkey.py`），**验签失败直接拒绝更新**；缺失签名同样拒绝
+- 私钥存放在 GitHub Actions secret `UPDATE_SIGNING_KEY`；发布流水线会校验 `sig` 非空，未配置 secret 会失败
+- 本地手动签名：`UPDATE_SIGNING_KEY=<hex> python tools/sign_latest.py dist/latest.json`
+- 轮换密钥：`python tools/gen_update_key.py --out <私钥路径>` 生成新对 → 更新公钥文件并**同时发版**（旧客户端只认旧公钥）
+
+> 这解决了「代理同时替换清单与包」：没有私钥就无法为新清单构造有效签名。
 
 ## 失败恢复
 

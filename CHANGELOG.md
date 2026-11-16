@@ -12,6 +12,10 @@
     或环境变量 `MY_SERVICE_UPDATE_MIRRORS` 覆盖（空数组 = 只用官方）
   - 强化校验：清单 URL 必须属于本仓库、sha256 形状、包大小与 sha256 一致，否则丢弃
   - 面板新增更新说明弹窗；`latest.json` 增加 `notes_text`（构建时从 CHANGELOG 提取）
+- 更新包防篡改：`latest.json` 增加 Ed25519 签名，客户端内置公钥验签
+  - 签名覆盖 version / url / sha256 / size / notes_text；缺失或验签失败一律拒绝更新
+  - 发布流水线用 GitHub secret `UPDATE_SIGNING_KEY` 签名，并校验 `sig` 非空
+  - 新增 `tools/gen_update_key.py`（生成密钥对）与 `tools/sign_latest.py`（签名）
 
 ## v0.17.3（2026-11-16）
 
