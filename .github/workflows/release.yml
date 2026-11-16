@@ -94,6 +94,10 @@ jobs:
           $sizeMb = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 2)
           Write-Host "产物校验通过：$zip（$sizeMb MB，sha256 $hash）"
 
+          # 固定名副本：宣传页下载按钮指向 releases/latest/download/my-service-latest.zip
+          Copy-Item -LiteralPath $zip -Destination "dist/my-service-latest.zip" -Force
+          Write-Host "已生成固定名副本 dist/my-service-latest.zip"
+
       - uses: actions/upload-artifact@v4
         with:
           name: portable
@@ -149,7 +153,7 @@ jobs:
           set -euo pipefail
           gh release create "v$VERSION" --draft --verify-tag \
             --title "v$VERSION" --notes-file notes.md
-          gh release upload "v$VERSION" "dist/my-service-$VERSION.zip" "dist/latest.json" --clobber
+          gh release upload "v$VERSION" "dist/my-service-$VERSION.zip" "dist/latest.json" "dist/my-service-latest.zip" --clobber
 
       - name: 资产自检（转正前）
         env:
@@ -159,7 +163,7 @@ jobs:
           set -euo pipefail
           gh release view "v$VERSION" --json assets --jq '.assets[] | "\(.name) \(.size)"' > assets.txt
           cat assets.txt
-          for f in "my-service-$VERSION.zip" "latest.json"; do
+          for f in "my-service-$VERSION.zip" "latest.json" "my-service-latest.zip"; do
             awk -v n="$f" '$1 == n && $2 + 0 > 0 { ok = 1 } END { exit !ok }' assets.txt \
               || { echo "::error::资产缺失或大小为 0: $f"; exit 1; }
           done
