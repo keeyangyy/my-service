@@ -10,7 +10,7 @@
 - **注册条是唯一发现源**：服务通过 `reg/services/<名称>.json` 接入，不要在代码里硬编码服务名单。
 - **运行时数据统一在 `data/` 下**：`data/logs/` 只追加、可随时删；`data/` 其余是运行态账本与备份（pid/状态/顺序/bak），删了行为会变。健康探测不写访问日志。
 - **零第三方依赖**：Python 标准库 + 原生 JS。不要把 `requirements.txt` / `package.json` 带进主流程。
-- **只绑回环**：控制面默认 `127.0.0.1`。要改 `host` 必须同时加认证手段，否则不要改。
+- **只绑回环**：控制面默认 `127.0.0.1`。要改 `server.host` 必须同时配 `cors.allow` 与网络层访问控制，否则不要改。
 - **公开仓库禁止出现**：本机绝对路径、用户名、真实被管服务名、token/cookie/密钥、`reg/` `data/` `config.json`（均已在 `.gitignore`）。
 - **提交前必须**：`python -m unittest discover -s tests` 与 `pwsh -File tools/check_privacy.ps1` 双绿。
 
@@ -18,7 +18,7 @@
 
 | 场景 | 文件 |
 |:--|:--|
-| 注册条字段、四种模式、健康判定 | [docs/design/registry.md](docs/design/registry.md) |
+| 注册条字段、三种托管形态、健康判定 | [docs/design/registry.md](docs/design/registry.md) |
 | 按需服务：点开即启、空闲回收 | [docs/design/on-demand.md](docs/design/on-demand.md) |
 | 日志边界、登记簿事件字典 | [docs/design/logging.md](docs/design/logging.md) |
 | 定时任务协议与调度语义 | [docs/design/cron.md](docs/design/cron.md) |

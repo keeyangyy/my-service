@@ -50,7 +50,7 @@ max(进程创建时间, 接管时刻) + 首次接入宽限（一个完整周期�
 ## 约束
 
 - `on_demand` 必须能停止：`stop.script` 或可被 `taskkill /T` 终结；
-- `health` 必须可判定（`http` / `port` / `process`）；
+- `identity` 必须可判定（`http` / `port` / `pidfile` / `process` 至少一个）；
 - 无法定位 PID（`pid = null`）时不回收，面板提示“证据不足”；
 - 不允许 `start.detach: true`（点火脚本退场后没有句柄，无法可靠回收）。
 

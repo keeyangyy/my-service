@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+## v0.19.1（2026-11-16）
+
+### 文档
+
+- 使用文档面向使用者重写，便携包内即可完成安装、接入、配置与排障，不再需要跳仓库
+  - `registration.md`：三件套要求、三种 mode 示例、完整字段速查、`identity` 写法与优先级、定时任务要点、接入检查单
+  - `usage.md`：环境要求、`config.json` 字段表与局域网配置、完整 REST 接口表、升级校验与回滚、卸载步骤
+  - README 重排为「导览 + 快速上手」，深度内容交给 guide，并补文档导航表
+- 修正文档与实现不一致（照旧文档操作会直接失败）
+  - 注册条示例统一为 `identity` / `settings`（旧 `health` / `runtime` 已不兼容）
+  - 配置字段名更正为 `server.host` / `cors.allow` / `advanced.*`（README、SECURITY、api、cors、AGENTS 同步）
+  - 托管形态表述改为三种 mode + `start.detach: true`；对接入要求的 `stop.script` 标注必填
+- 公开文档脱敏：移除示例中的真实主机名与内网 IP
+
 ## v0.19.0（2026-11-16）
 
 ### 变更
