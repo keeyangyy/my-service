@@ -1,6 +1,6 @@
 # my-service 便携包构建（Windows）
 #
-# 产物结构（zip 顶层是 my-service-<版本>/，包内 = 仓库结构；只做「裁切」：不打测试/工具/开发者文档，也不打 Python）：
+# 产物结构（zip 顶层是 my-service/，包内 = 仓库结构；只做「裁切」：不打测试/工具/开发者文档，也不打 Python）：
 #   src/ web/ run/             代码与入口（双击 run\start.ps1 启停，需要系统 Python）
 #   docs/guide/                使用说明（用户向：使用指南 + 注册指南 + 截图）
 #   README.md CHANGELOG.md LICENSE
@@ -65,7 +65,7 @@ Write-Host "构建 my-service $Version"
 
 # -OutDir 支持绝对路径（便于组装到临时目录做校验）
 $outBase = if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $repo $OutDir }
-$stage = Join-Path $outBase "my-service-$Version"
+$stage = Join-Path $outBase "my-service"
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
@@ -115,7 +115,7 @@ Write-Host "已组装: $stage"
 if ($SkipZip) { return }
 
 # ---- 打 zip + sha256 + latest.json ----
-$zipOut = Join-Path $outBase "my-service-$Version.zip"
+$zipOut = Join-Path $outBase "my-service.zip"
 if (Test-Path -LiteralPath $zipOut) { Remove-Item -LiteralPath $zipOut -Force }
 Compress-Archive -Path $stage -DestinationPath $zipOut -CompressionLevel Optimal
 
@@ -145,7 +145,7 @@ if (Test-Path -LiteralPath $clPath) {
 # latest.json 供面板一键升级读取（发布时与 zip 一起上传到 Release）
 $latest = [ordered]@{
     version    = $Version
-    url        = "https://github.com/$RepoSlug/releases/download/v$Version/my-service-$Version.zip"
+    url        = "https://github.com/$RepoSlug/releases/download/v$Version/my-service.zip"
     sha256     = $hash
     size       = $item.Length
     notes      = "https://github.com/$RepoSlug/releases/tag/v$Version"

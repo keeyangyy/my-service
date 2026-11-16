@@ -104,6 +104,16 @@ gh run watch    # 盯到结束
 
 任何一步失败都会 `gh release delete --cleanup-tag` 并删远端 tag，不留半成品；修好后重新触发即可。
 
+### 产物与网站约定
+
+| 项 | 约定 |
+|:--|:--|
+| 安装包 | `my-service.zip`（固定名，zip 内顶层目录 `my-service/`），不带版本号 |
+| Release 资产 | 仅 `my-service.zip` + `latest.json`，不额外传固定名副本 |
+| 下载直链 | `https://github.com/keeyangyy/my-service/releases/latest/download/my-service.zip` |
+| 宣传页 | `https://my-service-app.pages.dev/`（Cloudflare Pages，`site/` 变动自动部署） |
+| 网页维护 | 发版不改网页：下载链接走 latest、版本徽章走 shields.io，自动跟随 |
+
 ### 发布说明与自检
 
 - 发布说明取自 CHANGELOG 该版本段落，所以第 1 步的质量直接决定 Release 页面内容。

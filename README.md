@@ -30,7 +30,7 @@ AI 让「写一个服务」的门槛低了很多，本机上的脚本只会越�
 
 要求：Windows 10 / 11、Python 3.10+（在 `PATH` 中）、PowerShell 7（推荐）。
 
-1. 从 [Releases](https://github.com/keeyangyy/my-service/releases/latest) 下载 `my-service-<version>.zip`，
+1. 从 [Releases](https://github.com/keeyangyy/my-service/releases/latest) 下载 `my-service.zip`，
    解压到任意非受保护目录（例如 `C:/path/to/my-service`）。
 2. 启动宿主：在 `run/` 里右键 `start.ps1` → 「使用 PowerShell 运行」，或终端执行：
 

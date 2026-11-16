@@ -4,6 +4,27 @@
 
 ## Unreleased
 
+## v0.20.0（2026-11-16）
+
+### 新增功能
+
+- 在线介绍页：单页宣传站（`site/`），托管在 <https://my-service-app.pages.dev/>
+  - 下载按钮直连 `releases/latest/download/my-service.zip`，点击即开始下载（不再跳发布页）
+  - 版本徽章用 shields.io、下载链接走 latest，发版后页面无需改动
+  - GitHub Pages 下线，避免同一份内容双份部署
+
+### 变更
+
+- 发行包改为固定名 `my-service.zip`（zip 内顶层目录 `my-service/`），不再带版本号
+  - Release 资产：`my-service.zip` + `latest.json`（不再有 `my-service-<版本>.zip`）
+  - 更新清单的 `url` 随之为固定名；版本判断仍靠 `version` 字段与 Release tag
+  - 好处：下载直链永久有效，宣传页与文档不需要随发版修改
+
+### 修复
+
+- `examples/demo/start-demo.ps1` 仍在写旧 config 结构（`host`/`port`/`reg_dir`），
+  在 0.18+ 下这些键失效，demo 会跑成默认 1236 并撞上本机正在运行的宿主
+
 ## v0.19.1（2026-11-16）
 
 ### 文档

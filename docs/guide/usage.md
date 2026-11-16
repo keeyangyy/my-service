@@ -144,7 +144,7 @@ agent 启动的宿主会随会话结束消失（Windows Job Object 连带清理�
 ## 发行包（下载即用）
 
 ```
-my-service-x.y.z\
+my-service\
 ├── run\start.ps1    ← 双击启动（需要系统 Python 3.10+）
 ├── run\stop.ps1     ← 停止
 ├── src\ web\ run\ docs\guide\

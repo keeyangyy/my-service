@@ -82,21 +82,17 @@ jobs:
           $v = "${{ inputs.version }}"
           & ./tools/build-portable.ps1 -Version $v -RepoSlug "${{ github.repository }}"
 
-          $zip = "dist/my-service-$v.zip"
+          $zip = "dist/my-service.zip"
           if (-not (Test-Path -LiteralPath $zip)) { throw "缺少 $zip" }
           $latest = Get-Content -Raw -LiteralPath "dist/latest.json" | ConvertFrom-Json
           if ($latest.version -ne $v) { throw "latest.json 的 version 不符: $($latest.version)" }
-          $want = "https://github.com/${{ github.repository }}/releases/download/v$v/my-service-$v.zip"
+          $want = "https://github.com/${{ github.repository }}/releases/download/v$v/my-service.zip"
           if ($latest.url -ne $want) { throw "latest.json 的 url 不符: $($latest.url)" }
           if (-not $latest.sig) { throw "latest.json 缺少签名（sig）；请配置 UPDATE_SIGNING_KEY secret" }
           $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
           if ($latest.sha256 -ne $hash) { throw "latest.json 的 sha256 与实际包不一致" }
           $sizeMb = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 2)
           Write-Host "产物校验通过：$zip（$sizeMb MB，sha256 $hash）"
-
-          # 固定名副本：宣传页下载按钮指向 releases/latest/download/my-service-latest.zip
-          Copy-Item -LiteralPath $zip -Destination "dist/my-service-latest.zip" -Force
-          Write-Host "已生成固定名副本 dist/my-service-latest.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -153,7 +149,7 @@ jobs:
           set -euo pipefail
           gh release create "v$VERSION" --draft --verify-tag \
             --title "v$VERSION" --notes-file notes.md
-          gh release upload "v$VERSION" "dist/my-service-$VERSION.zip" "dist/latest.json" "dist/my-service-latest.zip" --clobber
+          gh release upload "v$VERSION" "dist/my-service.zip" "dist/latest.json" --clobber
 
       - name: 资产自检（转正前）
         env:
@@ -163,7 +159,7 @@ jobs:
           set -euo pipefail
           gh release view "v$VERSION" --json assets --jq '.assets[] | "\(.name) \(.size)"' > assets.txt
           cat assets.txt
-          for f in "my-service-$VERSION.zip" "latest.json" "my-service-latest.zip"; do
+          for f in "my-service.zip" "latest.json"; do
             awk -v n="$f" '$1 == n && $2 + 0 > 0 { ok = 1 } END { exit !ok }' assets.txt \
               || { echo "::error::资产缺失或大小为 0: $f"; exit 1; }
           done

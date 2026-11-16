@@ -45,6 +45,19 @@
 
 > 这解决了「代理同时替换清单与包」：没有私钥就无法为新清单构造有效签名。
 
+## 产物命名与发布地址
+
+| 项 | 约定 |
+|:--|:--|
+| 安装包 | 固定叫 `my-service.zip`（zip 内顶层目录同为 `my-service/`），**不带版本号** |
+| 更新清单 | `latest.json`，`url` 指向 `releases/download/v<版本>/my-service.zip` |
+| Release 资产 | 只有 `my-service.zip` + `latest.json` 两个 |
+| 下载直链 | `releases/latest/download/my-service.zip`（宣传页按钮用它，点击即下载） |
+| 宣传页 | `https://my-service-app.pages.dev/`（Cloudflare Pages，push `site/` 自动部署） |
+
+固定名的原因：带版本号的文件名每版都变，下载直链会失效；固定名之后宣传页与文档无需随发版改动。
+版本判断仍靠 `latest.json` 的 `version` 字段与 Release tag，与文件名无关。
+
 ## 失败恢复
 
 - 应用阶段失败：自动回滚，详情写 `data/update/last-error.json`

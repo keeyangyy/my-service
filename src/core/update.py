@@ -215,7 +215,8 @@ def _code_entries(root: Path) -> list[Path]:
 def _pick_code_root(staging: Path) -> Path | None:
     """定位代码根。支持三种包布局：
 
-    - 带版本目录：`my-service-x.y.z/src/server.py`（构建脚本当前产物）
+    - 固定目录：`my-service/src/server.py`（当前产物，包名与 zip 名都不带版本）
+    - 带版本目录：`my-service-x.y.z/src/server.py`（0.19.1 及以前）
     - 包根即代码根：`src/server.py` 直接在 zip 顶层（v0.17.1 及以前）
     - 旧布局：`my-service-x.y.z/app/src/server.py`
     """
