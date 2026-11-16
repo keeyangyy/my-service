@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import audit, update
 
-VERSION = "0.17.2"
+VERSION = "0.17.3"
 
 CORE_DIR = Path(__file__).resolve().parent          # core/
 SRC_DIR = CORE_DIR.parent                            # src/
@@ -180,10 +180,11 @@ class HostController:
         `src/ web/ run/ docs/` 与三个文档，再起新宿主——不依赖 start.cmd / 包内 Python。
         """
         if update.pending_version(self.home):
+            # cwd 不能是 src：更新器要移动/删除 src，Windows 下操作进程 cwd 会失败
             subprocess.Popen(
                 [sys.executable, str(SRC_DIR / "service_cli.py"),
                  "apply-update-and-start"],
-                cwd=str(SRC_DIR),
+                cwd=str(self.home),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, creationflags=_DETACH, close_fds=True,
             )

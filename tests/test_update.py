@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sys
 import tempfile
@@ -91,6 +92,28 @@ class TestUpdate(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         staged = self.home / "data" / "update" / "code.new"
         self.assertTrue((staged / "src" / "server.py").is_file())
+
+    def test_apply_pending_tolerates_cwd_inside_src(self):
+        """更新器曾以 src 为 cwd；Windows 下不能移动进程当前目录，必须先切走。"""
+        self._stage()
+        src = self.home / "src"
+        old = Path.cwd()
+        try:
+            os.chdir(src)
+            result = update.apply_pending(self.home)
+        finally:
+            os.chdir(old)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue((self.home / "src" / "server.py").is_file())
+
+    def test_apply_pending_refuses_concurrent_run(self):
+        """宿主派生的更新器与手动 start.ps1 可能同时进来。"""
+        self._stage()
+        lock = self.home / "data" / "update" / "apply.lock"
+        lock.write_text("", encoding="utf-8")
+        result = update.apply_pending(self.home)
+        self.assertFalse(result["ok"])
+        self.assertIn("另一个升级进程", result["error"])
 
     def test_apply_rejects_bad_sha(self):
         zip_path = self.root / "pkg.zip"

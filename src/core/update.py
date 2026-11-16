@@ -14,7 +14,9 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import shutil
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -187,15 +189,41 @@ def apply_pending(home: Path) -> dict:
     """把 data/update/code.new 按清单替换到 home（launcher 起 python 前调用）。
 
     步骤：旧代码整体挪到 data/bak/code-prev/ → 新代码就位 → 删 pending.json。
-    中途失败：新代码退回暂存区、旧代码搬回原位，保留 pending.json 供下次重试。
+    中途失败：新代码退回暂存区、旧代码搬回原位，保留 pending.json 供下次重试，
+    并把失败详情写到 data/update/last-error.json。
+
+    两个防护：
+    - cwd：更新器曾以 src 为 cwd，Windows 下不能移动/删除进程当前目录，先切到 home；
+    - 并发：宿主派生的更新器与手动 run\\start.ps1 可能同时进来，用 apply.lock 串行化。
     """
     home = Path(home)
     upd = home / UPDATE_SUBDIR
-    flag = upd / "pending.json"
-    new = upd / "code.new"
-    if not new.is_dir():
+    if not (upd / "code.new").is_dir():
         return {"ok": False, "error": "没有待生效的升级（data/update/code.new 不存在）"}
 
+    with contextlib.suppress(OSError):
+        cwd = Path.cwd()
+        src_dir = home / "src"
+        if cwd == src_dir or src_dir in cwd.parents:
+            os.chdir(home)
+
+    lock = upd / "apply.lock"
+    try:
+        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return {"ok": False, "error": "另一个升级进程正在执行（data/update/apply.lock）"}
+    try:
+        return _apply_pending_locked(home, upd)
+    finally:
+        os.close(lock_fd)
+        with contextlib.suppress(OSError):
+            lock.unlink()
+
+
+def _apply_pending_locked(home: Path, upd: Path) -> dict:
+    """apply_pending 的实际替换（调用方已持有 apply.lock 并修正 cwd）。"""
+    flag = upd / "pending.json"
+    new = upd / "code.new"
     version = pending_version(home) or ""
     backup = home / BACKUP_SUBDIR / "code-prev"
     names = [n for n in CODE_DIRS + CODE_FILES if (new / n).exists()]
@@ -230,6 +258,12 @@ def apply_pending(home: Path) -> dict:
         for name in moved:      # 旧代码搬回原位
             with contextlib.suppress(OSError):
                 shutil.move(str(backup / name), str(home / name))
+        err = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "version": version,
+               "error": f"{type(exc).__name__}: {exc}",
+               "moved": moved, "done": done}
+        with contextlib.suppress(OSError):
+            (upd / "last-error.json").write_text(
+                json.dumps(err, ensure_ascii=False) + "\n", encoding="utf-8")
         return {"ok": False, "error": f"替换失败，已回滚: {exc}"}
 
     flag.unlink(missing_ok=True)

@@ -2,6 +2,17 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## v0.17.3（2026-11-16）
+
+### 修复
+
+- 一键升级在 Windows 上中断，导致 `src/` 被移空、宿主起不来
+  - 根因：更新器进程的 cwd 是 `src`，Windows 不允许移动/删除进程当前目录；替换 `src` 时失败，回滚也因同样原因失败
+  - 更新器改为以服务根目录为 cwd；`apply_pending` 入口再做一次 cwd 兜底
+  - 增加 `data/update/apply.lock` 串行化，避免宿主更新器与 `run\start.ps1` 并发替换
+  - 替换失败时写 `data/update/last-error.json`（时间、版本、错误、已移动/已就位条目）
+  - 补两个回归测试：cwd 位于 src 内、并发锁
+
 ## v0.17.2（2026-11-16）
 
 ### 修复
