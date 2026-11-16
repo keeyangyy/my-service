@@ -101,10 +101,14 @@ def _code_entries(root: Path) -> list[Path]:
 
 
 def _pick_code_root(staging: Path) -> Path | None:
-    """zip 顶层是 my-service-x.y.z/，取其中含 src/server.py 的代码根。
+    """定位代码根。支持三种包布局：
 
-    兼容两种布局：新包（包根 = 代码根）与旧包（代码在 app/ 里）。
+    - 带版本目录：`my-service-x.y.z/src/server.py`（构建脚本当前产物）
+    - 包根即代码根：`src/server.py` 直接在 zip 顶层（v0.17.1 及以前）
+    - 旧布局：`my-service-x.y.z/app/src/server.py`
     """
+    if (staging / "src" / "server.py").is_file():
+        return staging
     for top in staging.iterdir():
         if not top.is_dir():
             continue

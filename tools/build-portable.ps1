@@ -1,6 +1,6 @@
 # my-service 便携包构建（Windows）
 #
-# 产物结构（包根 = 仓库结构，只做「裁切」：不打测试/工具/开发者文档，也不打 Python）：
+# 产物结构（zip 顶层是 my-service-<版本>/，包内 = 仓库结构；只做「裁切」：不打测试/工具/开发者文档，也不打 Python）：
 #   src/ web/ run/             代码与入口（双击 run\start.ps1 启停，需要系统 Python）
 #   docs/guide/                使用说明（用户向：使用指南 + 注册指南 + 截图）
 #   README.md CHANGELOG.md LICENSE
@@ -117,7 +117,7 @@ if ($SkipZip) { return }
 # ---- 打 zip + sha256 + latest.json ----
 $zipOut = Join-Path $outBase "my-service-$Version.zip"
 if (Test-Path -LiteralPath $zipOut) { Remove-Item -LiteralPath $zipOut -Force }
-Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipOut -CompressionLevel Optimal
+Compress-Archive -Path $stage -DestinationPath $zipOut -CompressionLevel Optimal
 
 $item = Get-Item -LiteralPath $zipOut
 $hash = (Get-FileHash -LiteralPath $zipOut -Algorithm SHA256).Hash.ToLower()

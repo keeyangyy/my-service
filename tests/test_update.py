@@ -16,17 +16,26 @@ from core import update  # noqa: E402
 
 
 def _make_zip(path: Path, version: str, layout: str = "root") -> None:
-    """最小升级包。root = 包根即代码根（新布局）；app = 代码在 app/ 里（旧布局）。
+    """最小升级包。三种布局：
+
+    - root：`my-service-<版本>/src/...`（构建脚本当前产物）
+    - flat：`src/...` 直接在 zip 顶层（v0.17.1 及以前的产物）
+    - app： `my-service-<版本>/app/src/...`（旧布局）
 
     必须带 `src/core/`：替换以「目录」为单位，且会校验 src 完整性，残缺 src 会被拒绝。
     """
-    base = f"my-service-{version}" if layout == "root" else f"my-service-{version}/app"
+    if layout == "app":
+        prefix = f"my-service-{version}/app/"
+    elif layout == "root":
+        prefix = f"my-service-{version}/"
+    else:  # flat
+        prefix = ""
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr(f"{base}/src/server.py", "print('new')\n")
-        zf.writestr(f"{base}/src/core/host.py", 'VERSION = "9.9.9"\n')
-        zf.writestr(f"{base}/README.md", "new readme\n")
-        zf.writestr(f"{base}/docs/guide/usage.md", "new guide\n")
-        zf.writestr(f"{base}/data/logs/ignore.log", "must not be installed\n")
+        zf.writestr(f"{prefix}src/server.py", "print('new')\n")
+        zf.writestr(f"{prefix}src/core/host.py", 'VERSION = "9.9.9"\n')
+        zf.writestr(f"{prefix}README.md", "new readme\n")
+        zf.writestr(f"{prefix}docs/guide/usage.md", "new guide\n")
+        zf.writestr(f"{prefix}data/logs/ignore.log", "must not be installed\n")
 
 
 class TestUpdate(unittest.TestCase):
@@ -75,6 +84,13 @@ class TestUpdate(unittest.TestCase):
         staged = self.home / "data" / "update" / "code.new"
         self.assertTrue((staged / "src" / "server.py").is_file())
         self.assertFalse((staged / "app").exists())
+
+    def test_apply_accepts_flat_root_layout(self):
+        """v0.17.1 及以前的包没有顶层目录，升级也必须认。"""
+        result = self._stage(version="9.9.9", layout="flat")
+        self.assertTrue(result["ok"], result)
+        staged = self.home / "data" / "update" / "code.new"
+        self.assertTrue((staged / "src" / "server.py").is_file())
 
     def test_apply_rejects_bad_sha(self):
         zip_path = self.root / "pkg.zip"
