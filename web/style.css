@@ -597,6 +597,10 @@ html, body {
 .seg-btn:hover:not(:disabled):not(.active) { color: var(--text); }
 .seg-btn.active { background: rgba(88, 166, 255, .16); color: var(--blue); font-weight: 600; }
 .seg-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* 每周多选：7 个小按钮，选中高亮 */
+.cfg-days { display: flex; gap: 4px; flex-wrap: wrap; }
+.cfg-days .seg-btn { padding: 1px 8px; min-width: 34px; }
 .btn-cfg { color: var(--muted); }
 .btn-cfg.active { border-color: var(--blue); color: var(--blue); }
 .cfg-label, .cfg-unit-txt, .cfg-na { color: var(--muted); font-size: 11px; white-space: nowrap; }

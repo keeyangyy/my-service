@@ -18,7 +18,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from core.scheduler import CronSpec, Scheduler, _next_daily  # noqa: E402
+from core.scheduler import CronSpec, Scheduler, _next_daily, _next_weekly  # noqa: E402
 
 
 class _Sandbox:
@@ -119,6 +119,37 @@ class TestCronSpec(unittest.TestCase):
     def test_daily_empty_at_rejected(self):
         p = self.box.put("t2e", schedule={"type": "daily", "at": []})
         s = CronSpec("t2e", p)
+        self.assertFalse(s.valid)
+        self.assertIn("at", s.error)
+
+    def test_weekly_ok(self):
+        p = self.box.put("tw", schedule={"type": "weekly",
+                                         "days": [5, 1, 3, 1], "at": ["09:30"]})
+        s = CronSpec("tw", p)
+        self.assertTrue(s.valid, s.error)
+        self.assertEqual(s.schedule_type, "weekly")
+        self.assertEqual(s.schedule_days, [0, 2, 4])   # 内部 weekday：周一/三/五
+        self.assertEqual(s.schedule_times, [(9, 30)])
+        self.assertEqual(s.schedule_desc, "每周周一、周三、周五 09:30")
+
+    def test_weekly_empty_days_rejected(self):
+        p = self.box.put("tw0", schedule={"type": "weekly", "days": [],
+                                          "at": ["09:30"]})
+        s = CronSpec("tw0", p)
+        self.assertFalse(s.valid)
+        self.assertIn("days", s.error)
+
+    def test_weekly_bad_days_rejected(self):
+        p = self.box.put("tw9", schedule={"type": "weekly", "days": [0, 8],
+                                          "at": ["09:30"]})
+        s = CronSpec("tw9", p)
+        self.assertFalse(s.valid)
+        self.assertIn("days", s.error)
+
+    def test_weekly_requires_at(self):
+        p = self.box.put("twa", schedule={"type": "weekly", "days": [1],
+                                          "at": []})
+        s = CronSpec("twa", p)
         self.assertFalse(s.valid)
         self.assertIn("at", s.error)
 
@@ -317,6 +348,34 @@ class TestDailyMath(unittest.TestCase):
                            datetime(2026, 1, 1, 23, 30, 0).timestamp())
         self.assertEqual(datetime.fromtimestamp(nxt2),
                          datetime(2026, 1, 2, 8, 0, 0))
+
+
+class TestWeeklyMath(unittest.TestCase):
+    """每周固定天：内部 weekday 0=周一 … 6=周日。"""
+
+    def test_same_day_future_time(self):
+        base = datetime(2026, 11, 16, 8, 0)      # 周一
+        nxt = _next_weekly([0], [(9, 30)], base.timestamp())
+        self.assertEqual(datetime.fromtimestamp(nxt),
+                         datetime(2026, 11, 16, 9, 30))
+
+    def test_next_matching_day(self):
+        base = datetime(2026, 11, 16, 12, 0)     # 周一 12:00
+        nxt = _next_weekly([2], [(9, 30)], base.timestamp())   # 周三
+        self.assertEqual(datetime.fromtimestamp(nxt),
+                         datetime(2026, 11, 18, 9, 30))
+
+    def test_wraps_to_next_week(self):
+        base = datetime(2026, 11, 16, 12, 0)     # 周一 12:00
+        nxt = _next_weekly([0], [(9, 30)], base.timestamp())
+        self.assertEqual(datetime.fromtimestamp(nxt),
+                         datetime(2026, 11, 23, 9, 30))
+
+    def test_multiple_days_and_times(self):
+        base = datetime(2026, 11, 16, 12, 0)     # 周一 12:00
+        nxt = _next_weekly([0, 2], [(9, 30), (18, 0)], base.timestamp())
+        self.assertEqual(datetime.fromtimestamp(nxt),
+                         datetime(2026, 11, 16, 18, 0))   # 当天 18:00 更近
 
 
 class TestUpdateConfig(unittest.TestCase):

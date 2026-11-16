@@ -71,8 +71,9 @@ class CronSpec:
         self.args: list[str] = []
         self.cwd: str = "."
         self.env: dict[str, str] = {}
-        self.schedule_type: str = ""              # daily | interval
+        self.schedule_type: str = ""              # daily | weekly | interval
         self.schedule_times: list[tuple[int, int]] = []
+        self.schedule_days: list[int] = []        # weekly：weekday 0=周一 … 6=周日
         self.every_sec: float = 0.0
         self.timeout_sec: float = 300.0
         self.catch_up: bool = False
@@ -145,16 +146,43 @@ class CronSpec:
         if stype == "daily":
             self.schedule_type = "daily"
             return self._apply_daily(sched)
+        if stype == "weekly":
+            self.schedule_type = "weekly"
+            return self._apply_weekly(sched)
         if stype == "interval":
             self.schedule_type = "interval"
             return self._apply_interval(sched)
-        return [f"schedule.type 仅支持 daily/interval，得到 {stype!r}"]
+        return [f"schedule.type 仅支持 daily/weekly/interval，得到 {stype!r}"]
 
     def _apply_daily(self, sched: dict) -> list[str]:
+        return self._apply_times(sched, "daily")
+
+    def _apply_weekly(self, sched: dict) -> list[str]:
+        raw_days = sched.get("days")
+        if not isinstance(raw_days, list) or not raw_days:
+            return ['weekly 的 days 需为非空数组，如 [1, 3, 5]（1=周一 … 7=周日）']
+        days: list[int] = []
+        bad: list[object] = []
+        for item in raw_days:
+            try:
+                d = int(item)
+            except (TypeError, ValueError):
+                bad.append(item)
+                continue
+            if not (1 <= d <= 7):
+                bad.append(item)
+                continue
+            days.append(d - 1)          # 对外 1~7，内部 weekday 0~6
+        if bad:
+            return [f"weekly 的 days 含非法星期（需 1~7）: {bad}"]
+        self.schedule_days = sorted(set(days))
+        return self._apply_times(sched, "weekly")
+
+    def _apply_times(self, sched: dict, label: str) -> list[str]:
         raw_at = sched.get("at")
         raw_at = [raw_at] if isinstance(raw_at, str) else raw_at
         if not isinstance(raw_at, list) or not raw_at:
-            return ['daily 的 at 需为 "HH:MM" 或 ["HH:MM", ...]（至少一个时刻）']
+            return [f'{label} 的 at 需为 "HH:MM" 或 ["HH:MM", ...]（至少一个时刻）']
         times: list[tuple[int, int]] = []
         bad: list[str] = []
         for item in raw_at:
@@ -168,10 +196,10 @@ class CronSpec:
             except (ValueError, TypeError):
                 bad.append(s)
         if bad:
-            return [f"daily 的 at 含非法时刻（需 HH:MM）: {bad}"]
+            return [f"{label} 的 at 含非法时刻（需 HH:MM）: {bad}"]
         self.schedule_times = sorted(set(times))
         if not self.schedule_times:
-            return ["daily 的 at 不能为空"]
+            return [f"{label} 的 at 不能为空"]
         return []
 
     def _apply_interval(self, sched: dict) -> list[str]:
@@ -213,6 +241,11 @@ class CronSpec:
                 return f"每天 {h:02d}:{m:02d}"
             return "每天 " + ", ".join(f"{h:02d}:{m:02d}"
                                        for h, m in self.schedule_times)
+        if (self.schedule_type == "weekly" and self.schedule_days
+                and self.schedule_times):
+            days = "、".join(_WEEKDAY_NAMES[d] for d in self.schedule_days)
+            times = ", ".join(f"{h:02d}:{m:02d}" for h, m in self.schedule_times)
+            return f"每周{days} {times}"
         if self.schedule_type == "interval" and self.every_sec >= 5:
             if self.every_sec % 3600 == 0:
                 return f"每 {int(self.every_sec // 3600)} 小时"
@@ -231,6 +264,27 @@ def _next_daily(times: list[tuple[int, int]], after: float) -> float:
             return cand.timestamp()
     h, m = min(times)
     return (dt + timedelta(days=1)).replace(
+        hour=h, minute=m, second=0, microsecond=0).timestamp()
+
+
+_WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _next_weekly(days: list[int], times: list[tuple[int, int]],
+                 after: float) -> float:
+    """after 之后下一个匹配（星期 + 时刻）；days 用 weekday 0=周一 … 6=周日。"""
+    base = datetime.fromtimestamp(after)
+    for offset in range(0, 8):
+        day = base + timedelta(days=offset)
+        if day.weekday() not in days:
+            continue
+        for h, m in sorted(times):
+            cand = day.replace(hour=h, minute=m, second=0, microsecond=0)
+            if cand.timestamp() > after:
+                return cand.timestamp()
+    # 兜底（days 非空时理论上不可达）：排到 7 天后最早时刻
+    h, m = min(times)
+    return (base + timedelta(days=7)).replace(
         hour=h, minute=m, second=0, microsecond=0).timestamp()
 
 
@@ -411,6 +465,8 @@ class Scheduler:
                     "schedule_type": spec.schedule_type,
                     "at": ([f"{h:02d}:{m:02d}" for h, m in spec.schedule_times]
                            if spec.schedule_times else None),
+                    "days": ([d + 1 for d in spec.schedule_days]
+                             if spec.schedule_days else None),
                     "every_sec": spec.every_sec if spec.every_sec >= 5 else None,
                     "timeout_sec": spec.timeout_sec,
                     "catch_up": spec.catch_up,
@@ -431,22 +487,30 @@ class Scheduler:
                 self.tick()
             time.sleep(self.tick_sec)
 
-    def _init_next_run(self, spec: CronSpec, now: float) -> float:
-        """新任务的首次计划：daily 排到下一个时刻；interval 起算一个周期。"""
+    def _next_for(self, spec: CronSpec, after: float) -> float | None:
+        """按类型算下一个计划时刻；interval 返回 None（由调用方按周期处理）。"""
         if spec.schedule_type == "daily" and spec.schedule_times:
-            return _next_daily(spec.schedule_times, now)
-        return now + spec.every_sec
+            return _next_daily(spec.schedule_times, after)
+        if (spec.schedule_type == "weekly" and spec.schedule_days
+                and spec.schedule_times):
+            return _next_weekly(spec.schedule_days, spec.schedule_times, after)
+        return None
+
+    def _init_next_run(self, spec: CronSpec, now: float) -> float:
+        """新任务的首次计划：daily/weekly 排到下一个时刻；interval 起算一个周期。"""
+        nxt = self._next_for(spec, now)
+        return nxt if nxt is not None else now + spec.every_sec
 
     def _defer_after_miss(self, spec: CronSpec, now: float) -> float:
         """错过且不补跑时的顺延目标：绝不回头补，只往前排。"""
-        if spec.schedule_type == "daily" and spec.schedule_times:
-            return _next_daily(spec.schedule_times, now)
-        return now + spec.every_sec
+        nxt = self._next_for(spec, now)
+        return nxt if nxt is not None else now + spec.every_sec
 
     def _defer_after_run(self, spec: CronSpec, last_run: float, now: float) -> float:
         """执行完毕后的下一次计划：interval 按上次起算（已过期则从现在重新起算）。"""
-        if spec.schedule_type == "daily" and spec.schedule_times:
-            return _next_daily(spec.schedule_times, now)
+        nxt = self._next_for(spec, now)
+        if nxt is not None:
+            return nxt
         cand = last_run + spec.every_sec
         if cand <= now + 1:
             cand = now + spec.every_sec
@@ -562,13 +626,19 @@ class Scheduler:
         if not isinstance(sched, dict):
             return None, "schedule 需为对象"
         stype = str(sched.get("type", "")).lower()
-        if stype not in ("daily", "interval"):
-            return None, "schedule.type 仅支持 daily/interval"
-        if stype == "daily":
+        if stype not in ("daily", "weekly", "interval"):
+            return None, "schedule.type 仅支持 daily/weekly/interval"
+        if stype in ("daily", "weekly"):
             at = sched.get("at")
             ok_at = isinstance(at, str) or (isinstance(at, list) and len(at) > 0)
             if not ok_at:
-                return None, 'daily 的 at 需为 "HH:MM" 或非空时刻数组'
+                return None, f'{stype} 的 at 需为 "HH:MM" 或非空时刻数组'
+        if stype == "weekly":
+            days = sched.get("days")
+            if not isinstance(days, list) or not days:
+                return None, "weekly 的 days 需为非空数组（1=周一 … 7=周日）"
+            if any(not isinstance(d, int) or not (1 <= d <= 7) for d in days):
+                return None, "weekly 的 days 需为 1~7 的整数"
         if stype == "interval":
             try:
                 every = float(sched.get("every_sec", 0))

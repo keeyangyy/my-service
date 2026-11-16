@@ -531,8 +531,12 @@
       var memo = cronModeMemo.get(cur.name || "") || {};
       bar._draft = {
         schedule_type: cur.schedule_type || "daily",
-        at: (cur.schedule_type === "daily" && cur.at && cur.at.length)
+        at: ((cur.schedule_type === "daily" || cur.schedule_type === "weekly")
+          && cur.at && cur.at.length)
           ? cur.at.slice() : (memo.at && memo.at.length ? memo.at.slice() : ["09:30"]),
+        days: (cur.schedule_type === "weekly" && cur.days && cur.days.length)
+          ? cur.days.slice()
+          : (memo.days && memo.days.length ? memo.days.slice() : [1, 2, 3, 4, 5]),
         every_sec: (cur.schedule_type === "interval" && cur.every_sec)
           ? cur.every_sec : (memo.every_sec || 3600),
         timeout_sec: cur.timeout_sec != null ? cur.timeout_sec : 300,
@@ -608,7 +612,7 @@
     grp1.appendChild(cfgEl("span", "cfg-group-title", null, "执行时机"));
 
     var seg = cfgEl("div", "seg");
-    [["daily", "定时执行"], ["interval", "间隔执行"]].forEach(function (p) {
+    [["daily", "每日"], ["weekly", "每周"], ["interval", "间隔"]].forEach(function (p) {
       var b = cfgEl("button", "seg-btn", "mode-" + p[0]);
       b.type = "button";
       b.textContent = p[1];
@@ -625,13 +629,35 @@
     });
     grp1.appendChild(seg);
 
+    // 每周：选固定星期（多选）；与每日共用下方时刻列表
+    var daysBox = cfgEl("div", "cfg-days", "days");
+    [["1", "一"], ["2", "二"], ["3", "三"], ["4", "四"],
+     ["5", "五"], ["6", "六"], ["7", "日"]].forEach(function (p) {
+      var b = cfgEl("button", "seg-btn cfg-day", "day-" + p[0]);
+      b.type = "button";
+      b.textContent = p[1];
+      b.title = "周" + p[1];
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var cur = cronData.get(c.name) || c;
+        var d = cronDraft(bar, cur);
+        var day = parseInt(p[0], 10);
+        var idx = d.days.indexOf(day);
+        if (idx >= 0) d.days.splice(idx, 1);
+        else d.days.push(day);
+        d.schedule_type = "weekly";
+        syncCronConfig(bar, cur);
+      });
+      daysBox.appendChild(b);
+    });
+    grp1.appendChild(daysBox);
+
     var atList = cfgEl("div", "cfg-atlist", "at");
     // 时间列表变更只进草稿（保存按钮统一提交），避免编辑中被轮询/自动保存撤销
     var touchAt = function () {
       var cur = cronData.get(c.name) || c;
       var d = cronDraft(bar, cur);
-      d.schedule_type = "daily";
-      d.at = cronAtValues(atList);
+      d.at = cronAtValues(atList);   // 每日/每周共用时刻列表，不强制切回每日
       syncCronConfig(bar, cur);
     };
     atList._touch = touchAt;   // sync 重建列表时复用（新 input 绑同一回调）
@@ -714,10 +740,14 @@
       var cur = cronData.get(c.name) || c;
       var d = cronDraft(bar, cur);
       var patch = { schedule: { type: d.schedule_type } };
-      if (d.schedule_type === "daily") {
+      if (d.schedule_type === "daily" || d.schedule_type === "weekly") {
         var vals = cronAtValues(atList);
-        if (!vals.length) { toast("定时执行至少保留一个时刻", "warn"); return; }
+        if (!vals.length) { toast("至少保留一个执行时刻", "warn"); return; }
         patch.schedule.at = vals;
+        if (d.schedule_type === "weekly") {
+          if (!d.days.length) { toast("每周执行至少选择一天", "warn"); return; }
+          patch.schedule.days = d.days.slice().sort(function (a, b) { return a - b; });
+        }
       } else {
         patch.schedule.every_sec = d.every_sec;
       }
@@ -728,7 +758,10 @@
         function () {                                 // 成功：清草稿，等 poll 用新快照回填
           var m = cronModeMemo.get(c.name) || {};
           if (d.schedule_type === "daily") m.at = cronAtValues(atList);
-          else m.every_sec = d.every_sec;
+          else if (d.schedule_type === "weekly") {
+            m.at = cronAtValues(atList);
+            m.days = d.days.slice();
+          } else m.every_sec = d.every_sec;
           cronModeMemo.set(c.name, m);
           bar._draft = null;
           markDirty(bar, false);   // 不拿旧快照回填，避免“先显示原值”再跳新值
@@ -758,20 +791,31 @@
     };
     var mode = (bar._draft && bar._draft.schedule_type) ? bar._draft.schedule_type : c.schedule_type;
     var dBtn = bar.querySelector('[data-role="mode-daily"]');
+    var wBtn = bar.querySelector('[data-role="mode-weekly"]');
     var iBtn = bar.querySelector('[data-role="mode-interval"]');
     if (dBtn) dBtn.classList.toggle("active", mode === "daily");
+    if (wBtn) wBtn.classList.toggle("active", mode === "weekly");
     if (iBtn) iBtn.classList.toggle("active", mode === "interval");
     var atList = bar.querySelector('[data-role="at"]');
+    var daysBox = bar.querySelector('[data-role="days"]');
     var ivEl = bar.querySelector('[data-role="every"]');
-    if (atList) atList.hidden = (mode !== "daily");
+    if (atList) atList.hidden = (mode !== "daily" && mode !== "weekly");
+    if (daysBox) daysBox.hidden = (mode !== "weekly");
     if (ivEl && ivEl.parentNode) ivEl.parentNode.hidden = (mode !== "interval");
+    // 星期多选高亮：草稿优先，其次服务端值（草稿态也要显示当前选择）
+    var daysSel = (bar._draft && bar._draft.days) ? bar._draft.days
+      : (Array.isArray(c.days) ? c.days : []);
+    Array.prototype.slice.call(bar.querySelectorAll(".cfg-day")).forEach(function (b) {
+      var day = parseInt(b.dataset.role.replace("day-", ""), 10);
+      b.classList.toggle("active", daysSel.indexOf(day) >= 0);
+    });
     if (bar._draft || cronCfgPending.has(c.name)) {
       // 编辑/提交中：控件值不由轮询回填，避免撤销输入或“先显示原值”
       markDirty(bar, !!bar._draft);
       return;
     }
     markDirty(bar, false);
-    if (atList && mode === "daily" && Array.isArray(c.at)) {
+    if (atList && (mode === "daily" || mode === "weekly") && Array.isArray(c.at)) {
       var rows = atList.querySelectorAll(".cfg-at-row");
       if (rows.length !== c.at.length) {
         // 服务端数量变了 → 重建列表（未编辑状态，无输入可打断）
