@@ -640,7 +640,7 @@ class Manager(MonitorMixin):
                 os.replace(tmp, spec.reg_path)
             except OSError:
                 return False
-            new_spec = Spec(name, spec.reg_path, spec.adapter_dir)
+            new_spec = Spec(name, spec.reg_path)
             if new_spec.valid:
                 self.specs[name] = new_spec
             return True

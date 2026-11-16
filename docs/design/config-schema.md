@@ -133,7 +133,7 @@ reg/services/ollama/
 └── README.md
 ```
 
-发现顺序：`<名>/reg.json` 优先，其次 `<名>.json`。原 `adapters/` 迁到此形态。
+发现顺序：`<名>/reg.json` 优先，其次 `<名>.json`。原 `adapters/` 兼容层已在 v0.19.0 移除，转接脚本请放服务自己的目录。
 
 ## 配置与观测分离
 

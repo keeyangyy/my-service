@@ -1,6 +1,6 @@
 """my-service · core/backup.py
 
-实例配置备份：把 `reg/`、`config.json`、`adapters/`（若存在）复制到 `data/bak/<时间戳>/`。
+实例配置备份：把 `reg/`、`config.json` 复制到 `data/bak/<时间戳>/`。
 
 不修改、不删除源文件。备份属运行时数据，统一落在 `data/` 下、不进 git（见 .gitignore）。
 保留策略：`data/bak/` 下只留最近 `keep` 份（默认 7，0 = 不自动清理），见 `prune_backups()`。
@@ -76,9 +76,6 @@ def create_backup(base: Path, keep: int = DEFAULT_KEEP) -> dict:
     if cfg.is_file():
         shutil.copy2(cfg, dest / "config.json")
         files += 1
-    adapters = base / "adapters"
-    if adapters.is_dir():
-        files += _copy_tree(adapters, dest / "adapters")
 
     return {"name": dest.name, "path": str(dest), "files": files,
             "pruned": prune_backups(base, keep)}

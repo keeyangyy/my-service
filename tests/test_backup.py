@@ -1,6 +1,6 @@
 """my-service · tests/test_backup.py — 实例配置备份
 
-覆盖：备份 reg/ + config.json + adapters/、同秒冲突加后缀、列表倒序与大小。
+覆盖：备份 reg/ + config.json、同秒冲突加后缀、列表倒序与大小。
 纯标准库 + tempfile 隔离。
 """
 from __future__ import annotations
@@ -30,22 +30,19 @@ class TestBackup(unittest.TestCase):
             encoding="utf-8")
         (self.root / "config.json").write_text(
             json.dumps({"host": "127.0.0.1"}), encoding="utf-8")
-        (self.root / "adapters" / "svc").mkdir(parents=True)
-        (self.root / "adapters" / "svc" / "start.ps1").write_text(
-            "# noop\n", encoding="utf-8")
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_create_includes_reg_config_adapters(self):
+    def test_create_includes_reg_and_config(self):
         info = backup.create_backup(self.root)
         dest = Path(info["path"])
         self.assertTrue(dest.is_dir())
-        self.assertEqual(info["files"], 4)
+        self.assertEqual(info["files"], 3)
         self.assertTrue((dest / "reg" / "services" / "a.json").is_file())
         self.assertTrue((dest / "reg" / "tasks" / "t.json").is_file())
         self.assertTrue((dest / "config.json").is_file())
-        self.assertTrue((dest / "adapters" / "svc" / "start.ps1").is_file())
+        self.assertFalse((dest / "adapters").exists())   # 兼容层已移除
 
     def test_same_second_gets_suffix(self):
         first = backup.create_backup(self.root)

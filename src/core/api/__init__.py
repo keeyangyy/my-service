@@ -313,7 +313,7 @@ class _Handler(BaseHTTPRequestHandler):
             a == b for a, b in zip(parts, expect, strict=True))
 
     def _post_backup(self, parts: list[str], body: dict) -> bool:
-        """POST /api/backup —— 立即备份 reg/ + config.json + adapters/。"""
+        """POST /api/backup —— 立即备份 reg/ + config.json。"""
         if not self._is(parts, "api", "backup"):
             return False
         if not self.settings_path:

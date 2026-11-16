@@ -304,7 +304,7 @@
     }
   }
 
-  // ===== 备份（reg/ + config.json + adapters/ → bak/）=====
+  // ===== 备份（reg/ + config.json → bak/）=====
   async function refreshBackupInfo() {
     try {
       var res = await api("GET", "/api/backups");

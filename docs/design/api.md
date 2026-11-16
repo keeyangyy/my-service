@@ -34,7 +34,7 @@
 | POST | `/api/host/autostart` | `{"enabled": bool}` 开关开机自启 |
 | POST | `/api/host/stop\|restart` | 宿主自身生命周期 |
 | POST | `/api/audit/clear` | `{"svc":"名"}` 清该名事件 / `{}` 清全部 |
-| POST | `/api/backup` | 立即备份 `reg/` + `config.json` + `adapters/` |
+| POST | `/api/backup` | 立即备份 `reg/` + `config.json` |
 | POST | `/api/update/apply` | `{"version","url","sha256","size"}` 下载+校验+暂存，随后自动重启生效 |
 
 ## 与内部对象的关系

@@ -28,7 +28,7 @@ STATES = ("active", "disabled", "archived")
 class Spec:
     """单个服务条目的解析结果。valid=False 时 error 携带原因，不参与编排。"""
 
-    def __init__(self, name: str, reg_path: Path, adapter_dir: Path | None = None):
+    def __init__(self, name: str, reg_path: Path):
         self.folder = name                       # 服务名 = 注册文件名（去 .json）
         self.reg_path = reg_path                 # reg\services\<name>.json 或 <name>\reg.json
         self.raw: dict = {}
@@ -37,7 +37,6 @@ class Spec:
         self.derived: list[dict] = []    # 自动推导的值（check 展示）
         self.defaults: list[dict] = []   # 未写但生效的默认值（check 展示）
         self.path: Path = Path(".")
-        self.adapter_dir = adapter_dir
 
         # ---- 公共 ----
         self.display: str = name
@@ -412,11 +411,7 @@ class Spec:
 
     # ---------------------------------------------------------------- 路径
     def _resolve(self, rel: str) -> Path:
-        r"""相对 path 解析；adapters\<svc>\ 优先（兼容期），服务家回退。"""
-        if self.adapter_dir:
-            cand = (self.adapter_dir / self.folder / rel).resolve()
-            if cand.is_file():
-                return cand
+        """相对 path 解析（服务家）。"""
         return (self.path / rel).resolve()
 
     @property
@@ -460,14 +455,13 @@ class Scanner:
 
     def __init__(self, reg_dir: Path):
         self.reg_dir = reg_dir.resolve()
-        self.adapter_dir = reg_dir.parent.parent / "adapters"
 
     def scan(self) -> dict[str, Spec]:
         specs: dict[str, Spec] = {}
         if not self.reg_dir.is_dir():
             return specs
         for f in sorted(self.reg_dir.glob("*.json")):
-            spec = Spec(f.stem, f, self.adapter_dir)
+            spec = Spec(f.stem, f)
             if spec.archived:
                 continue
             specs[spec.folder] = spec
@@ -475,7 +469,7 @@ class Scanner:
             reg = d / "reg.json"
             if not reg.is_file():
                 continue
-            spec = Spec(d.name, reg, self.adapter_dir)
+            spec = Spec(d.name, reg)
             if spec.archived:
                 continue
             specs[spec.folder] = spec      # 目录形态优先于同名文件
