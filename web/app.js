@@ -77,6 +77,8 @@
   var openLogs = new Set();
   var logAtBottom = new Map();   // name -> 是否贴底
   var autostartPending = new Set();   // 自启开关提交中：轮询不覆盖勾选
+  var svcCfgPending = new Set();      // 服务设置提交中：轮询不回填输入
+  var cronCfgPending = new Set();     // 任务设置提交中：轮询不回填控件
   var stableLayout = new Map();  // name -> 过渡态锚定稳定态
   var pollTimer = null;
   var connected = true;
@@ -251,6 +253,7 @@
       }
       els.settingsModal.hidden = true;
       toast("设置已保存（立即生效）", "ok");
+      poll(true);
     } catch (e) {
       toast("保存失败：" + e.message, "err");
     }
@@ -441,6 +444,7 @@
   }
 
   async function saveCronConfig(name, patch, rollback, onok) {
+    cronCfgPending.add(name);
     try {
       var res = await api("POST", "/api/crons/" + encodeURIComponent(name) + "/config", patch);
       var data = await res.json().catch(function () { return {}; });
@@ -450,6 +454,8 @@
     } catch (e) {
       toast("保存失败：" + (e && e.message ? e.message : "未知错误"), "err");
       if (rollback) rollback();
+    } finally {
+      cronCfgPending.delete(name);
     }
     poll(true);
   }
@@ -710,13 +716,13 @@
       patch.catch_up = d.catch_up;
       saveCronConfig(c.name, patch,
         function () { syncCronConfig(bar, cur); },   // 失败：保留草稿供重试，仅刷新指示
-        function () {                                 // 成功：清草稿回同步态 + 记忆模式参数
+        function () {                                 // 成功：清草稿，等 poll 用新快照回填
           var m = cronModeMemo.get(c.name) || {};
           if (d.schedule_type === "daily") m.at = cronAtValues(atList);
           else m.every_sec = d.every_sec;
           cronModeMemo.set(c.name, m);
           bar._draft = null;
-          syncCronConfig(bar, cronData.get(c.name) || c);
+          markDirty(bar, false);   // 不拿旧快照回填，避免“先显示原值”再跳新值
         });
     });
     cancelBtn.addEventListener("click", function (e) {
@@ -750,9 +756,9 @@
     var ivEl = bar.querySelector('[data-role="every"]');
     if (atList) atList.hidden = (mode !== "daily");
     if (ivEl && ivEl.parentNode) ivEl.parentNode.hidden = (mode !== "interval");
-    if (bar._draft) {
-      // 编辑态：值由草稿驱动，轮询绝不覆盖（防止自动保存/回填竞态撤销输入）
-      markDirty(bar, true);
+    if (bar._draft || cronCfgPending.has(c.name)) {
+      // 编辑/提交中：控件值不由轮询回填，避免撤销输入或“先显示原值”
+      markDirty(bar, !!bar._draft);
       return;
     }
     markDirty(bar, false);
@@ -977,9 +983,9 @@
       if (c.at) memo.at = c.at;
       if (typeof c.every_sec === "number" && c.every_sec) memo.every_sec = c.every_sec;
       cronModeMemo.set(c.name, memo);
-      // 主行的「启用」开关同步勾选态
+      // 主行的「启用」开关同步勾选态（提交中不回拨，避免闪一下）
       var enCb = row.querySelector('.actions [data-role="enabled"]');
-      if (enCb) enCb.checked = !!c.enabled;
+      if (enCb && !cronCfgPending.has(c.name)) enCb.checked = !!c.enabled;
       // 设置按钮：展开态高亮；坏注册条禁用（面板改不了根因）
       var cfgBtnEl = row.querySelector(".btn-cfg");
       if (cfgBtnEl) {
@@ -1190,6 +1196,7 @@
   var svcData = new Map();      // name -> 最新快照（点 ⚙ 时立刻取到真值，不等下轮）
 
   async function saveSvcConfig(name, patch, rollback) {
+    svcCfgPending.add(name);
     try {
       var res = await api("POST", "/api/services/" + encodeURIComponent(name) + "/config", patch);
       var data = await res.json().catch(function () { return {}; });
@@ -1198,6 +1205,8 @@
     } catch (e) {
       toast("保存失败：" + (e && e.message ? e.message : "未知错误"), "err");
       if (rollback) rollback();
+    } finally {
+      svcCfgPending.delete(name);
     }
     poll(true);
   }
@@ -1221,6 +1230,9 @@
     var pushIdle = function () {
       var mult = parseFloat(uSel.value) || 60;
       var secs = Math.round((parseFloat(nIn.value) || 0) * mult);
+      if (!isFinite(secs) || secs < 60) secs = 60;   // 后端下限 60 秒
+      if (secs > 86400) secs = 86400;                // 上限 24 小时
+      nIn.value = String(Math.round(secs / mult));
       var prev = card.dataset.idleSec;
       saveSvcConfig(card.dataset.name, { idle_timeout_sec: secs }, function () {
         if (prev) nIn.value = String(Math.round(parseFloat(prev) / mult));
@@ -1253,9 +1265,11 @@
       var setVal = function (el, v) {
         if (el && document.activeElement !== el && el.value !== String(v)) el.value = String(v);
       };
-      setVal(uSel, unit);
-      setVal(nIn, Math.round(secs / unit));
-      cardSetIdleSec(bar, secs);
+      if (!svcCfgPending.has(svc.name)) {
+        setVal(uSel, unit);
+        setVal(nIn, Math.round(secs / unit));
+        cardSetIdleSec(bar, secs);
+      }
       // 距离自动回收还剩多久（有 last_active 才有意义）
       var left = bar.querySelector(".cfg-idle-left");
       if (left) {
@@ -1783,7 +1797,8 @@
     if (pollTimer) clearTimeout(pollTimer);
     // 面板心跳：让 monitor 知道有人在看（脚本调用不经过这里）
     fetch(API_BASE + "/api/panel/ping", { cache: "no-store" }).catch(function () {});
-    var delay = document.hidden ? POLL_HIDDEN : POLL_ACTIVE;
+    // forceFast：保存/切换后立即拉一次，避免界面停留在旧值（另有 pending 保护）
+    var delay = forceFast ? 0 : (document.hidden ? POLL_HIDDEN : POLL_ACTIVE);
     pollTimer = setTimeout(tick, delay);
   }
 
