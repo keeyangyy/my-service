@@ -79,6 +79,7 @@
   var autostartPending = new Set();   // 自启开关提交中：轮询不覆盖勾选
   var svcCfgPending = new Set();      // 服务设置提交中：轮询不回填输入
   var cronCfgPending = new Set();     // 任务设置提交中：轮询不回填控件
+  var cronRunPending = new Set();     // 手动触发中：按钮保持禁用，防重复触发
   var stableLayout = new Map();  // name -> 过渡态锚定稳定态
   var pollTimer = null;
   var connected = true;
@@ -234,7 +235,12 @@
     }
   }
 
+  var settingsSaving = false;   // 全局设置提交中：防重复点击
+
   async function saveSettings() {
+    if (settingsSaving) return;
+    settingsSaving = true;
+    els.setSave.disabled = true;
     var body = {
       monitor: {
         fast_sec: Number(els.setFast.value),
@@ -256,6 +262,9 @@
       poll(true);
     } catch (e) {
       toast("保存失败：" + e.message, "err");
+    } finally {
+      settingsSaving = false;
+      els.setSave.disabled = false;
     }
   }
 
@@ -1002,7 +1011,7 @@
       logBtn.textContent = isOpen ? "收起" : "事件";
 
       var runBtn = row.querySelector(".btn-run");
-      runBtn.disabled = c.running || !c.valid || !c.enabled;
+      runBtn.disabled = c.running || !c.valid || !c.enabled || cronRunPending.has(c.name);
 
       desired.push(row);
     });
@@ -1017,6 +1026,8 @@
   }
 
   async function runCron(name, btn) {
+    if (cronRunPending.has(name)) return;
+    cronRunPending.add(name);
     if (btn) { btn.disabled = true; btn.textContent = "已触发…"; }
     try {
       var res = await api("POST", "/api/crons/" + encodeURIComponent(name) + "/run?via=manual");
@@ -1025,6 +1036,8 @@
       toast("已触发 " + name + "（结果稍后见卡片与登记簿）", "ok");
     } catch (e) {
       toast("触发失败：" + (e && e.message ? e.message : "未知错误"), "err");
+    } finally {
+      cronRunPending.delete(name);
     }
     poll(true);
   }
