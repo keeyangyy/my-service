@@ -70,7 +70,14 @@
     setBackupKeep: document.getElementById("set-backup-keep"),
     backupInfo: document.getElementById("backup-info"),
     setSave: document.getElementById("set-save"),
-    setCancel: document.getElementById("set-cancel")
+    setCancel: document.getElementById("set-cancel"),
+    updateModal: document.getElementById("update-modal"),
+    updateVersion: document.getElementById("update-version"),
+    updateSize: document.getElementById("update-size"),
+    updateNotes: document.getElementById("update-notes"),
+    updateSource: document.getElementById("update-source"),
+    updateCancel: document.getElementById("update-cancel"),
+    updateConfirm: document.getElementById("update-confirm")
   };
 
   // 状态：同一时刻只允许一个事件视图展开（某张卡片内，或顶部全局抽屉）
@@ -351,11 +358,8 @@
         els.checkUpdate.textContent = "⬆ 升级到 v" + data.latest;
         els.checkUpdate.classList.add("has-update");
         els.checkUpdate.title = "当前 v" + data.current + " → 最新 v" + data.latest
-          + "（点击下载，下载完成后自动重启生效）";
-        var srcHint = data.source_worktree
-          ? "；源码工作区：更新后与 git 不一致，可用 git checkout . 恢复"
-          : "";
-        toast("发现新版本 v" + data.latest + "（当前 v" + data.current + "）" + srcHint, "ok");
+          + "（点击查看更新说明并下载）";
+        openUpdateModal(data);
       } else {
         updateBtnReset();
         toast("已是最新（v" + data.current + "）", "ok");
@@ -391,6 +395,20 @@
       els.checkUpdate.textContent = "⬆ 升级到 v" + latestInfo.latest;
       toast("升级失败：" + e.message, "err");
     }
+  }
+
+  function openUpdateModal(info) {
+    if (!els.updateModal) return;
+    els.updateVersion.textContent = "当前 v" + info.current
+      + " → 新版本 v" + info.latest;
+    var mb = Math.round((info.size || 0) / 104857.6) / 10;
+    els.updateSize.textContent = "安装包 " + mb + " MB";
+    var notes = (info.notes_text || "").trim();
+    els.updateNotes.textContent = notes || "（该版本没有提供更新说明）";
+    var src = info.source || "";
+    try { src = src ? new URL(src).host : ""; } catch (e) { src = ""; }
+    els.updateSource.textContent = src ? "更新源：" + src : "";
+    els.updateModal.hidden = false;
   }
 
   // ===== 定时任务（reg\tasks\ —— 第二物种：到点跑一次脚本，无常驻进程）=====
@@ -1931,6 +1949,17 @@
   }
   if (els.setSave) {
     els.setSave.addEventListener("click", saveSettings);
+  }
+  if (els.updateCancel) {
+    els.updateCancel.addEventListener("click", function () {
+      els.updateModal.hidden = true;
+    });
+  }
+  if (els.updateConfirm) {
+    els.updateConfirm.addEventListener("click", function () {
+      els.updateModal.hidden = true;
+      applyUpdate();
+    });
   }
   if (els.setBackup) {
     els.setBackup.addEventListener("click", doBackup);

@@ -125,13 +125,31 @@ $sizeMb = [math]::Round($item.Length / 1MB, 2)
 Write-Host ("包: {0} ({1} MB)" -f $zipOut, $sizeMb)
 Write-Host "sha256: $hash"
 
+# 更新说明：取 CHANGELOG.md 中当前版本段落（到下一个 "## " 为止）
+$notesText = ""
+$clPath = Join-Path $repo "CHANGELOG.md"
+if (Test-Path -LiteralPath $clPath) {
+    $inSection = $false
+    $buf = New-Object System.Collections.Generic.List[string]
+    foreach ($line in (Get-Content -LiteralPath $clPath -Encoding utf8)) {
+        if ($line -match '^##\s+v?([0-9]+\.[0-9]+\.[0-9]+)') {
+            if ($inSection) { break }
+            if ($matches[1] -eq $Version) { $inSection = $true }
+            continue
+        }
+        if ($inSection) { $buf.Add($line) }
+    }
+    $notesText = ($buf -join "`n").Trim()
+}
+
 # latest.json 供面板一键升级读取（发布时与 zip 一起上传到 Release）
 $latest = [ordered]@{
-    version = $Version
-    url     = "https://github.com/$RepoSlug/releases/download/v$Version/my-service-$Version.zip"
-    sha256  = $hash
-    size    = $item.Length
-    notes   = "https://github.com/$RepoSlug/releases/tag/v$Version"
+    version    = $Version
+    url        = "https://github.com/$RepoSlug/releases/download/v$Version/my-service-$Version.zip"
+    sha256     = $hash
+    size       = $item.Length
+    notes      = "https://github.com/$RepoSlug/releases/tag/v$Version"
+    notes_text = $notesText
 }
 [IO.File]::WriteAllText((Join-Path $outBase "latest.json"),
                         (($latest | ConvertTo-Json) -replace "`r`n", "`n") + "`n",

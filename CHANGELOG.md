@@ -2,6 +2,17 @@
 
 本文件记录 my-service 的版本发布历史。版本号在 `src/core/host.py` 的 `VERSION` 常量维护，与 git tag 同步。
 
+## Unreleased
+
+### 新增功能
+
+- 更新检查支持 GitHub 代理加速与两段式确认
+  - 检查阶段只读清单（版本 / 大小 / 更新说明），不下载；用户点「下载并更新」才下载并重启
+  - 默认内置 4 个代理前缀，代理优先、官方兜底；可用 `config.json` 的 `update.mirrors`
+    或环境变量 `MY_SERVICE_UPDATE_MIRRORS` 覆盖（空数组 = 只用官方）
+  - 强化校验：清单 URL 必须属于本仓库、sha256 形状、包大小与 sha256 一致，否则丢弃
+  - 面板新增更新说明弹窗；`latest.json` 增加 `notes_text`（构建时从 CHANGELOG 提取）
+
 ## v0.17.3（2026-11-16）
 
 ### 修复

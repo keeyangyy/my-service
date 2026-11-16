@@ -15,6 +15,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 import urllib.request
@@ -26,6 +27,17 @@ TIMEOUT = 20
 UA = "my-service-updater"
 UPDATE_SUBDIR = Path("data") / "update"
 BACKUP_SUBDIR = Path("data") / "bak"
+# GitHub 国内镜像（前缀型）：先走代理，官方兜底。
+# 可在 config.json 的 update.mirrors 覆盖（空数组 = 只用官方），
+# 或用环境变量 MY_SERVICE_UPDATE_MIRRORS 临时指定（逗号分隔）。
+DEFAULT_MIRRORS = (
+    "https://githubproxy.cc",
+    "https://ghproxy.imciel.com",
+    "https://gh-proxy.com",
+    "https://ghfast.top",
+)
+_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 # 升级替换清单（与 tools/build-portable.ps1 的 CODE_DIRS / CODE_FILES 保持一致）：
 # 包根 = 仓库结构，没有 app/ 层；只换这几个目录与文档，reg/ data/ config.json 一律不动。
 CODE_DIRS = ("src", "web", "run", "docs")
@@ -58,41 +70,113 @@ def latest_url(repo: str = DEFAULT_REPO) -> str:
     return f"https://github.com/{repo}/releases/latest/download/latest.json"
 
 
-def check(current: str, repo: str = DEFAULT_REPO, timeout: float = TIMEOUT) -> dict:
-    """拉最新版本清单 → {ok, current, latest, has_update, url, sha256, size}。"""
-    req = urllib.request.Request(latest_url(repo), headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+def resolve_mirrors(configured=None) -> list[str]:
+    """代理前缀列表：环境变量 > config.json > 内置默认。
+
+    - `configured=None` → 用 DEFAULT_MIRRORS
+    - `configured=[]` → 显式只用官方（不回落默认）
+    - 环境变量 `MY_SERVICE_UPDATE_MIRRORS`（逗号分隔）优先，空串同样表示只用官方
+    """
+    env = os.environ.get("MY_SERVICE_UPDATE_MIRRORS")
+    if env is not None:
+        raw = env.split(",")
+    elif configured is not None:
+        raw = list(configured)
+    else:
+        raw = list(DEFAULT_MIRRORS)
+    out: list[str] = []
+    for item in raw:
+        s = str(item).strip().rstrip("/")
+        if s.startswith("https://") and s not in out:
+            out.append(s)
+    return out
+
+
+def candidate_urls(url: str, mirrors=None) -> list[str]:
+    """代理前缀优先，官方 URL 兜底（去重）；非 http(s) 地址不套代理。"""
+    if not url.startswith(("http://", "https://")):
+        return [url]
+    out = [f"{m}/{url}" for m in resolve_mirrors(mirrors)]
+    if url not in out:
+        out.append(url)
+    return out
+
+
+def _get_json(url: str, timeout: float, mirrors=None) -> tuple[dict, str]:
+    """依次尝试代理与官方源，返回 (JSON, 实际使用的 URL)。"""
+    errors: list[str] = []
+    for cand in candidate_urls(url, mirrors):
+        try:
+            req = urllib.request.Request(cand, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+            return json.loads(raw.decode("utf-8")), cand
+        except Exception as exc:  # noqa: BLE001 - 逐个源尝试，最后汇总
+            errors.append(f"{cand}: {exc}")
+    raise OSError("所有更新源均失败：" + "；".join(errors[-3:]))
+
+
+def check(current: str, repo: str = DEFAULT_REPO, timeout: float = TIMEOUT,
+          mirrors=None) -> dict:
+    """拉最新版本清单（只读，不下载包）。
+
+    返回 {ok, current, latest, has_update, url, sha256, size, notes, notes_text, source}。
+    对清单做基本校验：版本形状、url 必须属于本仓库 Release、sha256 形状、size > 0。
+    """
+    data, source = _get_json(latest_url(repo), timeout, mirrors)
     if not isinstance(data, dict):
         raise ValueError("latest.json 根节点必须是对象")
     latest = str(data.get("version") or "")
     url = str(data.get("url") or "")
     if not latest or not url:
         raise ValueError("latest.json 缺少 version 或 url")
+    if not _VERSION_RE.match(latest):
+        raise ValueError(f"latest.json 的 version 格式无效: {latest!r}")
+    prefix = f"https://github.com/{repo}/releases/download/v{latest}/"
+    if not url.startswith(prefix):
+        raise ValueError(f"latest.json 的 url 不属于本仓库发布地址: {url}")
+    sha = str(data.get("sha256") or "").lower()
+    if not _SHA_RE.match(sha):
+        raise ValueError("latest.json 的 sha256 格式无效")
+    size = int(data.get("size") or 0)
+    if size <= 0:
+        raise ValueError("latest.json 的 size 无效")
     return {
         "ok": True,
         "current": current,
         "latest": latest,
         "has_update": is_newer(latest, current),
         "url": url,
-        "sha256": str(data.get("sha256") or ""),
-        "size": int(data.get("size") or 0),
+        "sha256": sha,
+        "size": size,
         "notes": str(data.get("notes") or ""),
+        "notes_text": str(data.get("notes_text") or ""),
+        "source": source,
     }
 
 
-def _download(url: str, dest: Path, timeout: float = 120.0) -> str:
-    """下载到 dest 并返回 sha256（流式，避免整包进内存）。"""
-    digest = hashlib.sha256()
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as resp, dest.open("wb") as fh:
-        while True:
-            chunk = resp.read(256 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-            fh.write(chunk)
-    return digest.hexdigest()
+def _download(url: str, dest: Path, timeout: float = 120.0,
+              mirrors=None) -> tuple[str, str]:
+    """按「代理优先、官方兜底」下载到 dest，返回 (sha256, 实际使用的 URL)。"""
+    errors: list[str] = []
+    for cand in candidate_urls(url, mirrors):
+        try:
+            digest = hashlib.sha256()
+            req = urllib.request.Request(cand, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=timeout) as resp, \
+                    dest.open("wb") as fh:
+                while True:
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    fh.write(chunk)
+            return digest.hexdigest(), cand
+        except Exception as exc:  # noqa: BLE001 - 逐个源尝试，最后汇总
+            errors.append(f"{cand}: {exc}")
+            with contextlib.suppress(OSError):
+                dest.unlink()
+    raise OSError("下载失败（代理与官方均未成功）：" + "；".join(errors[-3:]))
 
 
 def _code_entries(root: Path) -> list[Path]:
@@ -122,16 +206,42 @@ def _pick_code_root(staging: Path) -> Path | None:
     return None
 
 
-def apply(home: Path, info: dict) -> dict:
+def _trusted_download_url(url: str, version: str) -> bool:
+    """只接受本仓库 Release 资产（file:// 留给离线/测试场景）。"""
+    if url.startswith("file://"):
+        return True
+    return url.startswith(
+        f"https://github.com/{DEFAULT_REPO}/releases/download/v{version}/")
+
+
+def _validate_info(info: dict) -> str:
+    """校验下载清单的形状与来源；返回错误信息（空串 = 通过）。"""
+    version = str(info.get("version") or "")
+    url = str(info.get("url") or "")
+    sha256 = str(info.get("sha256") or "").lower()
+    if not version or not url:
+        return "缺少 version 或 url"
+    if not _VERSION_RE.match(version):
+        return f"版本号格式无效: {version!r}"
+    if not _SHA_RE.match(sha256):
+        return "sha256 格式无效"
+    if not _trusted_download_url(url, version):
+        return "下载地址不属于本仓库发布地址"
+    return ""
+
+
+def apply(home: Path, info: dict, mirrors=None) -> dict:
     """下载 + 校验 + 按清单暂存到 data/update/code.new，并写 pending.json。
 
     返回 {ok, version, note} 或 {ok: False, error}。
     """
     version = str(info.get("version") or "")
     url = str(info.get("url") or "")
-    sha256 = str(info.get("sha256") or "")
-    if not version or not url:
-        return {"ok": False, "error": "缺少 version 或 url"}
+    sha256 = str(info.get("sha256") or "").lower()
+    error = _validate_info(info)
+    if error:
+        return {"ok": False, "error": error}
+    size = int(info.get("size") or 0)
 
     upd = Path(home) / UPDATE_SUBDIR
     shutil.rmtree(upd / "staging", ignore_errors=True)
@@ -139,10 +249,13 @@ def apply(home: Path, info: dict) -> dict:
     upd.mkdir(parents=True, exist_ok=True)
 
     zip_path = upd / f"my-service-{version}.zip"
-    actual = _download(url, zip_path)
+    actual, source = _download(url, zip_path, mirrors=mirrors)
     if sha256 and actual.lower() != sha256.lower():
         zip_path.unlink(missing_ok=True)
         return {"ok": False, "error": "sha256 校验失败，已丢弃下载包"}
+    if size and zip_path.stat().st_size != size:
+        zip_path.unlink(missing_ok=True)
+        return {"ok": False, "error": "包大小与清单不符，已丢弃下载包"}
 
     staging = upd / "staging"
     try:

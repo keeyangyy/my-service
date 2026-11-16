@@ -19,7 +19,7 @@ from pathlib import Path
 SRC_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC_DIR))
 
-from core import api, audit, runner  # noqa: E402
+from core import api, audit, runner, update  # noqa: E402
 from core.host import HostController, VERSION  # noqa: E402
 from core.scanner import Scanner  # noqa: E402
 from core.scheduler import Scheduler  # noqa: E402
@@ -50,6 +50,8 @@ def load_config(home: Path) -> dict:
         "cors_local_only": True,     # 仅本机来源的网页可获得跨源许可（关掉=回到无 CORS 的历史行为）
         "cors_allow": [],            # 额外放行的来源：主机名 / IP / CIDR（空=只本机）
         "backup": {"keep": 7},       # data/bak/ 保留份数（0 = 不自动清理）
+        # GitHub 代理前缀（更新检查/下载用）；空数组 = 只用官方
+        "update": {"mirrors": list(update.DEFAULT_MIRRORS)},
     }
     cfg_path = _config_path(home)
     if cfg_path.is_file():
@@ -122,7 +124,8 @@ def main() -> int:
                       cors_local_only=bool(cfg.get("cors_local_only", True)),
                       cors_allow=cfg.get("cors_allow") or (),
                       settings_path=_config_path(home),
-                      backup_settings=backup_settings)
+                      backup_settings=backup_settings,
+                      update_mirrors=(cfg.get("update") or {}).get("mirrors"))
     controller.httpd = httpd
     autostart_names = [n for n, s in manager.specs.items()
                        if s.valid and s.enabled and s.autostart]

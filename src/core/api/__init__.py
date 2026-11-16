@@ -213,7 +213,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": "宿主上下文缺失"})
             return
         try:
-            info = update.check(VERSION)
+            info = update.check(VERSION, mirrors=self.update_mirrors)
         except Exception as exc:  # noqa: BLE001 - 网络/格式异常统一报 502
             self._json(502, {"ok": False, "error": f"检查更新失败: {exc}"})
             return
@@ -553,7 +553,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.host is None or home is None:
             self._json(400, {"ok": False, "error": "宿主上下文缺失"})
             return True
-        result = update.apply(home, body)
+        result = update.apply(home, body, mirrors=self.update_mirrors)
         self._json(200 if result.get("ok") else 500, result)
         return True
 
@@ -574,7 +574,7 @@ class _Handler(BaseHTTPRequestHandler):
 def make_handler(manager, host=None, scheduler=None,
                  cors_local_only: bool = True,
                  settings_path=None, backup_settings=None,
-                 cors_allow=None):  # noqa: ANN001
+                 cors_allow=None, update_mirrors=None):  # noqa: ANN001
     """绑定依赖后返回 Handler 子类（依赖走类属性，方法体不依赖闭包）。"""
     return type("Handler", (_Handler,), {
         "manager": manager,
@@ -585,6 +585,7 @@ def make_handler(manager, host=None, scheduler=None,
         "cors_local_only": cors_local_only,
         # 非 list/tuple 一律视为空，避免字符串被拆成单字符
         "cors_allow": tuple(cors_allow) if isinstance(cors_allow, (list, tuple)) else (),
+        "update_mirrors": list(update_mirrors) if isinstance(update_mirrors, (list, tuple)) else None,
     })
 
 
@@ -621,7 +622,8 @@ def _tail_file(path: Path, name: str, n: int) -> dict:
 
 def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,  # noqa: PLR0913
           cors_local_only: bool = True, settings_path=None,
-          backup_settings=None, cors_allow=None):  # noqa: ANN001
+          backup_settings=None, cors_allow=None,
+          update_mirrors=None):  # noqa: ANN001
     """绑定监听。controller 为 HostController（提供 meta/schedule），
     scheduler 为定时任务调度器（提供 snapshot/run_now）。
 
@@ -634,7 +636,8 @@ def serve(manager, bind_host: str, port: int, controller=None, scheduler=None,  
     handler = make_handler(manager, controller, scheduler, cors_local_only,
                            settings_path=settings_path,
                            backup_settings=backup_settings,
-                           cors_allow=cors_allow)
+                           cors_allow=cors_allow,
+                           update_mirrors=update_mirrors)
     last_err: OSError | None = None
     for _ in range(40):
         try:

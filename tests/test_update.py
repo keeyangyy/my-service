@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -9,11 +10,28 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 from core import update  # noqa: E402
+
+
+class _FakeResp:
+    """urlopen 的最小替身：只实现 _get_json 用到的 read 与上下文管理。"""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> bool:
+        return False
 
 
 def _make_zip(path: Path, version: str, layout: str = "root") -> None:
@@ -172,6 +190,79 @@ class TestUpdate(unittest.TestCase):
         self.assertIn("不完整", result["error"])
         self.assertEqual((self.home / "src" / "server.py").read_text(encoding="utf-8"),
                          before, "拒绝替换时原代码必须原样")
+
+    # ---- 代理与校验 ----
+    def test_candidate_urls_proxy_first(self):
+        url = "https://github.com/x/y/releases/download/v1/z.zip"
+        urls = update.candidate_urls(url, mirrors=["https://m1", "https://m2"])
+        self.assertEqual(urls[0], "https://m1/" + url)
+        self.assertEqual(urls[1], "https://m2/" + url)
+        self.assertEqual(urls[-1], url)          # 官方兜底
+
+    def test_candidate_urls_without_mirrors(self):
+        url = "https://github.com/x/y/releases/download/v1/z.zip"
+        self.assertEqual(update.candidate_urls(url, mirrors=[]), [url])
+
+    def test_candidate_urls_do_not_proxy_file_urls(self):
+        """离线包（file://）不套代理前缀，避免无意义的网络请求。"""
+        self.assertEqual(update.candidate_urls("file:///tmp/pkg.zip"), ["file:///tmp/pkg.zip"])
+
+    def test_check_uses_mirror_first_and_returns_notes(self):
+        url = ("https://github.com/keeyangyy/my-service/releases/download/"
+               "v9.9.9/my-service-9.9.9.zip")
+        payload = json.dumps({
+            "version": "9.9.9", "url": url, "sha256": "a" * 64,
+            "size": 123, "notes": "notes-url", "notes_text": "更新说明",
+        }).encode("utf-8")
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            return _FakeResp(payload)
+
+        with mock.patch("core.update.urllib.request.urlopen", fake_urlopen):
+            info = update.check("0.1.0", mirrors=["https://mirror.example"])
+        self.assertTrue(info["has_update"])
+        self.assertEqual(info["notes_text"], "更新说明")
+        self.assertTrue(info["source"].startswith("https://mirror.example/"))
+        self.assertTrue(calls[0].startswith("https://mirror.example/https://github.com/"))
+
+    def test_check_rejects_foreign_url(self):
+        payload = json.dumps({
+            "version": "9.9.9", "url": "https://evil.example/x.zip",
+            "sha256": "a" * 64, "size": 1,
+        }).encode("utf-8")
+        with mock.patch("core.update.urllib.request.urlopen",
+                        lambda req, timeout=None: _FakeResp(payload)), \
+                self.assertRaises(ValueError):
+            update.check("0.1.0", mirrors=[])
+
+    def test_check_rejects_bad_sha(self):
+        url = ("https://github.com/keeyangyy/my-service/releases/download/"
+               "v9.9.9/my-service-9.9.9.zip")
+        payload = json.dumps({"version": "9.9.9", "url": url,
+                              "sha256": "not-a-sha", "size": 1}).encode("utf-8")
+        with mock.patch("core.update.urllib.request.urlopen",
+                        lambda req, timeout=None: _FakeResp(payload)), \
+                self.assertRaises(ValueError):
+            update.check("0.1.0", mirrors=[])
+
+    def test_apply_rejects_untrusted_url(self):
+        result = update.apply(self.home, {
+            "version": "9.9.9", "url": "https://evil.example/x.zip",
+            "sha256": "a" * 64, "size": 1})
+        self.assertFalse(result["ok"])
+        self.assertIn("本仓库", result["error"])
+
+    def test_apply_rejects_bad_size(self):
+        zip_path = self.root / "pkg.zip"
+        _make_zip(zip_path, "9.9.9")
+        sha = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        result = update.apply(self.home, {
+            "version": "9.9.9", "url": zip_path.as_uri(),
+            "sha256": sha, "size": zip_path.stat().st_size + 1})
+        self.assertFalse(result["ok"])
+        self.assertIn("大小", result["error"])
 
 
 if __name__ == "__main__":
