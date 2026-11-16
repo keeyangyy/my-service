@@ -39,6 +39,7 @@
 - 发布时用私钥签 `latest.json` 的 `sig` 字段，签名覆盖 `version` / `url` / `sha256` / `size` / `notes_text`
 - 客户端内置公钥（`src/core/update_pubkey.py`），**验签失败直接拒绝更新**；缺失签名同样拒绝
 - 私钥存放在 GitHub Actions secret `UPDATE_SIGNING_KEY`；发布流水线会校验 `sig` 非空，未配置 secret 会失败
+- 私钥不入库、不放云同步目录：维护者保存在本机密钥库（按用途分目录，库内 README 记索引）
 - 本地手动签名：`UPDATE_SIGNING_KEY=<hex> python tools/sign_latest.py dist/latest.json`
 - 轮换密钥：`python tools/gen_update_key.py --out <私钥路径>` 生成新对 → 更新公钥文件并**同时发版**（旧客户端只认旧公钥）
 
