@@ -76,6 +76,7 @@
   // 状态：同一时刻只允许一个事件视图展开（某张卡片内，或顶部全局抽屉）
   var openLogs = new Set();
   var logAtBottom = new Map();   // name -> 是否贴底
+  var autostartPending = new Set();   // 自启开关提交中：轮询不覆盖勾选
   var stableLayout = new Map();  // name -> 过渡态锚定稳定态
   var pollTimer = null;
   var connected = true;
@@ -862,6 +863,7 @@
     if (!els.cronSection || sortBusy) return;   // 拖动中不重绘
     els.cronSection.hidden = !crons.length;
     var names = crons.map(function (c) { return c.name; });
+    var desired = [];
 
     // 移除已消失的任务行（连带清理其数据快照与展开态）
     Array.prototype.slice.call(els.cronList.children).forEach(function (row) {
@@ -922,7 +924,6 @@
         row.appendChild(sub);
         row.appendChild(buildCronConfig(c));   // 配置面板（默认收起）
         bindRowDrag(row, "crons");
-        els.cronList.appendChild(row);
       }
 
       var st = CRON_STATUS_MAP[cronStatus(c)];
@@ -997,9 +998,16 @@
       var runBtn = row.querySelector(".btn-run");
       runBtn.disabled = c.running || !c.valid || !c.enabled;
 
-      // 跟随后端顺序：appendChild 移动已有节点（不重建、事件与焦点保留）
-      els.cronList.appendChild(row);
+      desired.push(row);
     });
+
+    // 顺序未变时不动 DOM：appendChild 会移出再插入，打断 :hover 并造成闪烁
+    var current = Array.prototype.slice.call(els.cronList.children);
+    var same = current.length === desired.length
+      && desired.every(function (r, i) { return current[i] === r; });
+    if (!same) {
+      desired.forEach(function (r) { els.cronList.appendChild(r); });
+    }
   }
 
   async function runCron(name, btn) {
@@ -1310,7 +1318,9 @@
     cb.addEventListener("change", async function () {
       var name = card.dataset.name;
       var newVal = cb.checked;
+      autostartPending.add(name);
       var ok = await postAutostart(name, newVal);
+      autostartPending.delete(name);
       if (!ok) { cb.checked = !newVal; toast("自启动设置已回滚", "err"); }
       else { toast("已保存自启动设置", "ok"); }
     });
@@ -1480,7 +1490,9 @@
     if (toggleEl) {
       toggleEl.style.display = (svc.mode === "on_demand") ? "none" : "";
     }
-    card.querySelector(".toggle-input").checked = !!svc.autostart;
+    if (!autostartPending.has(svc.name)) {
+      card.querySelector(".toggle-input").checked = !!svc.autostart;
+    }
 
     // 操作按钮组（焦点保护）
     var opGroup = card.querySelector(".op-group");
@@ -1613,6 +1625,7 @@
   async function refreshEvents(name, panel) {
     if (!panel || !openLogs.has(name)) return;
     var wasBottom = logAtBottom.get(name) !== false;
+    var prevScroll = panel.scrollTop;
     try {
       var events = await fetchAudit(name);
       var toolbar = panel.querySelector(".log-toolbar");
@@ -1650,6 +1663,7 @@
         });
       }
       if (wasBottom) panel.scrollTop = panel.scrollHeight;
+      else panel.scrollTop = prevScroll;
       var atBottomNow = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 30;
       logAtBottom.set(name, atBottomNow);
     } catch (e) {
@@ -1657,10 +1671,11 @@
     }
   }
 
-  /* 渲染一个服务分组：卡片移动到本组容器、组与标题一起显隐、标题带数量。
-     appendChild 移动已有节点（不重建，事件与焦点保留）——沿用原实现的抗抖动策略。 */
+  /* 渲染一个服务分组：卡片归位、组与标题一起显隐、标题带数量。
+     顺序未变时不动 DOM —— appendChild 会把节点移出再插入，导致 :hover 丢失一帧（闪烁）。 */
   function renderSvcGroup(listEl, items, secEl, cntId) {
     if (!listEl) return;
+    var desired = [];
     items.forEach(function (svc) {
       var card = cardByName(svc.name);
       if (!card) {
@@ -1669,8 +1684,14 @@
         card.dataset.name = svc.name;
       }
       renderCard(svc, card);
-      listEl.appendChild(card);
+      desired.push(card);
     });
+    var current = Array.prototype.slice.call(listEl.children);
+    var same = current.length === desired.length
+      && desired.every(function (c, i) { return current[i] === c; });
+    if (!same) {
+      desired.forEach(function (c) { listEl.appendChild(c); });
+    }
     if (secEl) secEl.hidden = items.length === 0;
     var cnt = cntId ? document.getElementById(cntId) : null;
     if (cnt) cnt.textContent = String(items.length);
@@ -1692,7 +1713,7 @@
       els.hostUptime.title = "my-service 自身已运行 " + fmtUptime(host.uptime_sec)
         + "（pid " + host.pid + "，v" + host.version + "）";
     }
-    if (host && host.autostart && els.autostartToggle) {
+    if (host && host.autostart && els.autostartToggle && !els.autostartToggle.disabled) {
       var auto = host.autostart;
       els.autostartToggle.checked = auto === "startup";
       els.autostartWrap.title = auto === "startup"
