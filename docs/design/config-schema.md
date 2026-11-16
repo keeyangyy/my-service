@@ -14,7 +14,7 @@
 
 ```json
 {
-  "path": "D:/services/your-service",
+  "path": "C:/path/to/your-service",
   "display": "面板显示名",
   "description": "说明",
   "mode": "managed",
@@ -28,7 +28,7 @@
     "service_name": "your-service",
     "port": 33510,
     "pidfile": "logs/server.pid",
-    "process": "D:/path/to/python.exe",
+    "process": "C:/path/to/python.exe",
     "timeout_sec": 30
   },
 
