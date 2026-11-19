@@ -54,6 +54,25 @@
   .btn.primary:hover { background: #2ea043; }
   .shot { max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block; margin: 0 auto; }
 
+  /* 下载下方：复制给 AI */
+  .ai-copy {
+    display: flex; align-items: stretch; gap: 8px;
+    max-width: 720px; margin: -26px auto 40px;
+  }
+  .ai-copy .btn {
+    padding: 8px 16px; font-size: 13px; white-space: nowrap;
+    background: #238636; border-color: #238636; color: #fff;
+  }
+  .ai-copy .btn:hover { background: #2ea043; }
+  .ai-copy .btn.ok { background: transparent; border-color: var(--green); color: var(--green); }
+  .ai-copy-box {
+    flex: 1; min-width: 0; display: flex; align-items: center;
+    padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
+    background: #0b0f14; color: var(--muted); font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: text; user-select: all;
+  }
+
   section { padding: 56px 0; border-top: 1px solid var(--border); }
   h2 { font-size: 26px; margin: 0 0 8px; }
   .sub { color: var(--muted); margin: 0 0 30px; }
@@ -114,6 +133,8 @@
     pre { font-size: 12px; padding: 14px 16px; }
     .cta { gap: 10px; }
     .btn { padding: 10px 18px; font-size: 15px; }
+    .ai-copy { flex-wrap: wrap; margin: -22px auto 30px; }
+    .ai-copy-box { flex-basis: 100%; }
   }
 </style>
 </head>
@@ -136,6 +157,10 @@
   <div class="cta">
     <a class="btn primary" href="https://github.com/keeyangyy/my-service/releases/latest/download/my-service.zip">下载最新版</a>
     <a class="btn" href="https://github.com/keeyangyy/my-service">在 GitHub 查看</a>
+  </div>
+  <div class="ai-copy">
+    <button type="button" class="btn" id="copy-ai-prompt">复制给 AI</button>
+    <div class="ai-copy-box" id="ai-prompt-text">帮我下载并安装 my-service，按文档把本机服务接入：https://github.com/keeyangyy/my-service</div>
   </div>
   <img class="shot" src="panel.png" alt="控制台面板">
 </header>
@@ -248,6 +273,41 @@
     <a href="https://github.com/keeyangyy/my-service">GitHub</a>
   </div>
 </footer>
+
+<script>
+(function () {
+  var btn = document.getElementById('copy-ai-prompt');
+  var box = document.getElementById('ai-prompt-text');
+  if (!btn || !box) return;
+  var label = btn.textContent;
+  function flash(ok) {
+    btn.textContent = ok ? '✓ 已复制' : '复制失败，请手动选择';
+    btn.classList.toggle('ok', ok);
+    setTimeout(function () { btn.textContent = label; btn.classList.remove('ok'); }, 2200);
+  }
+  function fallback(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    flash(ok);
+  }
+  btn.addEventListener('click', function () {
+    var text = box.textContent.trim();
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { flash(true); }, function () { fallback(text); });
+    } else {
+      fallback(text);
+    }
+  });
+})();
+</script>
 
 </body>
 </html>
